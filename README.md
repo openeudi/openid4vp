@@ -77,15 +77,17 @@ parsePresentation(vpToken)
 Result: PresentationResult { valid, format, claims, issuer, error? }
 ```
 
-## Extracted Claims
+## Privacy by Design
 
-| Claim | Description |
-|-------|-------------|
-| `age_over_18` | Age verification (18+) |
-| `age_over_21` | Age verification (21+) |
-| `resident_country` | Country of residence (ISO 3166-1 alpha-2) |
-| `nationality` | Nationality |
-| `family_name_birth` | Family name at birth |
+This library follows the **data minimisation** principle. It only extracts the boolean or categorical claims explicitly requested -- no personal identity data is ever collected or stored.
+
+| Claim | Type | Description |
+|-------|------|-------------|
+| `age_over_18` | Boolean | Is the holder 18 or older? |
+| `age_over_21` | Boolean | Is the holder 21 or older? |
+| `resident_country` | ISO 3166-1 | Country of residence (two-letter code) |
+
+The library parses only what the relying party requests via selective disclosure. No names, birth dates, document numbers, or other personally identifiable information is extracted.
 
 ## Related Packages
 
