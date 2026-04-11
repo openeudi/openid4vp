@@ -1,0 +1,52 @@
+{
+  "version": "v1.0.0",
+  "entity": {
+    "type": "individual",
+    "role": "owner",
+    "name": "Akos Foldesi",
+    "email": "flds.akos@gmail.com",
+    "phone": "",
+    "description": "Creator and sole maintainer of OpenEUDI, the open-source EUDI Wallet verification toolkit for TypeScript.",
+    "webpageUrl": {
+      "url": "https://github.com/openeudi"
+    }
+  },
+  "projects": [
+    {
+      "guid": "openeudi-openid4vp",
+      "name": "@openeudi/openid4vp",
+      "description": "OpenID4VP credential parsing and validation for EUDI Wallets. Supports SD-JWT VC and mDOC/mDL credential formats with certificate trust verification, nonce validation, and privacy-preserving claim extraction.",
+      "webpageUrl": {
+        "url": "https://github.com/openeudi/openid4vp"
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/openeudi/openid4vp"
+      },
+      "licenses": ["spdx:Apache-2.0"],
+      "tags": ["openid4vp", "sd-jwt", "mdoc", "verifiable-credentials", "eidas", "typescript"]
+    }
+  ],
+  "funding": {
+    "channels": [
+      {
+        "guid": "github-sponsors",
+        "type": "payment-provider",
+        "address": "https://github.com/sponsors/openeudi",
+        "description": "GitHub Sponsors for OpenEUDI"
+      }
+    ],
+    "plans": [
+      {
+        "guid": "maintenance",
+        "status": "active",
+        "name": "SDK Maintenance and Security",
+        "description": "Ongoing maintenance of the OpenEUDI credential parsing library including OpenID4VP spec tracking, security patches, dependency updates, and community issue triage.",
+        "amount": 50000,
+        "currency": "USD",
+        "frequency": "yearly",
+        "channels": ["github-sponsors"]
+      }
+    ],
+    "history": null
+  }
+}
