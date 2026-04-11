@@ -1,112 +1,167 @@
 # @openeudi/openid4vp
 
-Open-source OpenID4VP credential parsing and validation for SD-JWT VC and mDOC/mDL formats.
+OpenID4VP credential parsing and validation for EUDI Wallets. Supports SD-JWT VC and mDOC credential formats with issuer trust verification, expiry checking, and selective disclosure claim extraction.
 
-> **Status:** Planning phase. Seeking [NGI Zero Commons Fund](https://nlnet.nl/commonsfund/) support.
-
-## What is this?
-
-`@openeudi/openid4vp` is a TypeScript library that parses and validates verifiable credentials presented through the [OpenID for Verifiable Presentations (OpenID4VP)](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html) protocol. It supports the two credential formats mandated by [eIDAS 2.0](https://digital-strategy.ec.europa.eu/en/policies/eidas-regulation):
-
-- **SD-JWT VC** -- Selective Disclosure JSON Web Tokens (RFC 9449)
-- **mDOC/mDL** -- Mobile Document / Mobile Driving License (ISO 18013-5)
-
-## Features
-
-- **Format auto-detection** -- automatically identifies SD-JWT vs mDOC credential format
-- **SD-JWT VC parser** -- decodes disclosures, validates JWT signatures against issuer certificates
-- **mDOC parser** -- decodes CBOR DeviceResponse, validates COSE_Sign1 signatures
-- **Authorization request generation** -- creates OpenID4VP authorization requests for wallet apps
-- **Pluggable parser architecture** -- `ICredentialParser` interface for custom formats
-- **Typed error classes** -- specific errors for parsing, validation, and signature failures
-- **Dual format** -- ships ESM + CJS with full TypeScript declarations
-- **Zero framework dependencies** -- works with any JavaScript/TypeScript runtime
-
-## Installation
+## Install
 
 ```bash
 npm install @openeudi/openid4vp
 ```
 
-## Quick Start
+## Quick start
 
-```typescript
-import { parsePresentation } from '@openeudi/openid4vp';
+Parse a Verifiable Presentation token and extract identity claims:
 
-// Parse a VP Token from a wallet response
-const result = await parsePresentation(vpToken);
+```ts
+import { parsePresentation } from "@openeudi/openid4vp";
+
+const result = await parsePresentation(vpToken, {
+  trustedCertificates: [issuerCertBytes],
+  nonce: "expected-nonce-value",
+});
 
 if (result.valid) {
-  console.log('Format:', result.format);     // 'sd-jwt' or 'mdoc'
-  console.log('Claims:', result.claims);      // { age_over_18: true, resident_country: 'DE', ... }
-  console.log('Issuer:', result.issuer);      // { name: '...', country: 'DE', certificate: ... }
+  console.log(result.format); // 'sd-jwt-vc' | 'mdoc'
+  console.log(result.claims.age_over_18); // true
+  console.log(result.issuer.country); // 'DE'
 } else {
-  console.error('Validation failed:', result.error);
+  console.error(result.error);
 }
 ```
 
-### Create Authorization Request
+`parsePresentation` automatically detects the credential format. String tokens with `~` separators are parsed as SD-JWT VC; binary `Uint8Array` tokens are parsed as CBOR-encoded mDOC.
 
-```typescript
-import { createAuthorizationRequest } from '@openeudi/openid4vp';
+## Authorization requests
 
-const authRequest = createAuthorizationRequest({
-  requestedAttributes: ['age_over_18', 'resident_country'],
-  responseUri: 'https://example.com/callback',
+Build an OpenID4VP authorization request URI to send to an EUDI Wallet:
+
+```ts
+import { createAuthorizationRequest } from "@openeudi/openid4vp";
+
+const request = createAuthorizationRequest({
+  requestedAttributes: ["age_over_18", "resident_country"],
+  acceptedFormats: ["sd-jwt-vc", "mdoc"],
+  responseUri: "https://your-app.com/api/verify/callback",
+  clientId: "your-client-id",
   nonce: crypto.randomUUID(),
 });
 
-// Encode as QR code or deep link for wallet app
-console.log(authRequest.uri);
+console.log(request.uri);
+// openid4vp://authorize?response_type=vp_token&response_mode=direct_post&...
+
+console.log(request.state);
+// auto-generated UUID unless you provide one
+
+console.log(request.presentationDefinition);
+// OID4VP presentation definition with input descriptors
 ```
 
-## Architecture
+### AuthorizationRequestInput
 
+| Field                 | Type                 | Required | Description                                    |
+| --------------------- | -------------------- | -------- | ---------------------------------------------- |
+| `requestedAttributes` | `string[]`           | Yes      | Claims to request (e.g. `age_over_18`)         |
+| `acceptedFormats`     | `CredentialFormat[]` | Yes      | `'sd-jwt-vc'` and/or `'mdoc'`                  |
+| `responseUri`         | `string`             | Yes      | Callback URL for the wallet response           |
+| `clientId`            | `string`             | Yes      | Your verifier client identifier                |
+| `nonce`               | `string`             | Yes      | Challenge nonce for replay protection          |
+| `state`               | `string`             | No       | Session state (auto-generated UUID if omitted) |
+
+## Supported formats
+
+### SD-JWT VC
+
+Selective Disclosure JSON Web Token Verifiable Credentials. The token is a string in `jwt~disclosure~kb` format. The parser:
+
+- Decodes the issuer JWT and extracts the `x5c` certificate chain
+- Verifies the issuer certificate against your trusted set
+- Checks credential expiry from the `exp` claim
+- Validates the nonce in the key binding JWT
+- Resolves selective disclosures using SHA-256
+
+### mDOC
+
+Mobile Document credentials as defined in ISO 18013-5. The token is a CBOR-encoded `Uint8Array` containing a DeviceResponse. The parser:
+
+- Decodes the CBOR DeviceResponse structure
+- Extracts the issuer certificate from the COSE_Sign1 `issuerAuth` (x5chain label 33)
+- Verifies the certificate against your trusted set
+- Checks the validity period from `validityInfo`
+- Extracts claims from the `eu.europa.ec.eudi.pid.1` namespace
+
+## Custom parsers
+
+Implement `ICredentialParser` to add support for additional credential formats:
+
+```ts
+import type { ICredentialParser, ParseOptions, CredentialFormat, PresentationResult } from "@openeudi/openid4vp";
+
+class MyCustomParser implements ICredentialParser {
+  readonly format: CredentialFormat = "sd-jwt-vc"; // or 'mdoc'
+
+  canParse(vpToken: unknown): boolean {
+    // Return true if this parser can handle the token
+    return typeof vpToken === "string" && vpToken.startsWith("custom:");
+  }
+
+  async parse(vpToken: unknown, options: ParseOptions): Promise<PresentationResult> {
+    // Validate trust using options.trustedCertificates
+    // Verify nonce using options.nonce
+    // Extract and return claims
+    return {
+      valid: true,
+      format: this.format,
+      claims: { age_over_18: true },
+      issuer: { certificate: new Uint8Array(), country: "DE" },
+    };
+  }
+}
 ```
-parsePresentation(vpToken)
-├── Format detection (SD-JWT vs mDOC)
-├── SD-JWT Parser
-│   ├── Decode header.payload.signature~disclosure1~disclosure2~...
-│   ├── Validate JWT signature against issuer certificate
-│   └── Verify selective disclosures match hash claims
-└── mDOC Parser
-    ├── Decode CBOR DeviceResponse (ISO 18013-5)
-    ├── Validate COSE_Sign1 signature
-    └── Extract IssuerSignedItem claims
 
-Result: PresentationResult { valid, format, claims, issuer, error? }
+### ParseOptions
+
+| Field                 | Type           | Description                          |
+| --------------------- | -------------- | ------------------------------------ |
+| `trustedCertificates` | `Uint8Array[]` | Issuer certificates to trust         |
+| `nonce`               | `string`       | Expected nonce for replay protection |
+
+### PresentationResult
+
+| Field    | Type               | Description                                |
+| -------- | ------------------ | ------------------------------------------ |
+| `valid`  | `boolean`          | Whether the credential passed all checks   |
+| `format` | `CredentialFormat` | `'sd-jwt-vc'` or `'mdoc'`                  |
+| `claims` | `CredentialClaims` | Extracted identity claims                  |
+| `issuer` | `IssuerInfo`       | Issuer certificate and country             |
+| `error`  | `string?`          | Reason for failure when `valid` is `false` |
+
+## Error types
+
+| Error class                | Default message                           | Thrown when                                        |
+| -------------------------- | ----------------------------------------- | -------------------------------------------------- |
+| `InvalidSignatureError`    | Credential signature validation failed    | Signature verification fails                       |
+| `ExpiredCredentialError`   | Credential has expired                    | Credential `exp` or `validUntil` is in the past    |
+| `UnsupportedFormatError`   | Unsupported credential format: `{format}` | Token format is not SD-JWT VC or mDOC              |
+| `MalformedCredentialError` | Credential structure is malformed         | Token cannot be decoded or is structurally invalid |
+| `NonceValidationError`     | Nonce does not match expected value       | Key binding JWT nonce does not match               |
+
+```ts
+import { MalformedCredentialError, ExpiredCredentialError } from "@openeudi/openid4vp";
+
+try {
+  const result = await parsePresentation(vpToken, options);
+} catch (err) {
+  if (err instanceof MalformedCredentialError) {
+    // Token structure could not be decoded
+  }
+}
 ```
 
-## Privacy by Design
+## Related packages
 
-This library follows the **data minimisation** principle. It only extracts the boolean or categorical claims explicitly requested -- no personal identity data is ever collected or stored.
-
-| Claim | Type | Description |
-|-------|------|-------------|
-| `age_over_18` | Boolean | Is the holder 18 or older? |
-| `age_over_21` | Boolean | Is the holder 21 or older? |
-| `resident_country` | ISO 3166-1 | Country of residence (two-letter code) |
-
-The library parses only what the relying party requests via selective disclosure. No names, birth dates, document numbers, or other personally identifiable information is extracted.
-
-## Related Packages
-
-| Package | Description |
-|---------|-------------|
-| [`@openeudi/core`](https://github.com/openeudi/core) | Framework-agnostic EUDI Wallet verification SDK |
-
-## EU Coverage
-
-Supports credential verification from all 27 EU member states when combined with issuer certificate validation against EU Trusted Lists.
-
-## Contributing
-
-Contributions are welcome! Please open an issue to discuss your idea before submitting a pull request.
+- **[@openeudi/core](https://www.npmjs.com/package/@openeudi/core)** -- Framework-agnostic EUDI Wallet verification protocol engine with session management and QR code generation.
+- **[eIDAS Pro](https://eidas-pro.eu)** -- Managed verification service with admin dashboard, webhook integrations, and plugin support for WooCommerce and Shopify.
 
 ## License
 
-[MIT](LICENSE)
-
-## Acknowledgements
-
-This project is applying for funding from the [NGI Zero Commons Fund](https://nlnet.nl/commonsfund/), a fund established by [NLnet](https://nlnet.nl/) with financial support from the European Commission's [Next Generation Internet](https://ngi.eu/) initiative.
+[Apache 2.0](./LICENSE)
