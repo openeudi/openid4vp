@@ -52,6 +52,11 @@
     "verifiable-credentials",
     "eidas"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/openeudi/openid4vp"
