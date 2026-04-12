@@ -1,4 +1,5 @@
-import { splitSdJwt, decodeJwt, decodeSdJwt, getClaims } from '@sd-jwt/decode';
+import { splitSdJwt, decodeSdJwt, getClaims } from '@sd-jwt/decode';
+import { decodeProtectedHeader, jwtVerify, importX509, importJWK } from 'jose';
 
 import { MalformedCredentialError } from '../errors.js';
 import type { IssuerInfo } from '../types/issuer.js';
@@ -11,6 +12,8 @@ import type { ICredentialParser, ParseOptions } from './parser.interface.js';
  * Inlined here to avoid a direct dependency on @sd-jwt/types.
  */
 type SdJwtHasher = (data: string | ArrayBuffer, alg: string) => Promise<Uint8Array>;
+
+const DEFAULT_ALLOWED_ALGORITHMS = ['ES256', 'ES384', 'ES512'];
 
 /**
  * SHA-256 hasher implementation using the Web Crypto API.
@@ -31,7 +34,6 @@ const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345
  * Does not depend on Node.js Buffer or browser atob.
  */
 function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
-    // Strip any padding characters
     const cleaned = base64.replace(/=+$/, '');
     const byteLength = Math.floor((cleaned.length * 3) / 4);
     const buffer = new ArrayBuffer(byteLength);
@@ -53,14 +55,6 @@ function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
 }
 
 /**
- * Extracts the DER-encoded certificate bytes from a base64-encoded X.509 certificate
- * found in the JWT header's x5c field.
- */
-function extractCertificateFromX5c(x5cEntry: string): Uint8Array<ArrayBuffer> {
-    return base64ToBytes(x5cEntry);
-}
-
-/**
  * Checks whether two Uint8Array instances contain identical bytes.
  */
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -69,6 +63,26 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
         if (a[i] !== b[i]) return false;
     }
     return true;
+}
+
+/**
+ * Converts a base64-encoded DER certificate to PEM format for jose.importX509.
+ */
+function derToPem(base64Der: string): string {
+    const lines = base64Der.match(/.{1,64}/g) || [];
+    return `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----`;
+}
+
+/**
+ * Encodes a Uint8Array to base64url (no padding).
+ * Used by disclosure hash verification (Task 5) and KB-JWT verification (Task 6).
+ */
+function bytesToBase64url(bytes: Uint8Array): string {
+    let binary = '';
+    for (const byte of bytes) {
+        binary += String.fromCharCode(byte);
+    }
+    return globalThis.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 /**
@@ -94,7 +108,6 @@ function mapToCredentialClaims(raw: Record<string, unknown>): CredentialClaims {
         claims.family_name_birth = raw['family_name_birth'];
     }
 
-    // Preserve any additional claim keys not already mapped
     for (const [key, value] of Object.entries(raw)) {
         if (
             !(key in claims) &&
@@ -113,146 +126,7 @@ function mapToCredentialClaims(raw: Record<string, unknown>): CredentialClaims {
 }
 
 /**
- * SD-JWT VC credential parser.
- *
- * Decodes and validates SD-JWT Verifiable Credentials as specified in
- * the EUDI Wallet ecosystem. Performs:
- *   - Structure validation (JWT~disclosure~kb format)
- *   - Issuer certificate trust chain verification
- *   - Expiry checking
- *   - Nonce validation against the key binding JWT
- *   - Selective disclosure claim extraction
- */
-export class SdJwtParser implements ICredentialParser {
-    readonly format: CredentialFormat = 'sd-jwt-vc';
-
-    /**
-     * Returns true when the token looks like an SD-JWT:
-     * it must be a string containing the `~` disclosure separator.
-     */
-    canParse(vpToken: unknown): boolean {
-        return typeof vpToken === 'string' && vpToken.includes('~');
-    }
-
-    /**
-     * Parses and validates an SD-JWT VC token.
-     *
-     * @throws {MalformedCredentialError} when the token structure cannot be decoded
-     */
-    async parse(vpToken: unknown, options: ParseOptions): Promise<PresentationResult> {
-        if (typeof vpToken !== 'string') {
-            throw new MalformedCredentialError('VP token must be a string');
-        }
-
-        const invalidResult = (error: string): PresentationResult => ({
-            valid: false,
-            format: this.format,
-            claims: {},
-            issuer: { certificate: new Uint8Array(), country: '' },
-            error,
-        });
-
-        // Step 1: Split the SD-JWT into its components
-        let parts: ReturnType<typeof splitSdJwt>;
-        try {
-            parts = splitSdJwt(vpToken);
-        } catch {
-            throw new MalformedCredentialError('Failed to split SD-JWT structure');
-        }
-
-        // Step 2: Decode the issuer JWT header and payload
-        let header: Record<string, unknown>;
-        let payload: Record<string, unknown>;
-        try {
-            const jwt = decodeJwt(parts.jwt);
-            header = jwt.header;
-            payload = jwt.payload;
-        } catch {
-            throw new MalformedCredentialError('Failed to decode SD-JWT issuer JWT');
-        }
-
-        // Step 3: Extract issuer certificate from x5c header
-        const x5cArray = header['x5c'];
-        let issuerCertBytes = new Uint8Array();
-        let issuerInfo: IssuerInfo = { certificate: new Uint8Array(), country: '' };
-
-        if (Array.isArray(x5cArray) && x5cArray.length > 0 && typeof x5cArray[0] === 'string') {
-            try {
-                issuerCertBytes = extractCertificateFromX5c(x5cArray[0]);
-                // Attempt to derive the country from the certificate's issuer string
-                // In production, this would parse the X.509 subject, but for now we
-                // fall back to payload-level hints.
-                const issuerString = typeof payload['iss'] === 'string' ? payload['iss'] : '';
-                issuerInfo = {
-                    certificate: issuerCertBytes,
-                    country: extractCountryHint(issuerString),
-                };
-            } catch {
-                return invalidResult('Failed to extract issuer certificate from x5c');
-            }
-        }
-
-        // Step 4: Verify trust — certificate must be in the trusted set
-        if (options.trustedCertificates.length > 0) {
-            const isTrusted = options.trustedCertificates.some((trusted) => bytesEqual(trusted, issuerCertBytes));
-            if (!isTrusted) {
-                return invalidResult('Issuer certificate is not trusted');
-            }
-        } else if (issuerCertBytes.length === 0) {
-            return invalidResult('No issuer certificate found and no trusted certificates configured');
-        }
-
-        // Step 5: Check expiry
-        const exp = payload['exp'];
-        if (typeof exp === 'number') {
-            const nowSeconds = Math.floor(Date.now() / 1000);
-            if (exp < nowSeconds) {
-                return invalidResult('Credential has expired');
-            }
-        }
-
-        // Step 6: Validate nonce in key binding JWT
-        if (parts.kbJwt) {
-            try {
-                const kbDecoded = decodeJwt(parts.kbJwt);
-                const kbPayload = kbDecoded.payload as Record<string, unknown>;
-                const kbNonce = kbPayload['nonce'];
-                if (typeof kbNonce === 'string' && kbNonce !== options.nonce) {
-                    return invalidResult('Key binding JWT nonce does not match');
-                }
-            } catch {
-                return invalidResult('Failed to decode key binding JWT');
-            }
-        }
-
-        // Step 7: Decode disclosures and extract claims
-        let resolvedClaims: Record<string, unknown>;
-        try {
-            const decoded = await decodeSdJwt(vpToken, sha256Hasher);
-            resolvedClaims = await getClaims<Record<string, unknown>>(
-                decoded.jwt.payload,
-                decoded.disclosures,
-                sha256Hasher
-            );
-        } catch {
-            // If SD-JWT decoding fails (e.g., no _sd_alg), fall back to raw payload
-            resolvedClaims = payload;
-        }
-
-        const claims = mapToCredentialClaims(resolvedClaims);
-
-        return {
-            valid: true,
-            format: this.format,
-            claims,
-            issuer: issuerInfo,
-        };
-    }
-}
-
-/**
  * Best-effort extraction of a country code hint from an issuer URL or string.
- * For example, "https://issuer.de/..." would yield "DE".
  */
 function extractCountryHint(issuer: string): string {
     try {
@@ -262,7 +136,185 @@ function extractCountryHint(issuer: string): string {
             return tld;
         }
     } catch {
-        // Not a valid URL — ignore
+        // Not a valid URL
     }
     return '';
+}
+
+/**
+ * SD-JWT VC credential parser.
+ *
+ * Decodes and cryptographically validates SD-JWT Verifiable Credentials:
+ *   - JWT signature verification via x5c public key (jose)
+ *   - Issuer certificate trust chain verification
+ *   - Disclosure hash integrity verification
+ *   - Key binding JWT signature and sd_hash verification
+ *   - Selective disclosure claim extraction
+ */
+export class SdJwtParser implements ICredentialParser {
+    readonly format: CredentialFormat = 'sd-jwt-vc';
+
+    canParse(vpToken: unknown): boolean {
+        return typeof vpToken === 'string' && vpToken.includes('~');
+    }
+
+    async parse(vpToken: unknown, options: ParseOptions): Promise<PresentationResult> {
+        if (typeof vpToken !== 'string') {
+            throw new MalformedCredentialError('VP token must be a string');
+        }
+
+        const allowedAlgorithms = options.allowedAlgorithms ?? DEFAULT_ALLOWED_ALGORITHMS;
+
+        const invalidResult = (error: string): PresentationResult => ({
+            valid: false,
+            format: this.format,
+            claims: {},
+            issuer: { certificate: new Uint8Array(), country: '' },
+            error,
+        });
+
+        // Step 1: Split the SD-JWT into components
+        let parts: ReturnType<typeof splitSdJwt>;
+        try {
+            parts = splitSdJwt(vpToken);
+        } catch {
+            throw new MalformedCredentialError('Failed to split SD-JWT structure');
+        }
+
+        // Step 2: Peek at issuer JWT header (need alg and x5c before verification)
+        let header: ReturnType<typeof decodeProtectedHeader>;
+        try {
+            header = decodeProtectedHeader(parts.jwt);
+        } catch {
+            throw new MalformedCredentialError('Failed to decode SD-JWT issuer JWT header');
+        }
+
+        // Step 3: Check algorithm against allowlist
+        const alg = header.alg;
+        if (typeof alg !== 'string' || !allowedAlgorithms.includes(alg)) {
+            return invalidResult(`Unsupported algorithm: ${alg}`);
+        }
+
+        // Step 4: Extract public key from x5c certificate
+        const x5cArray = header.x5c;
+        if (!Array.isArray(x5cArray) || x5cArray.length === 0 || typeof x5cArray[0] !== 'string') {
+            throw new MalformedCredentialError('Missing or invalid x5c in JWT header');
+        }
+
+        let issuerKey: Awaited<ReturnType<typeof importX509>>;
+        let issuerCertBytes: Uint8Array;
+        try {
+            issuerKey = await importX509(derToPem(x5cArray[0]), alg);
+            issuerCertBytes = base64ToBytes(x5cArray[0]);
+        } catch (err) {
+            if (err instanceof MalformedCredentialError) throw err;
+            throw new MalformedCredentialError('Failed to import issuer certificate');
+        }
+
+        // Step 5: Verify issuer JWT signature (also validates exp, iat via jose)
+        let payload: Record<string, unknown>;
+        try {
+            const result = await jwtVerify(parts.jwt, issuerKey, { algorithms: allowedAlgorithms });
+            payload = result.payload as unknown as Record<string, unknown>;
+        } catch {
+            return invalidResult('Issuer JWT signature verification failed');
+        }
+
+        // Step 6: Trust check — certificate must be in the trusted set
+        const issuerString = typeof payload['iss'] === 'string' ? payload['iss'] : '';
+        const issuerInfo: IssuerInfo = {
+            certificate: issuerCertBytes,
+            country: extractCountryHint(issuerString),
+        };
+
+        if (options.trustedCertificates.length > 0) {
+            const isTrusted = options.trustedCertificates.some((trusted) => bytesEqual(trusted, issuerCertBytes));
+            if (!isTrusted) {
+                return invalidResult('Issuer certificate is not trusted');
+            }
+        }
+
+        // Step 7: Verify disclosure hashes against _sd array
+        const sdArray = payload['_sd'];
+        if (parts.disclosures.length > 0) {
+            if (!Array.isArray(sdArray) || sdArray.length === 0) {
+                return invalidResult('Disclosures present but no _sd array in issuer JWT');
+            }
+            for (const disclosure of parts.disclosures) {
+                const hashBytes = await sha256Hasher(disclosure, 'sha-256');
+                const hashB64url = bytesToBase64url(hashBytes);
+                if (!sdArray.includes(hashB64url)) {
+                    return invalidResult('Disclosure hash mismatch');
+                }
+            }
+        }
+
+        // Step 8: Verify key binding JWT (if present)
+        if (parts.kbJwt) {
+            // Extract holder public key from cnf claim
+            const cnf = payload['cnf'] as Record<string, unknown> | undefined;
+            if (!cnf || typeof cnf !== 'object' || !cnf['jwk']) {
+                throw new MalformedCredentialError('Missing cnf.jwk in issuer JWT for key binding');
+            }
+
+            let holderKey: Awaited<ReturnType<typeof importJWK>>;
+            try {
+                const kbHeader = decodeProtectedHeader(parts.kbJwt);
+                const kbAlg = kbHeader.alg;
+                if (typeof kbAlg !== 'string' || !allowedAlgorithms.includes(kbAlg)) {
+                    return invalidResult(`Unsupported KB-JWT algorithm: ${kbAlg}`);
+                }
+                holderKey = await importJWK(cnf['jwk'] as Record<string, unknown>, kbAlg);
+            } catch (err) {
+                if (err instanceof MalformedCredentialError) throw err;
+                throw new MalformedCredentialError('Failed to import holder key from cnf.jwk');
+            }
+
+            // Verify KB-JWT signature
+            let kbPayload: Record<string, unknown>;
+            try {
+                const kbResult = await jwtVerify(parts.kbJwt, holderKey, {
+                    algorithms: allowedAlgorithms,
+                    ...(options.audience ? { audience: options.audience } : {}),
+                });
+                kbPayload = kbResult.payload as unknown as Record<string, unknown>;
+            } catch {
+                return invalidResult('Key binding JWT signature verification failed');
+            }
+
+            // Validate nonce — must be present and match when KB-JWT is used
+            if (kbPayload['nonce'] !== options.nonce) {
+                return invalidResult('Key binding JWT nonce does not match');
+            }
+
+            // Verify sd_hash — hash of the SD-JWT content before the KB-JWT
+            const disclosurePart = parts.disclosures.length > 0 ? parts.disclosures.join('~') + '~' : '';
+            const sdJwtForHash = parts.jwt + '~' + disclosurePart;
+            const sdHashBytes = await sha256Hasher(sdJwtForHash, 'sha-256');
+            const expectedSdHash = bytesToBase64url(sdHashBytes);
+            if (kbPayload['sd_hash'] !== expectedSdHash) {
+                return invalidResult('Key binding JWT sd_hash does not match');
+            }
+        }
+
+        // Step 9: Decode disclosures and extract claims
+        let resolvedClaims: Record<string, unknown>;
+        try {
+            const decoded = await decodeSdJwt(vpToken, sha256Hasher);
+            resolvedClaims = await getClaims<Record<string, unknown>>(
+                decoded.jwt.payload,
+                decoded.disclosures,
+                sha256Hasher
+            );
+        } catch {
+            throw new MalformedCredentialError('Failed to decode SD-JWT disclosures');
+        }
+
+        return {
+            valid: true,
+            format: this.format,
+            claims: mapToCredentialClaims(resolvedClaims),
+            issuer: issuerInfo,
+        };
+    }
 }
