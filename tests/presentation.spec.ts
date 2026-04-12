@@ -1,16 +1,38 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 
+import type { ParseOptions } from '../src/parsers/parser.interface.js';
 import { parsePresentation } from '../src/presentation.js';
 
+import {
+    generateTestKeyMaterial,
+    buildSignedSdJwt,
+    type TestKeyMaterial,
+    type BuildSdJwtResult,
+} from './fixtures/crypto-helpers.js';
 import { VALID_MDOC, FAKE_MDOC_CERT } from './fixtures/mdoc-samples.js';
-import { VALID_SD_JWT, VALID_SD_JWT_NONCE, FAKE_CERT_UINT8 } from './fixtures/sd-jwt-samples.js';
+
+let issuerKey: TestKeyMaterial;
+let validSdJwt: BuildSdJwtResult;
+let validNonce: string;
+
+beforeAll(async () => {
+    issuerKey = await generateTestKeyMaterial();
+    validNonce = crypto.randomUUID();
+
+    validSdJwt = await buildSignedSdJwt({
+        issuerKey,
+        claims: { vct: 'urn:eu.europa.ec.eudi:pid:1' },
+        disclosureClaims: [['age_over_18', true]],
+    });
+});
 
 describe('parsePresentation', () => {
     it('auto-detects and parses SD-JWT format', async () => {
-        const result = await parsePresentation(VALID_SD_JWT, {
-            trustedCertificates: [FAKE_CERT_UINT8],
-            nonce: VALID_SD_JWT_NONCE,
-        });
+        const options: ParseOptions = {
+            trustedCertificates: [issuerKey.certDerBytes],
+            nonce: validNonce,
+        };
+        const result = await parsePresentation(validSdJwt.sdJwt, options);
         expect(result.format).toBe('sd-jwt-vc');
         expect(result.valid).toBe(true);
     });
