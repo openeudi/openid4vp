@@ -46,6 +46,10 @@
     "typescript": "^5.8.3",
     "vitest": "^4.0.18"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openeudi/openid4vp"
+  },
   "keywords": [
     "openid4vp",
     "eudi",
