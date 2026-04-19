@@ -124,6 +124,7 @@ class MyCustomParser implements ICredentialParser {
 | --------------------- | -------------- | ------------------------------------ |
 | `trustedCertificates` | `Uint8Array[]` | Issuer certificates to trust         |
 | `nonce`               | `string`       | Expected nonce for replay protection |
+| `skipTrustCheck`      | `boolean?`     | Explicit opt-in to skip the trust check. When omitted or `false`, `trustedCertificates` must be non-empty — otherwise parsing throws `MalformedCredentialError`. Use `true` for demo/mock environments. |
 
 ### PresentationResult
 

@@ -49,6 +49,7 @@ describe('parsePresentation', () => {
     it('returns invalid for unrecognized format', async () => {
         const result = await parsePresentation(12345, {
             trustedCertificates: [],
+            skipTrustCheck: true,
             nonce: 'test',
         });
         expect(result.valid).toBe(false);

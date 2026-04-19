@@ -314,6 +314,42 @@ describe('SdJwtParser', () => {
     });
 
     // ------------------------------------------------------------------
+    // parse — trust check opt-out
+    // ------------------------------------------------------------------
+
+    describe('parse — trust check opt-out', () => {
+        it('throws MalformedCredentialError when trustedCertificates is empty and skipTrustCheck is not set', async () => {
+            const result = await buildSignedSdJwt({
+                issuerKey,
+                holderKey,
+                claims: { vct: 'urn:eu.europa.ec.eudi:pid:1' },
+                disclosureClaims: [['age_over_18', true]],
+                nonce: validNonce,
+                audience: validAudience,
+            });
+            await expect(parser.parse(result.sdJwt, buildOptions({ trustedCertificates: [] }))).rejects.toThrow(
+                MalformedCredentialError
+            );
+        });
+
+        it('accepts any issuer cert when skipTrustCheck: true', async () => {
+            const untrusted = await buildSignedSdJwt({
+                issuerKey: altKey,
+                holderKey,
+                claims: { vct: 'urn:eu.europa.ec.eudi:pid:1' },
+                disclosureClaims: [['age_over_18', true]],
+                nonce: validNonce,
+                audience: validAudience,
+            });
+            const r = await parser.parse(
+                untrusted.sdJwt,
+                buildOptions({ trustedCertificates: [], skipTrustCheck: true })
+            );
+            expect(r.valid).toBe(true);
+        });
+    });
+
+    // ------------------------------------------------------------------
     // parse — key binding JWT verification
     // ------------------------------------------------------------------
 
