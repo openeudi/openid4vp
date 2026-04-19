@@ -157,6 +157,31 @@ try {
 }
 ```
 
+## Scope and limitations
+
+This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDOC credentials.
+
+**What is implemented (v0.2.x):**
+
+- SD-JWT VC: full cryptographic verification (issuer JWT signature via x5c, disclosure hashes, key binding JWT signature + sd_hash, nonce check)
+- mDOC / ISO 18013-5 *mso_mdoc* format: CBOR decoding and claim extraction
+- Algorithm allowlist (ES256/384/512 — ECDSA only per EUDI policy)
+- Authorization request builder
+- Certificate trust check via byte-equality against a caller-supplied trusted set
+
+**What is NOT yet implemented** (planned for follow-up releases — do not assume compliance in production until present):
+
+- mDOC / COSE_Sign1 cryptographic signature verification (design ready, implementation pending)
+- X.509 certificate chain building and validation beyond leaf-byte-equality
+- EU List of Trusted Lists (LOTL) / ETSI TL resolution
+- Certificate revocation (CRL, OCSP)
+- DCQL query / credential matching — see [@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql)
+- OpenID4VP HAIP (High Assurance Interoperability Profile) constraint validation
+- OpenID Foundation conformance test suite integration
+- SIOPv2 (Self-Issued OpenID Provider) identity flows
+
+EUDI Architecture Reference Framework (ARF) alignment: tracks OpenID4VP 1.0 final. HAIP and ARF 1.4+ profile compliance will be added before a stable 1.0.
+
 ## Related packages
 
 - **[@openeudi/core](https://www.npmjs.com/package/@openeudi/core)** -- Framework-agnostic EUDI Wallet verification protocol engine with session management and QR code generation.
