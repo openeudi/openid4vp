@@ -268,13 +268,18 @@ export class MdocParser implements ICredentialParser {
         };
 
         // Step 4: Verify trust -- certificate must be in the trusted set
-        if (options.trustedCertificates.length > 0) {
+        // unless the caller explicitly opts out via skipTrustCheck.
+        if (options.trustedCertificates.length === 0) {
+            if (options.skipTrustCheck !== true) {
+                throw new MalformedCredentialError(
+                    'trustedCertificates must not be empty unless skipTrustCheck is true'
+                );
+            }
+        } else {
             const isTrusted = options.trustedCertificates.some((trusted) => bytesEqual(trusted, issuerCertBytes));
             if (!isTrusted) {
                 return invalidResult('Issuer certificate is not trusted');
             }
-        } else if (issuerCertBytes.length === 0) {
-            return invalidResult('No issuer certificate found and no trusted certificates configured');
         }
 
         // Step 5: Check validity period

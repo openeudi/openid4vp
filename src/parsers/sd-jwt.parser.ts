@@ -221,13 +221,20 @@ export class SdJwtParser implements ICredentialParser {
         }
 
         // Step 6: Trust check — certificate must be in the trusted set
+        // unless the caller explicitly opts out via skipTrustCheck.
         const issuerString = typeof payload['iss'] === 'string' ? payload['iss'] : '';
         const issuerInfo: IssuerInfo = {
             certificate: issuerCertBytes,
             country: extractCountryHint(issuerString),
         };
 
-        if (options.trustedCertificates.length > 0) {
+        if (options.trustedCertificates.length === 0) {
+            if (options.skipTrustCheck !== true) {
+                throw new MalformedCredentialError(
+                    'trustedCertificates must not be empty unless skipTrustCheck is true'
+                );
+            }
+        } else {
             const isTrusted = options.trustedCertificates.some((trusted) => bytesEqual(trusted, issuerCertBytes));
             if (!isTrusted) {
                 return invalidResult('Issuer certificate is not trusted');

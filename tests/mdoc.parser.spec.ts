@@ -127,4 +127,25 @@ describe('MdocParser', () => {
             await expect(parser.parse('string-input', buildOptions())).rejects.toThrow(MalformedCredentialError);
         });
     });
+
+    // ------------------------------------------------------------------
+    // parse -- trust check opt-out
+    // ------------------------------------------------------------------
+
+    describe('parse — trust check opt-out', () => {
+        it('throws MalformedCredentialError when trustedCertificates is empty and skipTrustCheck is not set', async () => {
+            await expect(parser.parse(VALID_MDOC, buildOptions({ trustedCertificates: [] }))).rejects.toThrow(
+                MalformedCredentialError
+            );
+        });
+
+        it('accepts any device cert when skipTrustCheck: true', async () => {
+            const result = await parser.parse(
+                VALID_MDOC,
+                buildOptions({ trustedCertificates: [], skipTrustCheck: true })
+            );
+
+            expect(result.valid).toBe(true);
+        });
+    });
 });
