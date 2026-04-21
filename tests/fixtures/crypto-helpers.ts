@@ -165,6 +165,16 @@ export async function buildSignedSdJwt(options: BuildSdJwtOptions): Promise<Buil
 }
 
 // ----------------------------------------------------------------
+// PEM helpers
+// ----------------------------------------------------------------
+
+/** Convert a base64-encoded DER certificate to PEM format. */
+export function derToPem(base64Der: string): string {
+    const lines = base64Der.match(/.{1,64}/g) || [];
+    return `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----`;
+}
+
+// ----------------------------------------------------------------
 // Tampering helpers (for negative test cases)
 // ----------------------------------------------------------------
 
@@ -175,11 +185,6 @@ export function tamperJwtPayload(jwt: string, changes: Record<string, unknown>):
     Object.assign(decoded, changes);
     const tampered = Buffer.from(JSON.stringify(decoded)).toString('base64url');
     return `${header}.${tampered}.${signature}`;
-}
-
-/** Replace a disclosure string in an SD-JWT. */
-export function replaceDisclosure(sdJwt: string, oldDisclosure: string, newDisclosure: string): string {
-    return sdJwt.replace(oldDisclosure, newDisclosure);
 }
 
 /** Build a structurally valid but cryptographically unsigned JWT (fake signature). */

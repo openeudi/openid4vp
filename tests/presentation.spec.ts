@@ -9,7 +9,7 @@ import {
     type TestKeyMaterial,
     type BuildSdJwtResult,
 } from './fixtures/crypto-helpers.js';
-import { VALID_MDOC, FAKE_MDOC_CERT } from './fixtures/mdoc-samples.js';
+import { buildSignedMdoc } from './fixtures/mdoc-helpers.js';
 
 let issuerKey: TestKeyMaterial;
 let validSdJwt: BuildSdJwtResult;
@@ -38,9 +38,15 @@ describe('parsePresentation', () => {
     });
 
     it('auto-detects and parses mDOC format', async () => {
-        const result = await parsePresentation(VALID_MDOC, {
-            trustedCertificates: [FAKE_MDOC_CERT],
-            nonce: 'test-nonce-456',
+        const { mdocBytes } = await buildSignedMdoc({
+            issuerKey,
+            namespaces: {
+                'eu.europa.ec.eudi.pid.1': { age_over_18: true },
+            },
+        });
+        const result = await parsePresentation(mdocBytes, {
+            trustedCertificates: [issuerKey.certDerBytes],
+            nonce: 'n',
         });
         expect(result.format).toBe('mdoc');
         expect(result.valid).toBe(true);
