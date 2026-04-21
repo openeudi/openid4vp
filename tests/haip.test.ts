@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { buildHaipQuery, HAIP_DOCTYPE_NAMESPACES } from '../src/haip.js';
+import {
+    buildHaipQuery,
+    HAIP_DOCTYPE_NAMESPACES,
+    validateHaipQuery,
+    isHaipQuery,
+} from '../src/haip.js';
 import { HaipValidationError } from '../src/errors.js';
+import type { DcqlQuery } from '@openeudi/dcql';
 
 describe('buildHaipQuery', () => {
     it('produces a DCQL query with flat claim paths for sd-jwt', () => {
@@ -137,5 +143,171 @@ describe('buildHaipQuery', () => {
     it('exports HAIP_DOCTYPE_NAMESPACES with the known EUDI mappings', () => {
         expect(HAIP_DOCTYPE_NAMESPACES['org.iso.18013.5.1.mDL']).toBe('org.iso.18013.5.1');
         expect(HAIP_DOCTYPE_NAMESPACES['eu.europa.ec.eudi.pid.1']).toBe('eu.europa.ec.eudi.pid.1');
+    });
+});
+
+describe('validateHaipQuery', () => {
+    const validSdJwtQuery: DcqlQuery = {
+        credentials: [
+            {
+                id: 'pid',
+                format: 'dc+sd-jwt',
+                meta: { vct_values: ['https://pid.eu/v1'] },
+                claims: [{ path: ['age_over_18'] }],
+            },
+        ],
+    };
+
+    const validMdocQuery: DcqlQuery = {
+        credentials: [
+            {
+                id: 'mdl',
+                format: 'mso_mdoc',
+                meta: { doctype_value: 'org.iso.18013.5.1.mDL' },
+                claims: [{ path: ['org.iso.18013.5.1', 'age_over_18'] }],
+            },
+        ],
+    };
+
+    it('passes on a valid single-sd-jwt query', () => {
+        expect(() => validateHaipQuery(validSdJwtQuery)).not.toThrow();
+    });
+
+    it('passes on a valid single-mdoc query', () => {
+        expect(() => validateHaipQuery(validMdocQuery)).not.toThrow();
+    });
+
+    it('throws EMPTY_QUERY when credentials is empty', () => {
+        expect(() => validateHaipQuery({ credentials: [] })).toThrow(
+            expect.objectContaining({ code: 'EMPTY_QUERY' }),
+        );
+    });
+
+    it('throws UNSUPPORTED_FORMAT for non-HAIP formats like jwt_vc_json', () => {
+        expect(() =>
+            validateHaipQuery({
+                credentials: [
+                    {
+                        id: 'x',
+                        format: 'jwt_vc_json',
+                        claims: [{ path: ['a'] }],
+                    },
+                ],
+            }),
+        ).toThrow(expect.objectContaining({ code: 'UNSUPPORTED_FORMAT', credentialId: 'x' }));
+    });
+
+    it('throws MISSING_SDJWT_META when dc+sd-jwt lacks vct_values', () => {
+        expect(() =>
+            validateHaipQuery({
+                credentials: [
+                    {
+                        id: 'pid',
+                        format: 'dc+sd-jwt',
+                        claims: [{ path: ['a'] }],
+                    },
+                ],
+            }),
+        ).toThrow(expect.objectContaining({ code: 'MISSING_SDJWT_META', credentialId: 'pid' }));
+    });
+
+    it('throws MISSING_MDOC_META when mso_mdoc lacks doctype_value', () => {
+        expect(() =>
+            validateHaipQuery({
+                credentials: [
+                    {
+                        id: 'mdl',
+                        format: 'mso_mdoc',
+                        claims: [{ path: ['a', 'b'] }],
+                    },
+                ],
+            }),
+        ).toThrow(expect.objectContaining({ code: 'MISSING_MDOC_META', credentialId: 'mdl' }));
+    });
+
+    it('throws NO_CLAIMS when a credential has no claims', () => {
+        expect(() =>
+            validateHaipQuery({
+                credentials: [
+                    {
+                        id: 'pid',
+                        format: 'dc+sd-jwt',
+                        meta: { vct_values: ['v'] },
+                    },
+                ],
+            }),
+        ).toThrow(expect.objectContaining({ code: 'NO_CLAIMS', credentialId: 'pid' }));
+    });
+
+    it('throws CLAIM_SETS_DISALLOWED when claim_sets is present', () => {
+        expect(() =>
+            validateHaipQuery({
+                credentials: [
+                    {
+                        id: 'pid',
+                        format: 'dc+sd-jwt',
+                        meta: { vct_values: ['v'] },
+                        claims: [{ id: 'a', path: ['a'] }],
+                        claim_sets: [['a']],
+                    },
+                ],
+            }),
+        ).toThrow(
+            expect.objectContaining({ code: 'CLAIM_SETS_DISALLOWED', credentialId: 'pid' }),
+        );
+    });
+
+    it('throws CREDENTIAL_SETS_DISALLOWED when top-level credential_sets is present', () => {
+        expect(() =>
+            validateHaipQuery({
+                ...validSdJwtQuery,
+                credential_sets: [{ options: [['pid']] }],
+            }),
+        ).toThrow(expect.objectContaining({ code: 'CREDENTIAL_SETS_DISALLOWED' }));
+    });
+
+    it('sets credentialId for per-credential violations and leaves it unset for top-level ones', () => {
+        try {
+            validateHaipQuery({ credentials: [] });
+        } catch (e) {
+            expect((e as HaipValidationError).credentialId).toBeUndefined();
+        }
+
+        try {
+            validateHaipQuery({
+                credentials: [{ id: 'x', format: 'jwt_vc_json', claims: [{ path: ['a'] }] }],
+            });
+        } catch (e) {
+            expect((e as HaipValidationError).credentialId).toBe('x');
+        }
+    });
+});
+
+describe('isHaipQuery', () => {
+    it('returns true for a valid query', () => {
+        expect(
+            isHaipQuery({
+                credentials: [
+                    {
+                        id: 'pid',
+                        format: 'dc+sd-jwt',
+                        meta: { vct_values: ['v'] },
+                        claims: [{ path: ['a'] }],
+                    },
+                ],
+            }),
+        ).toBe(true);
+    });
+
+    it('returns false for a query with jwt_vc_json format', () => {
+        expect(
+            isHaipQuery({
+                credentials: [{ id: 'x', format: 'jwt_vc_json', claims: [{ path: ['a'] }] }],
+            }),
+        ).toBe(false);
+    });
+
+    it('returns false for an empty credentials query', () => {
+        expect(isHaipQuery({ credentials: [] })).toBe(false);
     });
 });
