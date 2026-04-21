@@ -82,16 +82,18 @@ describe('verifyPresentation — happy paths', () => {
 });
 
 describe('verifyPresentation — mismatch paths (valid: false)', () => {
-    // NOTE on reasons: @openeudi/dcql@0.1.1 `matchQuery` wraps every per-credential
-    // rejection in an outer `no_credential_found` entry — the specific cause
-    // (format_mismatch / missing_claims / trusted_authority_mismatch / etc.) is
-    // *not* surfaced in `match.unmatched[*].reason`. Claim-path rejections leave
-    // a JSON-pointer in `detail`; category rejections like format and
-    // trusted_authority leave `detail` undefined. We assert what the library
-    // actually exposes rather than the internal precedence documented in
-    // `UnmatchedReason`.
+    // NOTE on reasons: @openeudi/dcql@0.1.1 `matchQuery` collapses every
+    // per-credential rejection to `no_credential_found` at its public API —
+    // the internal `matchCredentialQuery` knows the specific cause
+    // (format_mismatch / missing_claims / trusted_authority_mismatch / etc.)
+    // but it is not surfaced. `verifyPresentation` now post-processes
+    // `match.unmatched` via a local classifier (`refineUnmatched` in
+    // `src/verify.ts`) that replicates dcql's internal classification logic
+    // against the decoded credential so callers see specific
+    // `UnmatchedReason` values. This workaround can be removed once
+    // @openeudi/dcql surfaces specific reasons at the outer API.
 
-    it('reports no_credential_found for format_mismatch (SD-JWT vs mso_mdoc query)', async () => {
+    it('reports format_mismatch (SD-JWT vs mso_mdoc query)', async () => {
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, mdlMdocQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
@@ -102,16 +104,13 @@ describe('verifyPresentation — mismatch paths (valid: false)', () => {
         expect(result.match.satisfied).toBe(false);
         expect(result.match.matches).toHaveLength(0);
         expect(result.match.unmatched).toHaveLength(1);
-        // Format mismatch: library reports no_credential_found with no detail
-        // (matchCredentialQuery returns { reason: 'format_mismatch' } without
-        // a `detail`, so lastDetail stays undefined in the outer loop).
         expect(result.match.unmatched[0]).toEqual({
             queryId: 'mdl',
-            reason: 'no_credential_found',
+            reason: 'format_mismatch',
         });
     });
 
-    it('reports no_credential_found with claim-path detail for missing_claims', async () => {
+    it('reports missing_claims with claim-path detail', async () => {
         const missingClaimQuery: DcqlQuery = {
             credentials: [
                 {
@@ -132,21 +131,16 @@ describe('verifyPresentation — mismatch paths (valid: false)', () => {
         expect(result.submission).toBeNull();
         expect(result.match.satisfied).toBe(false);
         expect(result.match.unmatched).toHaveLength(1);
-        expect(result.match.unmatched[0].queryId).toBe('pid');
-        expect(result.match.unmatched[0].reason).toBe('no_credential_found');
-        // Claim-path rejections propagate the JSON pointer via `detail`.
-        expect(result.match.unmatched[0].detail).toBe(
-            '/definitely_not_present_in_fixture_xyz'
-        );
+        expect(result.match.unmatched[0]).toMatchObject({
+            reason: 'missing_claims',
+            detail: '/definitely_not_present_in_fixture_xyz',
+        });
     });
 
-    it('reports no_credential_found for trusted_authority_mismatch', async () => {
+    it('reports trusted_authority_mismatch', async () => {
         // 0.4.0 limitation: DecodedCredential.trusted_authority_ids is always
         // empty (parsers do not yet extract trusted-list identifiers), so any
-        // query with a non-empty trusted_authorities clause fails this check
-        // inside matchCredentialQuery. The outer matchQuery wraps that as
-        // no_credential_found with no detail (trusted_authority_mismatch does
-        // not populate a `detail` field).
+        // query with a non-empty trusted_authorities clause fails this check.
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, pidWithTrustedAuthorities, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
@@ -158,7 +152,7 @@ describe('verifyPresentation — mismatch paths (valid: false)', () => {
         expect(result.match.unmatched).toHaveLength(1);
         expect(result.match.unmatched[0]).toEqual({
             queryId: 'pid',
-            reason: 'no_credential_found',
+            reason: 'trusted_authority_mismatch',
         });
     });
 });
