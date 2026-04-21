@@ -35,13 +35,16 @@ describe('parsePresentation', () => {
         const result = await parsePresentation(validSdJwt.sdJwt, options);
         expect(result.format).toBe('sd-jwt-vc');
         expect(result.valid).toBe(true);
+        // 0.4.0: parsers now expose `vct` for sd-jwt-vc (used by DCQL matcher).
+        expect(result.vct).toBe('urn:eu.europa.ec.eudi:pid:1');
     });
 
     it('auto-detects and parses mDOC format', async () => {
+        const mdocNamespace = 'eu.europa.ec.eudi.pid.1';
         const { mdocBytes } = await buildSignedMdoc({
             issuerKey,
             namespaces: {
-                'eu.europa.ec.eudi.pid.1': { age_over_18: true },
+                [mdocNamespace]: { age_over_18: true },
             },
         });
         const result = await parsePresentation(mdocBytes, {
@@ -50,6 +53,15 @@ describe('parsePresentation', () => {
         });
         expect(result.format).toBe('mdoc');
         expect(result.valid).toBe(true);
+        // 0.4.0: parsers now expose `docType` and `namespacedClaims` for mdoc
+        // (used by DCQL matcher with path shape ['namespace', 'attribute']).
+        expect(typeof result.docType).toBe('string');
+        expect(result.docType?.length ?? 0).toBeGreaterThan(0);
+        expect(result.namespacedClaims).toBeDefined();
+        expect(result.namespacedClaims).toHaveProperty(mdocNamespace);
+        expect(result.namespacedClaims?.[mdocNamespace]).toMatchObject({
+            age_over_18: true,
+        });
     });
 
     it('returns invalid for unrecognized format', async () => {

@@ -72,13 +72,19 @@ function extractRawItemBytes(item: unknown): Uint8Array {
 }
 
 /**
- * Maps raw IssuerSignedItem bytes (from all namespaces) to CredentialClaims.
+ * Maps raw IssuerSignedItem bytes (from all namespaces) to CredentialClaims
+ * plus a namespace-grouped structure (for DCQL path addressing).
  *
  * Handles all three tag-24 shapes (Tag(24,bytes), EmbeddedCbor-like object, plain bytes).
  */
-function mapRawToClaims(nameSpaces: Map<string, Uint8Array[]>): CredentialClaims {
-    const out: CredentialClaims = {};
-    for (const items of nameSpaces.values()) {
+function mapRawToClaims(nameSpaces: Map<string, Uint8Array[]>): {
+    flat: CredentialClaims;
+    namespaced: Record<string, Record<string, unknown>>;
+} {
+    const flat: CredentialClaims = {};
+    const namespaced: Record<string, Record<string, unknown>> = {};
+    for (const [ns, items] of nameSpaces.entries()) {
+        const nsBucket: Record<string, unknown> = namespaced[ns] ?? {};
         for (const itemBytes of items) {
             let decoded: unknown;
             try {
@@ -114,12 +120,14 @@ function mapRawToClaims(nameSpaces: Map<string, Uint8Array[]>): CredentialClaims
                 const id = (inner as Map<string, unknown>).get('elementIdentifier');
                 const val = (inner as Map<string, unknown>).get('elementValue');
                 if (typeof id === 'string') {
-                    (out as Record<string, unknown>)[id] = val;
+                    (flat as Record<string, unknown>)[id] = val;
+                    nsBucket[id] = val;
                 }
             }
         }
+        namespaced[ns] = nsBucket;
     }
-    return out;
+    return { flat, namespaced };
 }
 
 /**
@@ -290,12 +298,19 @@ export class MdocParser implements ICredentialParser {
         await verifyAllDigests(nameSpaces, mso);
 
         // Step 8: Map to claims
-        const claims = mapRawToClaims(nameSpaces);
+        const { flat: claims, namespaced: namespacedClaims } = mapRawToClaims(nameSpaces);
 
         const issuer: IssuerInfo = {
             certificate: issuerCertBytes,
             country: extractCountryHintFromCert(issuerCertBytes),
         };
-        return { valid: true, format: this.format, claims, issuer };
+        return {
+            valid: true,
+            format: this.format,
+            claims,
+            issuer,
+            docType: mso.docType,
+            namespacedClaims,
+        };
     }
 }

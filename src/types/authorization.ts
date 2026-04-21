@@ -1,17 +1,16 @@
-import type { CredentialFormat } from './presentation.js';
+import type { DcqlQuery } from '@openeudi/dcql';
 
 export interface AuthorizationRequestInput {
-    requestedAttributes: string[];
-    acceptedFormats: CredentialFormat[];
+    clientId: string;
     responseUri: string;
     nonce: string;
-    clientId: string;
     state?: string;
+    responseMode?: 'direct_post' | 'direct_post.jwt';
 }
 
 export interface AuthorizationRequest {
     uri: string;
-    presentationDefinition: object;
+    dcqlQuery: DcqlQuery;
     nonce: string;
     state: string;
 }

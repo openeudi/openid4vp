@@ -1,6 +1,6 @@
 # @openeudi/openid4vp
 
-OpenID4VP credential parsing and validation for EUDI Wallets. Supports SD-JWT VC and mDOC credential formats with issuer trust verification, expiry checking, and selective disclosure claim extraction.
+OpenID4VP credential parsing and validation for EUDI Wallets. Supports SD-JWT VC and mDOC credential formats with issuer trust verification, expiry checking, selective disclosure claim extraction, and DCQL-based credential matching.
 
 ## Install
 
@@ -33,18 +33,26 @@ if (result.valid) {
 
 ## Authorization requests
 
-Build an OpenID4VP authorization request URI to send to an EUDI Wallet:
+Build an OpenID4VP authorization request URI to send to an EUDI Wallet. The request carries a DCQL query ([Digital Credentials Query Language](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#name-digital-credentials-query-l)) describing the credentials you want:
 
 ```ts
-import { createAuthorizationRequest } from "@openeudi/openid4vp";
+import { buildHaipQuery, createAuthorizationRequest } from "@openeudi/openid4vp";
 
-const request = createAuthorizationRequest({
-  requestedAttributes: ["age_over_18", "resident_country"],
-  acceptedFormats: ["sd-jwt-vc", "mdoc"],
-  responseUri: "https://your-app.com/api/verify/callback",
-  clientId: "your-client-id",
-  nonce: crypto.randomUUID(),
+const query = buildHaipQuery({
+  credentialId: "pid",
+  format: "dc+sd-jwt",
+  vctValues: ["https://pid.eu/v1"],
+  claims: ["age_over_18"],
 });
+
+const request = createAuthorizationRequest(
+  {
+    clientId: "x509_san_dns:verifier.example.com",
+    responseUri: "https://verifier.example.com/cb",
+    nonce: crypto.randomUUID(),
+  },
+  query,
+);
 
 console.log(request.uri);
 // openid4vp://authorize?response_type=vp_token&response_mode=direct_post&...
@@ -52,20 +60,78 @@ console.log(request.uri);
 console.log(request.state);
 // auto-generated UUID unless you provide one
 
-console.log(request.presentationDefinition);
-// OID4VP presentation definition with input descriptors
+console.log(request.dcqlQuery);
+// the DCQL query embedded in the request
 ```
 
 ### AuthorizationRequestInput
 
-| Field                 | Type                 | Required | Description                                    |
-| --------------------- | -------------------- | -------- | ---------------------------------------------- |
-| `requestedAttributes` | `string[]`           | Yes      | Claims to request (e.g. `age_over_18`)         |
-| `acceptedFormats`     | `CredentialFormat[]` | Yes      | `'sd-jwt-vc'` and/or `'mdoc'`                  |
-| `responseUri`         | `string`             | Yes      | Callback URL for the wallet response           |
-| `clientId`            | `string`             | Yes      | Your verifier client identifier                |
-| `nonce`               | `string`             | Yes      | Challenge nonce for replay protection          |
-| `state`               | `string`             | No       | Session state (auto-generated UUID if omitted) |
+| Field          | Type     | Required | Description                                    |
+| -------------- | -------- | -------- | ---------------------------------------------- |
+| `clientId`     | `string` | Yes      | Your verifier client identifier                |
+| `responseUri`  | `string` | Yes      | Callback URL for the wallet response           |
+| `nonce`        | `string` | Yes      | Challenge nonce for replay protection          |
+| `state`        | `string` | No       | Session state (auto-generated UUID if omitted) |
+
+The second argument is a DCQL `Query` object. Use `buildHaipQuery` (below) or hand-construct one and validate it via `validateHaipQuery`.
+
+## HAIP helpers
+
+For the High Assurance Interoperability Profile (HAIP) commonly used by EUDI Wallets:
+
+```ts
+import { buildHaipQuery, validateHaipQuery } from "@openeudi/openid4vp";
+
+// Build a HAIP-compliant DCQL query:
+const query = buildHaipQuery({
+  credentialId: "pid",
+  format: "dc+sd-jwt",
+  vctValues: ["https://pid.eu/v1"],
+  claims: ["age_over_18", "given_name"],
+});
+
+// Or validate a hand-built DCQL query:
+validateHaipQuery(query); // throws HaipValidationError on violation
+```
+
+Supported formats: `dc+sd-jwt` and `mso_mdoc`. Other formats (e.g., `jwt_vc_json`) will be rejected by the validator.
+
+Known EUDI doctypes auto-namespace their claim paths (e.g., `org.iso.18013.5.1.mDL` → claims under `org.iso.18013.5.1`). Unknown doctypes use the full doctype string as the namespace.
+
+## Verifying presentations against a query
+
+Use `verifyPresentation` to combine crypto/structural verification with DCQL matching in a single call:
+
+```ts
+import { verifyPresentation } from "@openeudi/openid4vp";
+
+const result = await verifyPresentation(vpToken, query, {
+  nonce,
+  trustedCertificates,
+});
+
+if (result.valid) {
+  console.log("matched claims:", result.match.matches[0].extractedClaims);
+  console.log("submission:", result.submission);
+} else {
+  console.warn("mismatch reasons:", result.match.unmatched);
+  // each entry: { queryId, reason, detail? }
+  // reason ∈ { format_mismatch, vct_mismatch, doctype_mismatch, missing_claims, trusted_authority_mismatch, no_credential_found }
+}
+```
+
+Mismatches return `valid: false` — they do not throw. Only crypto/structural failures (malformed VP tokens, invalid signatures, expired credentials) and malformed DCQL queries throw exceptions.
+
+### ParseOptions / VerifyOptions
+
+Both `parsePresentation` and `verifyPresentation` accept:
+
+- `nonce` (required) — the nonce bound into the VP token at creation time.
+- `trustedCertificates` (required) — the set of trusted issuer certificates for crypto verification.
+- `audience?` — expected audience.
+- `allowedAlgorithms?` — restrict signature algorithms.
+- `skipTrustCheck?` — skip trust-list checks (dev/test only).
+- `expectedDocType?` — for mDOC verification.
 
 ## Supported formats
 
@@ -118,14 +184,6 @@ class MyCustomParser implements ICredentialParser {
 }
 ```
 
-### ParseOptions
-
-| Field                 | Type           | Description                          |
-| --------------------- | -------------- | ------------------------------------ |
-| `trustedCertificates` | `Uint8Array[]` | Issuer certificates to trust         |
-| `nonce`               | `string`       | Expected nonce for replay protection |
-| `skipTrustCheck`      | `boolean?`     | Explicit opt-in to skip the trust check. When omitted or `false`, `trustedCertificates` must be non-empty — otherwise parsing throws `MalformedCredentialError`. Use `true` for demo/mock environments. |
-
 ### PresentationResult
 
 | Field    | Type               | Description                                |
@@ -145,6 +203,7 @@ class MyCustomParser implements ICredentialParser {
 | `UnsupportedFormatError`   | Unsupported credential format: `{format}` | Token format is not SD-JWT VC or mDOC              |
 | `MalformedCredentialError` | Credential structure is malformed         | Token cannot be decoded or is structurally invalid |
 | `NonceValidationError`     | Nonce does not match expected value       | Key binding JWT nonce does not match               |
+| `HaipValidationError`      | HAIP query constraint violated            | DCQL query fails `validateHaipQuery`               |
 
 ```ts
 import { MalformedCredentialError, ExpiredCredentialError } from "@openeudi/openid4vp";
@@ -162,7 +221,7 @@ try {
 
 This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDOC credentials.
 
-**What is implemented (v0.3.x):**
+**What is implemented (v0.4.x):**
 
 - SD-JWT VC: full cryptographic verification (issuer JWT signature via x5c, disclosure hashes, key binding JWT signature + sd_hash, nonce check)
 - mDOC / ISO 18013-5 *mso_mdoc* format: CBOR decoding and claim extraction
@@ -171,7 +230,10 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 - mDOC IssuerSignedItem digest verification
 - `expectedDocType` ParseOptions to lock the credential type
 - Algorithm allowlist (ES256/384/512 — ECDSA only per EUDI policy)
-- Authorization request builder
+- Authorization request builder with DCQL query
+- DCQL query matching via [@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql)
+- HAIP query build/validate helpers
+- `verifyPresentation` — combined crypto + DCQL match in one call
 - Certificate trust check via byte-equality against a caller-supplied trusted set
 
 **What is NOT yet implemented** (planned for follow-up releases — do not assume compliance in production until present):
@@ -179,17 +241,20 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 - X.509 certificate chain building and validation beyond leaf-byte-equality
 - EU List of Trusted Lists (LOTL) / ETSI TL resolution
 - Certificate revocation (CRL, OCSP)
-- DCQL query / credential matching — see [@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql)
-- OpenID4VP HAIP (High Assurance Interoperability Profile) constraint validation
 - OpenID Foundation conformance test suite integration
 - SIOPv2 (Self-Issued OpenID Provider) identity flows
 
-EUDI Architecture Reference Framework (ARF) alignment: tracks OpenID4VP 1.0 final. HAIP and ARF 1.4+ profile compliance will be added before a stable 1.0.
+EUDI Architecture Reference Framework (ARF) alignment: tracks OpenID4VP 1.0 final. Full ARF 1.4+ profile compliance will be added before a stable 1.0.
 
 ## Related packages
 
 - **[@openeudi/core](https://www.npmjs.com/package/@openeudi/core)** -- Framework-agnostic EUDI Wallet verification protocol engine with session management and QR code generation.
+- **[@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql)** -- DCQL query matching engine used internally by `verifyPresentation`.
 - **[eIDAS Pro](https://eidas-pro.eu)** -- Managed verification service with admin dashboard, webhook integrations, and plugin support for WooCommerce and Shopify.
+
+## Migration from 0.3.x
+
+See [CHANGELOG.md](./CHANGELOG.md) for the full 0.4.0 migration guide (breaking changes and new APIs).
 
 ## License
 
