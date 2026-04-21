@@ -14,6 +14,13 @@ export interface ParseOptions {
      * where no trusted issuer set is available.
      */
     skipTrustCheck?: boolean;
+    /**
+     * When set, the parsed credential's `docType` (mDOC) or `vct` (SD-JWT)
+     * must equal this value — otherwise parsing throws `MalformedCredentialError`.
+     * Defends against doc-type confusion attacks when the verifier expects a
+     * specific credential class (e.g. `'eu.europa.ec.eudi.pid.1'`).
+     */
+    expectedDocType?: string;
 }
 
 export interface ICredentialParser {

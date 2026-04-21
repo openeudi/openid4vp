@@ -1,23 +1,21 @@
-import { decode } from 'cbor-x';
+import { Encoder as CborEncoder, Tag } from 'cbor-x';
+import { importX509 } from 'jose';
 
-import { MalformedCredentialError } from '../errors.js';
+import { decodeCoseSign1, verifyCoseSign1 } from '../crypto/cose-sign1.js';
+import { verifyAllDigests } from '../crypto/digest.js';
+import { decodeMso, validateMsoValidity, validateMsoDocType } from '../crypto/mso.js';
+import { MalformedCredentialError, ExpiredCredentialError } from '../errors.js';
 import type { IssuerInfo } from '../types/issuer.js';
 import type { CredentialFormat, CredentialClaims, PresentationResult } from '../types/presentation.js';
 
 import type { ICredentialParser, ParseOptions } from './parser.interface.js';
 
-/**
- * Runtime check for binary data. Returns true for Uint8Array and Node.js Buffer
- * without referencing the Buffer type (which is unavailable in DOM-only tsconfig).
- * Buffer extends Uint8Array, so `instanceof Uint8Array` catches both.
- */
-function isBinaryData(value: unknown): value is Uint8Array {
-    return value instanceof Uint8Array;
-}
+// Decoder that preserves CBOR maps as JS Maps (cbor-x default converts them to objects).
+const decoder = new CborEncoder({ mapsAsObjects: false, useRecords: false });
+const encoder = new CborEncoder({ mapsAsObjects: false, useRecords: false });
 
-/**
- * Checks whether two Uint8Array instances contain identical bytes.
- */
+const DEFAULT_ALLOWED_ALGORITHMS = ['ES256', 'ES384', 'ES512'];
+
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
@@ -26,181 +24,114 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
     return true;
 }
 
-/**
- * Represents a single IssuerSignedItem element from an mDOC nameSpace.
- * ISO 18013-5 Section 8.3.2.1.2.
- */
-interface IssuerSignedItem {
-    digestID: number;
-    random: Uint8Array | unknown;
-    elementIdentifier: string;
-    elementValue: unknown;
+function derToPem(der: Uint8Array): string {
+    let binary = '';
+    for (const b of der) binary += String.fromCharCode(b);
+    const b64 = globalThis.btoa(binary);
+    const lines = b64.match(/.{1,64}/g) || [];
+    return `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----`;
+}
+
+function extractCountryHintFromCert(_certDer: Uint8Array): string {
+    // Placeholder — full X.509 subject parsing is workstream 3.
+    return '';
 }
 
 /**
- * Simplified DeviceResponse structure from ISO 18013-5.
- * Only the fields required for claim extraction and trust validation.
- */
-interface MdocDocument {
-    docType: string;
-    issuerSigned: {
-        nameSpaces: Record<string, IssuerSignedItem[]>;
-        issuerAuth: unknown[];
-    };
-}
-
-interface DeviceResponse {
-    version: string;
-    documents: MdocDocument[];
-    status: number;
-}
-
-/**
- * Extracts the issuer certificate bytes from a COSE_Sign1 issuerAuth structure.
+ * Extracts raw tag-24 bytes from an IssuerSignedItem.
  *
- * The issuerAuth is a COSE_Sign1 array: [protected, unprotected, payload, signature].
- * The protected header (index 0) is CBOR-encoded and may contain the x5chain (label 33)
- * with the issuer certificate. The unprotected header (index 1) may also carry it.
+ * Each IssuerSignedItem in the DeviceResponse is stored as EmbeddedCbor(itemTag24),
+ * which on the wire is tag-24 wrapping the already-tag-24-wrapped item bytes.
+ * cbor-x decoding unwraps one layer, so `item.value` (or the Tag(24).value) is
+ * exactly `itemTag24` — the bytes the issuer hashed. Return those directly.
  *
- * If neither header contains a certificate, the raw protected bytes are returned
- * as a fallback for trust matching (test/simplified scenarios).
+ * Three shapes arise depending on test vs. production paths:
+ *   A) Tag(24, Uint8Array)    — production cbor-x path (no addExtension)
+ *   B) EmbeddedCbor-like obj  — test-fixture path (addExtension in mdoc-helpers.ts registers a
+ *                               custom class whose instances have `.value: Uint8Array`)
+ *   C) Plain Uint8Array       — already encoded tag-24 bytes
  */
-function extractCertificateFromIssuerAuth(issuerAuth: unknown[]): Uint8Array {
-    // Try unprotected header first (index 1) -- it's already decoded as a Map or object
-    const unprotected = issuerAuth[1];
-    if (unprotected && typeof unprotected === 'object') {
-        // x5chain is COSE header label 33
-        const certFromUnprotected = extractX5Chain(unprotected);
-        if (certFromUnprotected) return certFromUnprotected;
+function extractRawItemBytes(item: unknown): Uint8Array {
+    if (item instanceof Tag && item.tag === 24 && item.value instanceof Uint8Array) {
+        return item.value;
     }
+    if (item instanceof Uint8Array) {
+        return item;
+    }
+    if (
+        item !== null &&
+        typeof item === 'object' &&
+        !(item instanceof Tag) &&
+        !(item instanceof Map) &&
+        'value' in (item as object) &&
+        (item as { value: unknown }).value instanceof Uint8Array
+    ) {
+        return (item as { value: Uint8Array }).value;
+    }
+    throw new MalformedCredentialError('IssuerSignedItem must be a tag-24 byte string');
+}
 
-    // Try protected header (index 0) -- CBOR-encoded bytes
-    const protectedHeader = issuerAuth[0];
-    if (isBinaryData(protectedHeader)) {
-        try {
-            const decoded = decode(protectedHeader) as unknown;
-            if (decoded && typeof decoded === 'object') {
-                const certFromProtected = extractX5Chain(decoded);
-                if (certFromProtected) return certFromProtected;
+/**
+ * Maps raw IssuerSignedItem bytes (from all namespaces) to CredentialClaims.
+ *
+ * Handles all three tag-24 shapes (Tag(24,bytes), EmbeddedCbor-like object, plain bytes).
+ */
+function mapRawToClaims(nameSpaces: Map<string, Uint8Array[]>): CredentialClaims {
+    const out: CredentialClaims = {};
+    for (const items of nameSpaces.values()) {
+        for (const itemBytes of items) {
+            let decoded: unknown;
+            try {
+                decoded = decoder.decode(itemBytes);
+            } catch {
+                continue;
             }
-        } catch {
-            // Protected header could not be decoded -- fall through
-        }
-        // Return raw protected bytes as fallback identifier
-        return new Uint8Array(protectedHeader);
-    }
 
-    return new Uint8Array();
-}
+            // Unwrap all three tag-24 shapes to get the inner CBOR bytes
+            let inner: unknown;
+            if (decoded instanceof Tag && decoded.tag === 24 && decoded.value instanceof Uint8Array) {
+                // Path A: Tag(24, bytes)
+                inner = decoder.decode(decoded.value as Uint8Array);
+            } else if (
+                decoded !== null &&
+                typeof decoded === 'object' &&
+                !(decoded instanceof Tag) &&
+                !(decoded instanceof Map) &&
+                !(decoded instanceof Uint8Array) &&
+                'value' in (decoded as object) &&
+                (decoded as { value: unknown }).value instanceof Uint8Array
+            ) {
+                // Path B: EmbeddedCbor-like object from test fixture's addExtension
+                inner = decoder.decode((decoded as { value: Uint8Array }).value);
+            } else if (decoded instanceof Map) {
+                // Path C: already a Map
+                inner = decoded;
+            } else {
+                continue;
+            }
 
-/**
- * Extracts certificate bytes from an x5chain (label 33) in a COSE header.
- * The header can be a plain object or a Map.
- */
-function extractX5Chain(header: unknown): Uint8Array | null {
-    if (header instanceof Map) {
-        const cert = header.get(33) as unknown;
-        if (isBinaryData(cert)) {
-            return new Uint8Array(cert);
-        }
-    } else if (typeof header === 'object' && header !== null) {
-        const rec = header as Record<string | number, unknown>;
-        const cert = rec[33] ?? rec['x5chain'] ?? rec['33'];
-        if (isBinaryData(cert)) {
-            return new Uint8Array(cert);
-        }
-    }
-    return null;
-}
-
-/**
- * Maps raw mDOC IssuerSignedItem elements to the CredentialClaims structure,
- * picking known age/residency fields and preserving any additional identifiers.
- */
-function mapToCredentialClaims(items: IssuerSignedItem[]): CredentialClaims {
-    const claims: CredentialClaims = {};
-
-    for (const item of items) {
-        const key = item.elementIdentifier;
-        const value = item.elementValue;
-
-        switch (key) {
-            case 'age_over_18':
-                if (typeof value === 'boolean') claims.age_over_18 = value;
-                break;
-            case 'age_over_21':
-                if (typeof value === 'boolean') claims.age_over_21 = value;
-                break;
-            case 'resident_country':
-                if (typeof value === 'string') claims.resident_country = value;
-                break;
-            case 'nationality':
-                if (typeof value === 'string') claims.nationality = value;
-                break;
-            case 'family_name_birth':
-                if (typeof value === 'string') claims.family_name_birth = value;
-                break;
-            default:
-                claims[key] = value;
-                break;
-        }
-    }
-
-    return claims;
-}
-
-/**
- * Extracts validity period from the issuerAuth payload.
- *
- * The payload (index 2) of the COSE_Sign1 is CBOR-encoded and should
- * contain a MobileSecurityObject with a validityInfo field carrying
- * `validFrom` and `validUntil` dates.
- */
-function extractValidityPeriod(issuerAuth: unknown[]): { validFrom?: Date; validUntil?: Date } {
-    const payload = issuerAuth[2];
-    if (!payload) return {};
-
-    try {
-        // payload can be raw CBOR bytes or already decoded
-        const decoded = isBinaryData(payload) ? (decode(payload) as unknown) : payload;
-
-        if (decoded && typeof decoded === 'object') {
-            const obj = decoded as Record<string, unknown>;
-            const validityInfo = obj['validityInfo'] as Record<string, unknown> | undefined;
-            if (validityInfo) {
-                return {
-                    validFrom:
-                        validityInfo['validFrom'] instanceof Date
-                            ? validityInfo['validFrom']
-                            : typeof validityInfo['validFrom'] === 'string'
-                              ? new Date(validityInfo['validFrom'])
-                              : undefined,
-                    validUntil:
-                        validityInfo['validUntil'] instanceof Date
-                            ? validityInfo['validUntil']
-                            : typeof validityInfo['validUntil'] === 'string'
-                              ? new Date(validityInfo['validUntil'])
-                              : undefined,
-                };
+            if (inner instanceof Map) {
+                const id = (inner as Map<string, unknown>).get('elementIdentifier');
+                const val = (inner as Map<string, unknown>).get('elementValue');
+                if (typeof id === 'string') {
+                    (out as Record<string, unknown>)[id] = val;
+                }
             }
         }
-    } catch {
-        // Could not decode payload -- validity check will be skipped
     }
-
-    return {};
+    return out;
 }
 
 /**
  * mDOC / mDL credential parser.
  *
  * Decodes and validates mDOC (Mobile Document) credentials as specified in
- * ISO 18013-5 and the EUDI Wallet ecosystem. Processes CBOR-encoded
- * DeviceResponse structures containing:
- *   - Document type validation (eu.europa.ec.eudi.pid.1)
- *   - Issuer certificate trust chain verification via COSE_Sign1 issuerAuth
- *   - Validity period checking
- *   - Claim extraction from IssuerSignedItem nameSpace elements
+ * ISO 18013-5 and the EUDI Wallet ecosystem. Composes the crypto modules
+ * to perform full verification:
+ *   - COSE_Sign1 decode + signature verification
+ *   - MSO decode + validity + docType validation
+ *   - Digest verification for all IssuerSignedItems
+ *   - Issuer certificate trust chain check
  */
 export class MdocParser implements ICredentialParser {
     readonly format: CredentialFormat = 'mdoc';
@@ -208,9 +139,10 @@ export class MdocParser implements ICredentialParser {
     /**
      * Returns true when the token is binary data (Uint8Array or Buffer),
      * indicating a CBOR-encoded mDOC DeviceResponse.
+     * Buffer extends Uint8Array, so `instanceof Uint8Array` catches both.
      */
     canParse(vpToken: unknown): boolean {
-        return isBinaryData(vpToken);
+        return vpToken instanceof Uint8Array;
     }
 
     /**
@@ -220,55 +152,59 @@ export class MdocParser implements ICredentialParser {
      *   or does not match the expected DeviceResponse format
      */
     async parse(vpToken: unknown, options: ParseOptions): Promise<PresentationResult> {
-        if (!isBinaryData(vpToken)) {
-            throw new MalformedCredentialError('VP token must be a Uint8Array or Buffer');
+        if (!(vpToken instanceof Uint8Array)) {
+            throw new MalformedCredentialError('mDOC vpToken must be a Uint8Array');
         }
+        const allowedAlgorithms = options.allowedAlgorithms ?? DEFAULT_ALLOWED_ALGORITHMS;
 
-        const invalidResult = (error: string): PresentationResult => ({
-            valid: false,
-            format: this.format,
-            claims: {},
-            issuer: { certificate: new Uint8Array(), country: '' },
-            error,
-        });
-
-        // Step 1: Decode the CBOR DeviceResponse
-        let deviceResponse: DeviceResponse;
+        // Step 1: Decode DeviceResponse
+        let deviceResponse: Map<unknown, unknown>;
         try {
-            deviceResponse = decode(vpToken) as DeviceResponse;
+            const decoded = decoder.decode(vpToken);
+            if (!(decoded instanceof Map)) throw new Error();
+            deviceResponse = decoded as Map<unknown, unknown>;
         } catch {
-            throw new MalformedCredentialError('Failed to decode CBOR DeviceResponse');
+            throw new MalformedCredentialError('vpToken is not a CBOR DeviceResponse Map');
         }
 
-        // Step 2: Validate basic DeviceResponse structure
-        if (
-            !deviceResponse ||
-            typeof deviceResponse !== 'object' ||
-            !Array.isArray(deviceResponse.documents) ||
-            deviceResponse.documents.length === 0
-        ) {
-            throw new MalformedCredentialError('Invalid DeviceResponse structure: missing or empty documents array');
+        // Step 2: Extract first document
+        const docs = deviceResponse.get('documents');
+        if (!Array.isArray(docs) || docs.length === 0) {
+            throw new MalformedCredentialError('DeviceResponse has no documents');
+        }
+        const document = docs[0];
+        if (!(document instanceof Map)) {
+            throw new MalformedCredentialError('document must be a Map');
+        }
+        const issuerSigned = document.get('issuerSigned');
+        if (!(issuerSigned instanceof Map)) {
+            throw new MalformedCredentialError('document.issuerSigned must be a Map');
+        }
+        const issuerAuth = issuerSigned.get('issuerAuth');
+        if (!Array.isArray(issuerAuth)) {
+            throw new MalformedCredentialError('issuerAuth must be a COSE_Sign1 array');
         }
 
-        const document = deviceResponse.documents[0];
-        if (!document.issuerSigned || !document.issuerSigned.nameSpaces || !document.issuerSigned.issuerAuth) {
-            throw new MalformedCredentialError('Invalid mDOC document: missing issuerSigned data');
+        // Re-encode issuerAuth as bytes so we can pass to decodeCoseSign1
+        const issuerAuthBytes = encoder.encode(issuerAuth);
+
+        // Step 3: Decode COSE_Sign1 + algorithm check
+        const cose = decodeCoseSign1(issuerAuthBytes);
+        if (!allowedAlgorithms.includes(cose.alg)) {
+            return {
+                valid: false,
+                format: this.format,
+                claims: {},
+                issuer: { certificate: new Uint8Array(), country: '' },
+                error: `Unsupported algorithm: ${cose.alg}`,
+            };
         }
 
-        // Step 3: Extract issuer certificate from COSE_Sign1 issuerAuth
-        const issuerAuth = document.issuerSigned.issuerAuth;
-        if (!Array.isArray(issuerAuth) || issuerAuth.length < 4) {
-            throw new MalformedCredentialError('Invalid issuerAuth: expected COSE_Sign1 array with 4 elements');
+        // Step 4: Trust check (reuse 0.2.1 skipTrustCheck semantics)
+        const issuerCertBytes = cose.x5chain[0];
+        if (!issuerCertBytes) {
+            throw new MalformedCredentialError('Missing issuer certificate in x5chain');
         }
-
-        const issuerCertBytes = extractCertificateFromIssuerAuth(issuerAuth);
-        const issuerInfo: IssuerInfo = {
-            certificate: issuerCertBytes,
-            country: '',
-        };
-
-        // Step 4: Verify trust -- certificate must be in the trusted set
-        // unless the caller explicitly opts out via skipTrustCheck.
         if (options.trustedCertificates.length === 0) {
             if (options.skipTrustCheck !== true) {
                 throw new MalformedCredentialError(
@@ -276,40 +212,90 @@ export class MdocParser implements ICredentialParser {
                 );
             }
         } else {
-            const isTrusted = options.trustedCertificates.some((trusted) => bytesEqual(trusted, issuerCertBytes));
-            if (!isTrusted) {
-                return invalidResult('Issuer certificate is not trusted');
+            const trusted = options.trustedCertificates.some((t) => bytesEqual(t, issuerCertBytes));
+            if (!trusted) {
+                return {
+                    valid: false,
+                    format: this.format,
+                    claims: {},
+                    issuer: { certificate: issuerCertBytes, country: '' },
+                    error: 'Issuer certificate is not trusted',
+                };
             }
         }
 
-        // Step 5: Check validity period
-        const { validUntil } = extractValidityPeriod(issuerAuth);
-        if (validUntil) {
-            const now = new Date();
-            if (validUntil < now) {
-                return invalidResult('Credential has expired');
+        // Step 5: Import public key + verify signature
+        const publicKey = await importX509(derToPem(issuerCertBytes), cose.alg);
+        try {
+            await verifyCoseSign1(cose, publicKey, allowedAlgorithms);
+        } catch (err) {
+            if (err instanceof MalformedCredentialError) {
+                return {
+                    valid: false,
+                    format: this.format,
+                    claims: {},
+                    issuer: { certificate: issuerCertBytes, country: '' },
+                    error: err.message,
+                };
+            }
+            throw err;
+        }
+
+        // Step 6: Decode + validate MSO
+        const mso = decodeMso(cose.payload);
+        try {
+            validateMsoValidity(mso, new Date());
+        } catch (err) {
+            if (err instanceof ExpiredCredentialError) {
+                return {
+                    valid: false,
+                    format: this.format,
+                    claims: {},
+                    issuer: { certificate: issuerCertBytes, country: '' },
+                    error: 'Credential expired',
+                };
+            }
+            throw err;
+        }
+
+        if (options.expectedDocType !== undefined) {
+            try {
+                validateMsoDocType(mso, options.expectedDocType);
+            } catch (err) {
+                if (err instanceof MalformedCredentialError) {
+                    return {
+                        valid: false,
+                        format: this.format,
+                        claims: {},
+                        issuer: { certificate: issuerCertBytes, country: '' },
+                        error: err.message,
+                    };
+                }
+                throw err;
             }
         }
 
-        // Step 6: Extract claims from nameSpaces
-        // Prefer the EUDI PID namespace, fall back to the first available namespace
-        const pidNamespace = 'eu.europa.ec.eudi.pid.1';
-        const nameSpaces = document.issuerSigned.nameSpaces;
-        const items: IssuerSignedItem[] =
-            nameSpaces[pidNamespace] ?? nameSpaces[document.docType] ?? Object.values(nameSpaces)[0] ?? [];
-
-        const claims = mapToCredentialClaims(items);
-
-        // Try to derive country from resident_country claim
-        if (claims.resident_country && typeof claims.resident_country === 'string') {
-            issuerInfo.country = claims.resident_country;
+        // Step 7: Extract items from nameSpaces, verify all digests
+        const nsRaw = issuerSigned.get('nameSpaces');
+        if (!(nsRaw instanceof Map)) {
+            throw new MalformedCredentialError('issuerSigned.nameSpaces must be a Map');
         }
+        const nameSpaces = new Map<string, Uint8Array[]>();
+        for (const [ns, items] of (nsRaw as Map<unknown, unknown>).entries()) {
+            if (typeof ns !== 'string' || !Array.isArray(items)) {
+                throw new MalformedCredentialError('nameSpaces entry malformed');
+            }
+            nameSpaces.set(ns, items.map(extractRawItemBytes));
+        }
+        await verifyAllDigests(nameSpaces, mso);
 
-        return {
-            valid: true,
-            format: this.format,
-            claims,
-            issuer: issuerInfo,
+        // Step 8: Map to claims
+        const claims = mapRawToClaims(nameSpaces);
+
+        const issuer: IssuerInfo = {
+            certificate: issuerCertBytes,
+            country: extractCountryHintFromCert(issuerCertBytes),
         };
+        return { valid: true, format: this.format, claims, issuer };
     }
 }

@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-04-21
+
+### Added
+
+- COSE_Sign1 cryptographic signature verification for mDOC credentials.
+- MobileSecurityObject (MSO) validity enforcement: strict ISO 18013-5 dates — `signed`, `validFrom`, `validUntil`. Future-signed and inconsistent windows are rejected.
+- Digest verification of every `IssuerSignedItem` against the MSO's `valueDigests` — tampered items fail with `MalformedCredentialError`.
+- `ParseOptions.expectedDocType?: string` — optional lock on the accepted credential type to defend against doc-type confusion.
+
+### Changed (breaking)
+
+- `MdocParser` now performs real cryptographic verification. Previously, any CBOR-shaped mDOC was accepted. Callers must now supply trusted issuer certificates (or opt out with `skipTrustCheck: true`).
+- Strict MSO validity: credentials with future `signed` timestamps, `validFrom > validUntil`, or `signed` outside the validity window are rejected with `MalformedCredentialError`.
+- Removed the silent "fall back to the first namespace if EUDI PID namespace is missing" behaviour. Every namespace present in the credential is verified against the MSO.
+
+### Security
+
+- Closes the largest remaining crypto gap in 0.2.x: forged mDOCs are no longer accepted.
+
+[0.3.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.3.0
+
 ## [0.2.1] — 2026-04-19
 
 ### Changed
