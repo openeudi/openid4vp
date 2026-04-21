@@ -317,11 +317,14 @@ export class SdJwtParser implements ICredentialParser {
             throw new MalformedCredentialError('Failed to decode SD-JWT disclosures');
         }
 
+        const vct = typeof payload['vct'] === 'string' ? (payload['vct'] as string) : undefined;
+
         return {
             valid: true,
             format: this.format,
             claims: mapToCredentialClaims(resolvedClaims),
             issuer: issuerInfo,
+            ...(vct !== undefined ? { vct } : {}),
         };
     }
 }

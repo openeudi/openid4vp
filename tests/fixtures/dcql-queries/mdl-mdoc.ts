@@ -5,8 +5,8 @@ export const mdlMdocQuery: DcqlQuery = {
         {
             id: 'mdl',
             format: 'mso_mdoc',
-            meta: { doctype_value: 'org.iso.18013.5.1.mDL' },
-            claims: [{ path: ['org.iso.18013.5.1', 'age_over_18'] }],
+            meta: { doctype_value: 'eu.europa.ec.eudi.pid.1' },
+            claims: [{ path: ['eu.europa.ec.eudi.pid.1', 'age_over_18'] }],
         },
     ],
 };

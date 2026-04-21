@@ -15,6 +15,15 @@ export interface PresentationResult {
     claims: CredentialClaims;
     issuer: IssuerInfo;
     error?: string;
+    /** SD-JWT type (Verifiable Credential Type URI). Populated for `sd-jwt-vc` format. */
+    vct?: string;
+    /** mDOC docType (ISO 18013-5). Populated for `mdoc` format. */
+    docType?: string;
+    /**
+     * mDOC claims grouped by namespace. Populated for `mdoc` format.
+     * DCQL claim paths address this shape: `['org.iso.18013.5.1', 'age_over_18']`.
+     */
+    namespacedClaims?: Record<string, Record<string, unknown>>;
 }
 
 import type { IssuerInfo } from './issuer.js';
