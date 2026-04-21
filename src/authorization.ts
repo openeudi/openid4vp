@@ -1,44 +1,32 @@
 import { v4 as uuidv4 } from 'uuid';
+import type { DcqlQuery } from '@openeudi/dcql';
 
 import type { AuthorizationRequestInput, AuthorizationRequest } from './types/authorization.js';
 
-export function createAuthorizationRequest(input: AuthorizationRequestInput): AuthorizationRequest {
-    const state = input.state ?? uuidv4();
+export function createAuthorizationRequest(
+    input: AuthorizationRequestInput,
+    query: DcqlQuery,
+): AuthorizationRequest {
+    if (!input.clientId) throw new TypeError('clientId is required');
+    if (!input.nonce) throw new TypeError('nonce is required');
+    if (!input.responseUri) throw new TypeError('responseUri is required');
 
-    const presentationDefinition = {
-        id: uuidv4(),
-        input_descriptors: input.requestedAttributes.map((attr, index) => ({
-            id: `descriptor_${index}`,
-            format: Object.fromEntries(
-                input.acceptedFormats.map((fmt) => {
-                    if (fmt === 'sd-jwt-vc') return ['vc+sd-jwt', { 'sd-jwt_alg_values': ['ES256'] }];
-                    return ['mso_mdoc', { alg: ['ES256'] }];
-                })
-            ),
-            constraints: {
-                fields: [
-                    {
-                        path: [`$.${attr}`, `$['${attr}']`],
-                        filter: { type: attr.startsWith('age_over') ? 'boolean' : 'string' },
-                    },
-                ],
-            },
-        })),
-    };
+    const state = input.state ?? uuidv4();
+    const responseMode = input.responseMode ?? 'direct_post';
 
     const params = new URLSearchParams({
         response_type: 'vp_token',
-        response_mode: 'direct_post',
+        response_mode: responseMode,
         response_uri: input.responseUri,
         client_id: input.clientId,
         nonce: input.nonce,
         state,
-        presentation_definition: JSON.stringify(presentationDefinition),
+        dcql_query: JSON.stringify(query),
     });
 
     return {
         uri: `openid4vp://authorize?${params.toString()}`,
-        presentationDefinition,
+        dcqlQuery: query,
         nonce: input.nonce,
         state,
     };
