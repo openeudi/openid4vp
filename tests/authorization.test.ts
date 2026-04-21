@@ -81,4 +81,26 @@ describe('createAuthorizationRequest', () => {
             createAuthorizationRequest({ ...baseInput, responseUri: '' }, pidQuery),
         ).toThrow(TypeError);
     });
+
+    it('preserves response_uri query params through URLSearchParams encoding', () => {
+        const req = createAuthorizationRequest(
+            { ...baseInput, responseUri: 'https://verifier.example.com/cb?session=abc&tenant=eu' },
+            pidQuery,
+        );
+        const params = new URL(req.uri.replace('openid4vp://', 'https://dummy/')).searchParams;
+        expect(params.get('response_uri')).toBe('https://verifier.example.com/cb?session=abc&tenant=eu');
+    });
+
+    it('round-trips dcql_query with special characters in vct_values', () => {
+        const trickyQuery = buildHaipQuery({
+            credentialId: 'pid',
+            format: 'dc+sd-jwt',
+            vctValues: ['https://issuer.eu/pid?v=1&realm=eu'],
+            claims: ['age_over_18'],
+        });
+        const req = createAuthorizationRequest(baseInput, trickyQuery);
+        const params = new URL(req.uri.replace('openid4vp://', 'https://dummy/')).searchParams;
+        const parsed = JSON.parse(params.get('dcql_query')!);
+        expect(parsed.credentials[0].meta.vct_values[0]).toBe('https://issuer.eu/pid?v=1&realm=eu');
+    });
 });
