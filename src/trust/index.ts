@@ -1,2 +1,2 @@
-// Public exports for the trust module. Populated across A.1 / A.2 / A.3.
-export {};
+export type { TrustAnchor, LotlAnchorMetadata } from './TrustAnchor.js';
+export type { Fetcher } from './Fetcher.js';
