@@ -60,7 +60,7 @@ export class ChainBuilder {
     anchor: X509Certificate,
     intermediates: X509Certificate[]
   ): Promise<X509Certificate[]> {
-    this.checkValidity(leaf);
+    this.checkPerCert(leaf);
     const chain: X509Certificate[] = [leaf];
     let current = leaf;
     const pool = new X509Certificates(intermediates);
@@ -74,12 +74,12 @@ export class ChainBuilder {
           });
         }
         // climbed to the anchor
-        this.checkValidity(anchor);
+        this.checkPerCert(anchor);
         await this.verifySignature(current, anchor);
         chain.push(anchor);
         return chain;
       }
-      this.checkValidity(issuer);
+      this.checkPerCert(issuer);
       await this.verifySignature(current, issuer);
       chain.push(issuer);
       current = issuer;
@@ -94,6 +94,11 @@ export class ChainBuilder {
     if (!ok) {
       throw new CertificateChainError(`signature verification failed for ${child.subject}`, { reason: "signature" });
     }
+  }
+
+  private checkPerCert(cert: X509Certificate): void {
+    this.checkValidity(cert);
+    this.checkAlgorithm(cert);
   }
 
   private checkValidity(cert: X509Certificate): void {
@@ -114,4 +119,34 @@ export class ChainBuilder {
       );
     }
   }
+
+  private checkAlgorithm(cert: X509Certificate): void {
+    const allowed = this.opts.allowedAlgorithms ?? DEFAULT_ALGORITHMS;
+    const algName = mapX509AlgoToJwaName(cert);
+    if (!allowed.includes(algName)) {
+      throw new CertificateChainError(
+        `certificate ${cert.subject} uses disallowed signature algorithm ${algName}`,
+        { reason: "algorithm_disallowed" }
+      );
+    }
+  }
+}
+
+function mapX509AlgoToJwaName(cert: X509Certificate): string {
+  // `@peculiar/x509` surfaces the signature alg via `signatureAlgorithm.name`
+  // plus hash on ECDSA/RSA-PSS. We map to JWA names per RFC 7518 + RFC 8037.
+  const alg = cert.signatureAlgorithm as unknown as {
+    name?: string;
+    hash?: { name?: string };
+  };
+  const name = alg?.name ?? "";
+  const hash = alg?.hash?.name ?? "";
+  if (name === "ECDSA" && hash === "SHA-256") return "ES256";
+  if (name === "ECDSA" && hash === "SHA-384") return "ES384";
+  if (name === "ECDSA" && hash === "SHA-512") return "ES512";
+  if (name === "Ed25519" || name === "EdDSA") return "EdDSA";
+  if (name === "RSASSA-PKCS1-v1_5" && hash === "SHA-256") return "RS256";
+  if (name === "RSA-PSS" && hash === "SHA-256") return "PS256";
+  if (name === "RSA-PSS" && hash === "SHA-384") return "PS384";
+  return `${name}-${hash}`;
 }

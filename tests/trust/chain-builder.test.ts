@@ -101,3 +101,22 @@ describe("ChainBuilder — validity period", () => {
     await expect(builder.build(leaf.certificate, [root.certificate])).rejects.toMatchObject({ reason: "validity" });
   });
 });
+
+describe("ChainBuilder — algorithm allowlist", () => {
+  it("accepts ES256 by default", async () => {
+    const root = await createCa();
+    const leaf = await createLeaf(root);
+    const builder = new ChainBuilder();
+    await expect(builder.build(leaf.certificate, [root.certificate])).resolves.toHaveLength(2);
+  });
+
+  it("rejects a cert whose signature algorithm is not in the allowlist", async () => {
+    const root = await createCa();
+    const leaf = await createLeaf(root);
+    const builder = new ChainBuilder({ allowedAlgorithms: ["PS256"] });
+    await expect(builder.build(leaf.certificate, [root.certificate])).rejects.toMatchObject({
+      code: "chain_invalid",
+      reason: "algorithm_disallowed",
+    });
+  });
+});
