@@ -67,6 +67,33 @@ export class StaticTrustStore implements TrustStore {
     }
 }
 
+/**
+ * Combines multiple `TrustStore` instances. Children are queried in parallel;
+ * results concatenate in child-order; duplicate anchors are dropped by
+ * Subject Key Identifier.
+ */
+export class CompositeTrustStore implements TrustStore {
+    constructor(private readonly stores: TrustStore[]) {}
+
+    async getAnchors(hint: TrustStoreHint): Promise<TrustAnchor[]> {
+        const results = await Promise.all(
+            this.stores.map((store) => store.getAnchors(hint))
+        );
+        const seen = new Set<string>();
+        const out: TrustAnchor[] = [];
+        for (const batch of results) {
+            for (const anchor of batch) {
+                const ski = getSubjectKeyIdentifierHex(anchor.certificate);
+                const key = ski ?? anchor.certificate.serialNumber;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                out.push(anchor);
+            }
+        }
+        return out;
+    }
+}
+
 function toCertificate(input: TrustStoreInput): X509Certificate {
     if (input instanceof X509Certificate) return input;
     if (input instanceof Uint8Array) return new X509Certificate(input);

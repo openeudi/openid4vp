@@ -3,6 +3,7 @@ export type { Fetcher } from './Fetcher.js';
 export { InMemoryCache, type Cache } from './Cache.js';
 export {
     StaticTrustStore,
+    CompositeTrustStore,
     type TrustStore,
     type TrustStoreHint,
     type TrustStoreInput,
