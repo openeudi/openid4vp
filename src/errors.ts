@@ -59,3 +59,47 @@ export class HaipValidationError extends Error {
         Object.setPrototypeOf(this, new.target.prototype);
     }
 }
+
+// ---------------------------------------------------------------------------
+// New in 0.5.0: OpenID4VPError base + trust-module error classes
+// ---------------------------------------------------------------------------
+
+export abstract class OpenID4VPError extends Error {
+    abstract readonly code: string;
+
+    constructor(message: string, options?: { cause?: Error }) {
+        super(message);
+        this.name = new.target.name;
+        if (options?.cause !== undefined) {
+            (this as { cause?: unknown }).cause = options.cause;
+        }
+        Object.setPrototypeOf(this, new.target.prototype);
+    }
+}
+
+export class TrustAnchorNotFoundError extends OpenID4VPError {
+    readonly code = 'trust_anchor_not_found' as const;
+}
+
+export type ChainErrorReason =
+    | 'signature'
+    | 'validity'
+    | 'name_constraints'
+    | 'key_usage'
+    | 'basic_constraints'
+    | 'path_length'
+    | 'algorithm_disallowed'
+    | 'aki_ski_mismatch';
+
+export class CertificateChainError extends OpenID4VPError {
+    readonly code = 'chain_invalid' as const;
+    readonly reason: ChainErrorReason;
+
+    constructor(
+        message: string,
+        options: { reason: ChainErrorReason; cause?: Error }
+    ) {
+        super(message, { cause: options.cause });
+        this.reason = options.reason;
+    }
+}
