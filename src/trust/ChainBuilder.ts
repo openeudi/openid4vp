@@ -1,13 +1,29 @@
+import { AsnConvert } from "@peculiar/asn1-schema";
+import {
+  GeneralName as Asn1GeneralName,
+  GeneralSubtree,
+  Name as AsnName,
+  NameConstraints,
+} from "@peculiar/asn1-x509";
 import {
   AuthorityKeyIdentifierExtension,
   BasicConstraintsExtension,
   KeyUsageFlags,
   KeyUsagesExtension,
+  Name as X509Name,
   SubjectKeyIdentifierExtension,
   X509Certificate,
   X509Certificates,
 } from "@peculiar/x509";
 import { CertificateChainError } from "../errors.js";
+
+const NAME_CONSTRAINTS_OID = "2.5.29.30";
+
+type SubtreeName =
+  | { type: "dn"; value: string }
+  | { type: "dns"; value: string }
+  | { type: "email"; value: string }
+  | { type: "uri"; value: string };
 
 export interface ChainBuilderOptions {
   /** Clock-skew tolerance in seconds applied to `notBefore`/`notAfter`. Default 60. */
@@ -89,6 +105,7 @@ export class ChainBuilder {
         this.checkAkiSkiMatch(current, anchor);
         await this.verifySignature(current, anchor);
         chain.push(anchor);
+        this.checkNameConstraints(leaf, chain.slice(1));
         return chain;
       }
       this.checkPerCert(issuer);
@@ -99,7 +116,62 @@ export class ChainBuilder {
       current = issuer;
       nonLeafDepth += 1;
     }
+    this.checkNameConstraints(leaf, chain.slice(1));
     return chain;
+  }
+
+  /**
+   * Enforce nameConstraints asserted by any CA above the leaf against the
+   * leaf's identities. RFC 5280 §4.2.1.10 requires both permitted (leaf must
+   * match at least one) and excluded (leaf must match none) to hold for each
+   * name type that appears in the constraint. This task implements DN
+   * subtrees only; DNS/email/URI follow in a later task.
+   */
+  private checkNameConstraints(leaf: X509Certificate, chainAboveLeaf: X509Certificate[]): void {
+    const leafNames = collectLeafNames(leaf);
+    for (const ca of chainAboveLeaf) {
+      const ext = ca.extensions.find((e) => e.type === NAME_CONSTRAINTS_OID);
+      if (!ext) continue;
+      const nc = AsnConvert.parse(ext.value, NameConstraints);
+      const permitted = extractSubtrees(nc.permittedSubtrees);
+      const excluded = extractSubtrees(nc.excludedSubtrees);
+      this.applyConstraintsForType(leaf, leafNames, permitted, excluded, "dn", ca.subject);
+    }
+  }
+
+  private applyConstraintsForType(
+    leaf: X509Certificate,
+    leafNames: SubtreeName[],
+    permitted: SubtreeName[],
+    excluded: SubtreeName[],
+    type: SubtreeName["type"],
+    enforcingCa: string
+  ): void {
+    const permittedForType = permitted.filter((p) => p.type === type);
+    const excludedForType = excluded.filter((p) => p.type === type);
+    const leafForType = leafNames.filter((n) => n.type === type);
+    if (permittedForType.length > 0) {
+      // Every leaf name of this type must fall under at least one permitted subtree.
+      for (const ln of leafForType) {
+        const ok = permittedForType.some((sub) => matchesSubtree(ln, sub));
+        if (!ok) {
+          throw new CertificateChainError(
+            `leaf ${leaf.subject}: ${type} "${ln.value}" is outside permitted subtrees asserted by ${enforcingCa}`,
+            { reason: "name_constraints" }
+          );
+        }
+      }
+    }
+    for (const ln of leafForType) {
+      for (const sub of excludedForType) {
+        if (matchesSubtree(ln, sub)) {
+          throw new CertificateChainError(
+            `leaf ${leaf.subject}: ${type} "${ln.value}" is under excluded subtree "${sub.value}" asserted by ${enforcingCa}`,
+            { reason: "name_constraints" }
+          );
+        }
+      }
+    }
   }
 
   private checkCaAndPathLen(cert: X509Certificate, nonLeafDepth: number): void {
@@ -217,4 +289,74 @@ function mapX509AlgoToJwaName(cert: X509Certificate): string {
   if (name === "RSA-PSS" && hash === "SHA-256") return "PS256";
   if (name === "RSA-PSS" && hash === "SHA-384") return "PS384";
   return `${name}-${hash}`;
+}
+
+/**
+ * Collect all identities asserted by the leaf that name constraints can
+ * apply to. For now this is limited to the subject DN — DNS/email/URI from
+ * the SAN extension are handled in a subsequent task.
+ */
+function collectLeafNames(leaf: X509Certificate): SubtreeName[] {
+  return [{ type: "dn", value: leaf.subject }];
+}
+
+/**
+ * Collapse a parsed `GeneralSubtrees` into the simple shape used by
+ * the synthetic-ca helpers: `{type, value}`. Any name kind we do not yet
+ * enforce is returned as-is so later tasks can extend this.
+ */
+function extractSubtrees(subtrees: GeneralSubtree[] | undefined): SubtreeName[] {
+  if (!subtrees) return [];
+  const out: SubtreeName[] = [];
+  for (const s of subtrees) {
+    const name = generalNameToSubtree(s.base);
+    if (name) out.push(name);
+  }
+  return out;
+}
+
+function generalNameToSubtree(gn: Asn1GeneralName): SubtreeName | null {
+  if (gn.directoryName) {
+    // `directoryName` is an ASN.1 `Name`. Serialize to DER and parse with
+    // @peculiar/x509's `Name` to get a canonical RFC 4514 string — same
+    // path the synthetic-ca helper uses on the write side.
+    const der = AsnConvert.serialize(gn.directoryName as AsnName);
+    const dn = new X509Name(new Uint8Array(der)).toString();
+    return { type: "dn", value: dn };
+  }
+  if (typeof gn.dNSName === "string") return { type: "dns", value: gn.dNSName };
+  if (typeof gn.rfc822Name === "string") return { type: "email", value: gn.rfc822Name };
+  if (typeof gn.uniformResourceIdentifier === "string") {
+    return { type: "uri", value: gn.uniformResourceIdentifier };
+  }
+  return null;
+}
+
+function matchesSubtree(leafName: SubtreeName, subtree: SubtreeName): boolean {
+  if (leafName.type !== subtree.type) return false;
+  if (subtree.type === "dn") return dnIsUnder(leafName.value, subtree.value);
+  // DNS/email/URI matching lands in the next task.
+  return false;
+}
+
+/**
+ * RDN-level suffix match per RFC 5280 §4.2.1.10. This is a pragmatic
+ * comparison — case-insensitive on attribute values, matching on whole
+ * RDN tokens after splitting on `,`. It is not a full DN canonicalization
+ * but handles EU TSP certificates correctly.
+ */
+function dnIsUnder(childDn: string, subtreeDn: string): boolean {
+  const normalize = (dn: string) =>
+    dn
+      .split(",")
+      .map((rdn) => rdn.trim())
+      .filter(Boolean)
+      .reverse();
+  const child = normalize(childDn);
+  const subtree = normalize(subtreeDn);
+  if (subtree.length > child.length) return false;
+  for (let i = 0; i < subtree.length; i++) {
+    if (child[i].toLowerCase() !== subtree[i].toLowerCase()) return false;
+  }
+  return true;
 }

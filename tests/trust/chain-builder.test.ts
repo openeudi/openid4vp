@@ -213,3 +213,44 @@ describe("ChainBuilder — keyUsage", () => {
   // CA keyUsage test is implicitly covered by every other test —
   // the synthetic-ca helpers always set keyCertSign on CAs.
 });
+
+describe("ChainBuilder — nameConstraints (DN subtrees)", () => {
+  it("accepts a leaf whose DN is under a permitted subtree", async () => {
+    const root = await createCa();
+    const intermediate = await createIntermediate(root, {
+      nameConstraintsPermitted: [{ type: "dn", value: "O=Acme Corp" }],
+    });
+    const leaf = await createLeaf(intermediate, { name: "CN=User,O=Acme Corp" });
+    const builder = new ChainBuilder();
+    await expect(
+      builder.build(leaf.certificate, [root.certificate], [intermediate.certificate])
+    ).resolves.toHaveLength(3);
+  });
+
+  it("rejects a leaf whose DN is outside the permitted subtree", async () => {
+    const root = await createCa();
+    const intermediate = await createIntermediate(root, {
+      nameConstraintsPermitted: [{ type: "dn", value: "O=Acme Corp" }],
+    });
+    const leaf = await createLeaf(intermediate, { name: "CN=User,O=Evil Corp" });
+    const builder = new ChainBuilder();
+    await expect(
+      builder.build(leaf.certificate, [root.certificate], [intermediate.certificate])
+    ).rejects.toMatchObject({
+      code: "chain_invalid",
+      reason: "name_constraints",
+    });
+  });
+
+  it("rejects a leaf matching an excluded subtree", async () => {
+    const root = await createCa();
+    const intermediate = await createIntermediate(root, {
+      nameConstraintsExcluded: [{ type: "dn", value: "O=Banned" }],
+    });
+    const leaf = await createLeaf(intermediate, { name: "CN=User,O=Banned" });
+    const builder = new ChainBuilder();
+    await expect(
+      builder.build(leaf.certificate, [root.certificate], [intermediate.certificate])
+    ).rejects.toMatchObject({ reason: "name_constraints" });
+  });
+});
