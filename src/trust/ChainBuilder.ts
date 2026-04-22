@@ -60,6 +60,7 @@ export class ChainBuilder {
     anchor: X509Certificate,
     intermediates: X509Certificate[]
   ): Promise<X509Certificate[]> {
+    this.checkValidity(leaf);
     const chain: X509Certificate[] = [leaf];
     let current = leaf;
     const pool = new X509Certificates(intermediates);
@@ -73,10 +74,12 @@ export class ChainBuilder {
           });
         }
         // climbed to the anchor
+        this.checkValidity(anchor);
         await this.verifySignature(current, anchor);
         chain.push(anchor);
         return chain;
       }
+      this.checkValidity(issuer);
       await this.verifySignature(current, issuer);
       chain.push(issuer);
       current = issuer;
@@ -85,9 +88,30 @@ export class ChainBuilder {
   }
 
   private async verifySignature(child: X509Certificate, issuer: X509Certificate): Promise<void> {
-    const ok = await child.verify({ publicKey: issuer.publicKey });
+    // `signatureOnly: true` skips @peculiar/x509's internal validity check —
+    // we own validity enforcement via `checkValidity` with clock-skew tolerance.
+    const ok = await child.verify({ publicKey: issuer.publicKey, signatureOnly: true });
     if (!ok) {
       throw new CertificateChainError(`signature verification failed for ${child.subject}`, { reason: "signature" });
+    }
+  }
+
+  private checkValidity(cert: X509Certificate): void {
+    const now = (this.opts.now ?? (() => new Date()))().getTime();
+    const skewMs = (this.opts.clockSkewTolerance ?? 60) * 1000;
+    const notBefore = cert.notBefore.getTime();
+    const notAfter = cert.notAfter.getTime();
+    if (now + skewMs < notBefore) {
+      throw new CertificateChainError(
+        `certificate ${cert.subject} not yet valid (notBefore=${cert.notBefore.toISOString()})`,
+        { reason: "validity" }
+      );
+    }
+    if (now - skewMs > notAfter) {
+      throw new CertificateChainError(
+        `certificate ${cert.subject} expired (notAfter=${cert.notAfter.toISOString()})`,
+        { reason: "validity" }
+      );
     }
   }
 }
