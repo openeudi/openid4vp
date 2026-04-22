@@ -2,6 +2,7 @@ import { splitSdJwt, decodeSdJwt, getClaims } from '@sd-jwt/decode';
 import { decodeProtectedHeader, jwtVerify, importX509, importJWK } from 'jose';
 
 import { MalformedCredentialError } from '../errors.js';
+import type { TrustEvaluationResult } from '../trust/TrustEvaluator.js';
 import type { IssuerInfo } from '../types/issuer.js';
 import type { CredentialFormat, CredentialClaims, PresentationResult } from '../types/presentation.js';
 
@@ -228,16 +229,35 @@ export class SdJwtParser implements ICredentialParser {
             country: extractCountryHint(issuerString),
         };
 
-        if (options.trustedCertificates.length === 0) {
-            if (options.skipTrustCheck !== true) {
-                throw new MalformedCredentialError(
-                    'trustedCertificates must not be empty unless skipTrustCheck is true'
-                );
-            }
+        let trustResult: TrustEvaluationResult | undefined;
+
+        if (options.trustStore) {
+            // 0.5.0 path: RFC 5280 chain validation via TrustEvaluator.
+            // Dynamic import keeps the evaluator out of 0.4.0-style callers' bundles.
+            const { TrustEvaluator } = await import('../trust/TrustEvaluator.js');
+            const evaluator = new TrustEvaluator({
+                trustStore: options.trustStore,
+                revocationPolicy: options.revocationPolicy ?? 'skip',
+                fetcher: options.fetcher,
+                cache: options.cache,
+                clockSkewTolerance: options.clockSkewTolerance,
+            });
+            const { X509Certificate } = await import('@peculiar/x509');
+            const leaf = new X509Certificate(issuerCertBytes);
+            trustResult = await evaluator.evaluate(leaf);
         } else {
-            const isTrusted = options.trustedCertificates.some((trusted) => bytesEqual(trusted, issuerCertBytes));
-            if (!isTrusted) {
-                return invalidResult('Issuer certificate is not trusted');
+            // 0.4.0 byte-equality path — preserved verbatim for backward compatibility.
+            if (options.trustedCertificates.length === 0) {
+                if (options.skipTrustCheck !== true) {
+                    throw new MalformedCredentialError(
+                        'trustedCertificates must not be empty unless skipTrustCheck is true'
+                    );
+                }
+            } else {
+                const isTrusted = options.trustedCertificates.some((trusted) => bytesEqual(trusted, issuerCertBytes));
+                if (!isTrusted) {
+                    return invalidResult('Issuer certificate is not trusted');
+                }
             }
         }
 
@@ -319,12 +339,14 @@ export class SdJwtParser implements ICredentialParser {
 
         const vct = typeof payload['vct'] === 'string' ? (payload['vct'] as string) : undefined;
 
-        return {
+        const result: PresentationResult = {
             valid: true,
             format: this.format,
             claims: mapToCredentialClaims(resolvedClaims),
             issuer: issuerInfo,
             ...(vct !== undefined ? { vct } : {}),
         };
+        if (trustResult) result.trust = trustResult;
+        return result;
     }
 }
