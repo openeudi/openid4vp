@@ -28,9 +28,12 @@ describe("ChainBuilder — signature verification", () => {
     const attackerRoot = await createCa();
     const leaf = await createLeaf(attackerRoot);
     const builder = new ChainBuilder();
+    // Both CAs share DN `CN=Test Root CA` by default, so the DN climb selects
+    // realRoot as the anchor; the AKI/SKI check rejects before we even reach
+    // signature verification, with a more-specific reason.
     await expect(builder.build(leaf.certificate, [realRoot.certificate])).rejects.toMatchObject({
       code: "chain_invalid",
-      reason: "signature",
+      reason: "aki_ski_mismatch",
     });
     await expect(builder.build(leaf.certificate, [realRoot.certificate])).rejects.toBeInstanceOf(CertificateChainError);
   });
@@ -118,5 +121,26 @@ describe("ChainBuilder — algorithm allowlist", () => {
       code: "chain_invalid",
       reason: "algorithm_disallowed",
     });
+  });
+});
+
+describe("ChainBuilder — AKI/SKI matching", () => {
+  it("rejects when child AKI does not match issuer SKI", async () => {
+    // Build a leaf signed by parentA but craft an AKI that points at parentB's SKI.
+    // The helpers don't support AKI injection directly, so we simulate this by
+    // using two CAs with the same subject DN but different keys: the chain will
+    // build by DN but fail on AKI comparison.
+    const parentA = await createCa({ name: "CN=Same DN CA" });
+    const parentB = await createCa({ name: "CN=Same DN CA" });
+    const leaf = await createLeaf(parentA); // AKI points at parentA's SKI
+    // parentB has the same subject but a different SKI.
+    const builder = new ChainBuilder();
+    // When anchors = [parentB], the DN climb will select parentB but the AKI
+    // check should reject it. When anchors = [parentA], the chain builds.
+    await expect(builder.build(leaf.certificate, [parentB.certificate])).rejects.toMatchObject({
+      code: "chain_invalid",
+      reason: "aki_ski_mismatch",
+    });
+    await expect(builder.build(leaf.certificate, [parentA.certificate])).resolves.toHaveLength(2);
   });
 });

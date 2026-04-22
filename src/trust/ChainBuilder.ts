@@ -1,4 +1,9 @@
-import { X509Certificate, X509Certificates } from "@peculiar/x509";
+import {
+  AuthorityKeyIdentifierExtension,
+  SubjectKeyIdentifierExtension,
+  X509Certificate,
+  X509Certificates,
+} from "@peculiar/x509";
 import { CertificateChainError } from "../errors.js";
 
 export interface ChainBuilderOptions {
@@ -75,16 +80,32 @@ export class ChainBuilder {
         }
         // climbed to the anchor
         this.checkPerCert(anchor);
+        this.checkAkiSkiMatch(current, anchor);
         await this.verifySignature(current, anchor);
         chain.push(anchor);
         return chain;
       }
       this.checkPerCert(issuer);
+      this.checkAkiSkiMatch(current, issuer);
       await this.verifySignature(current, issuer);
       chain.push(issuer);
       current = issuer;
     }
     return chain;
+  }
+
+  private checkAkiSkiMatch(child: X509Certificate, issuer: X509Certificate): void {
+    const aki = child.getExtension(AuthorityKeyIdentifierExtension);
+    const ski = issuer.getExtension(SubjectKeyIdentifierExtension);
+    if (!aki || !ski) return; // extension-less certs permitted
+    const akiKeyId = aki.keyId;
+    const skiKeyId = ski.keyId;
+    if (akiKeyId && skiKeyId && akiKeyId.toLowerCase() !== skiKeyId.toLowerCase()) {
+      throw new CertificateChainError(
+        `AKI of ${child.subject} does not match SKI of ${issuer.subject}`,
+        { reason: "aki_ski_mismatch" }
+      );
+    }
   }
 
   private async verifySignature(child: X509Certificate, issuer: X509Certificate): Promise<void> {
