@@ -1,5 +1,6 @@
 import {
   AuthorityKeyIdentifierExtension,
+  BasicConstraintsExtension,
   SubjectKeyIdentifierExtension,
   X509Certificate,
   X509Certificates,
@@ -69,6 +70,7 @@ export class ChainBuilder {
     const chain: X509Certificate[] = [leaf];
     let current = leaf;
     const pool = new X509Certificates(intermediates);
+    let nonLeafDepth = 0; // how many non-self-issued CAs above leaf
 
     while (current.subject !== anchor.subject) {
       const issuer = pool.find((c) => c.subject === current.issuer);
@@ -80,18 +82,37 @@ export class ChainBuilder {
         }
         // climbed to the anchor
         this.checkPerCert(anchor);
+        this.checkCaAndPathLen(anchor, nonLeafDepth);
         this.checkAkiSkiMatch(current, anchor);
         await this.verifySignature(current, anchor);
         chain.push(anchor);
         return chain;
       }
       this.checkPerCert(issuer);
+      this.checkCaAndPathLen(issuer, nonLeafDepth);
       this.checkAkiSkiMatch(current, issuer);
       await this.verifySignature(current, issuer);
       chain.push(issuer);
       current = issuer;
+      nonLeafDepth += 1;
     }
     return chain;
+  }
+
+  private checkCaAndPathLen(cert: X509Certificate, nonLeafDepth: number): void {
+    const bc = cert.getExtension(BasicConstraintsExtension);
+    if (!bc || !bc.ca) {
+      throw new CertificateChainError(
+        `certificate ${cert.subject} is not a CA (BasicConstraints cA=false or absent)`,
+        { reason: "basic_constraints" }
+      );
+    }
+    if (typeof bc.pathLength === "number" && nonLeafDepth > bc.pathLength) {
+      throw new CertificateChainError(
+        `path length ${nonLeafDepth} exceeds pathLenConstraint ${bc.pathLength} on ${cert.subject}`,
+        { reason: "path_length" }
+      );
+    }
   }
 
   private checkAkiSkiMatch(child: X509Certificate, issuer: X509Certificate): void {
