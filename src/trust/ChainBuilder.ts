@@ -1,6 +1,8 @@
 import {
   AuthorityKeyIdentifierExtension,
   BasicConstraintsExtension,
+  KeyUsageFlags,
+  KeyUsagesExtension,
   SubjectKeyIdentifierExtension,
   X509Certificate,
   X509Certificates,
@@ -67,6 +69,7 @@ export class ChainBuilder {
     intermediates: X509Certificate[]
   ): Promise<X509Certificate[]> {
     this.checkPerCert(leaf);
+    this.checkLeafKeyUsage(leaf);
     const chain: X509Certificate[] = [leaf];
     let current = leaf;
     const pool = new X509Certificates(intermediates);
@@ -100,6 +103,7 @@ export class ChainBuilder {
   }
 
   private checkCaAndPathLen(cert: X509Certificate, nonLeafDepth: number): void {
+    this.checkCaKeyUsage(cert);
     const bc = cert.getExtension(BasicConstraintsExtension);
     if (!bc || !bc.ca) {
       throw new CertificateChainError(
@@ -111,6 +115,28 @@ export class ChainBuilder {
       throw new CertificateChainError(
         `path length ${nonLeafDepth} exceeds pathLenConstraint ${bc.pathLength} on ${cert.subject}`,
         { reason: "path_length" }
+      );
+    }
+  }
+
+  private checkLeafKeyUsage(leaf: X509Certificate): void {
+    const ext = leaf.getExtension(KeyUsagesExtension);
+    if (!ext) return; // no keyUsage → no restriction
+    if ((ext.usages & KeyUsageFlags.digitalSignature) === 0) {
+      throw new CertificateChainError(
+        `leaf ${leaf.subject} does not assert digitalSignature key usage`,
+        { reason: "key_usage" }
+      );
+    }
+  }
+
+  private checkCaKeyUsage(cert: X509Certificate): void {
+    const ext = cert.getExtension(KeyUsagesExtension);
+    if (!ext) return;
+    if ((ext.usages & KeyUsageFlags.keyCertSign) === 0) {
+      throw new CertificateChainError(
+        `CA ${cert.subject} does not assert keyCertSign key usage`,
+        { reason: "key_usage" }
       );
     }
   }

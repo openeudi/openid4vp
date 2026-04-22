@@ -190,3 +190,26 @@ describe("ChainBuilder — basicConstraints", () => {
     );
   });
 });
+
+describe("ChainBuilder — keyUsage", () => {
+  it("rejects leaf without digitalSignature", async () => {
+    const { KeyUsageFlags } = await import("@peculiar/x509");
+    const root = await createCa();
+    const leaf = await createLeaf(root, { keyUsage: KeyUsageFlags.keyEncipherment });
+    const builder = new ChainBuilder();
+    await expect(builder.build(leaf.certificate, [root.certificate])).rejects.toMatchObject({
+      code: "chain_invalid",
+      reason: "key_usage",
+    });
+  });
+
+  it("accepts leaf with digitalSignature asserted", async () => {
+    const root = await createCa();
+    const leaf = await createLeaf(root); // default = digitalSignature
+    const builder = new ChainBuilder();
+    await expect(builder.build(leaf.certificate, [root.certificate])).resolves.toHaveLength(2);
+  });
+
+  // CA keyUsage test is implicitly covered by every other test —
+  // the synthetic-ca helpers always set keyCertSign on CAs.
+});
