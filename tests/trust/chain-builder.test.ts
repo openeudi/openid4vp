@@ -254,3 +254,47 @@ describe("ChainBuilder — nameConstraints (DN subtrees)", () => {
     ).rejects.toMatchObject({ reason: "name_constraints" });
   });
 });
+
+describe("ChainBuilder — nameConstraints (DNS / RFC822 / URI)", () => {
+  it("rejects leaf SAN DNS outside permitted subtree", async () => {
+    const root = await createCa();
+    const intermediate = await createIntermediate(root, {
+      nameConstraintsPermitted: [{ type: "dns", value: "example.com" }],
+    });
+    const leaf = await createLeaf(intermediate, {
+      subjectAlternativeName: [{ type: "dns", value: "evil.org" }],
+    });
+    const builder = new ChainBuilder();
+    await expect(
+      builder.build(leaf.certificate, [root.certificate], [intermediate.certificate])
+    ).rejects.toMatchObject({ reason: "name_constraints" });
+  });
+
+  it("accepts leaf SAN DNS under permitted subtree", async () => {
+    const root = await createCa();
+    const intermediate = await createIntermediate(root, {
+      nameConstraintsPermitted: [{ type: "dns", value: "example.com" }],
+    });
+    const leaf = await createLeaf(intermediate, {
+      subjectAlternativeName: [{ type: "dns", value: "api.example.com" }],
+    });
+    const builder = new ChainBuilder();
+    await expect(
+      builder.build(leaf.certificate, [root.certificate], [intermediate.certificate])
+    ).resolves.toHaveLength(3);
+  });
+
+  it("rejects leaf SAN email outside permitted subtree", async () => {
+    const root = await createCa();
+    const intermediate = await createIntermediate(root, {
+      nameConstraintsPermitted: [{ type: "email", value: "acme.com" }],
+    });
+    const leaf = await createLeaf(intermediate, {
+      subjectAlternativeName: [{ type: "email", value: "user@evil.org" }],
+    });
+    const builder = new ChainBuilder();
+    await expect(
+      builder.build(leaf.certificate, [root.certificate], [intermediate.certificate])
+    ).rejects.toMatchObject({ reason: "name_constraints" });
+  });
+});

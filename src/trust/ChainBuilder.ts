@@ -11,6 +11,7 @@ import {
   KeyUsageFlags,
   KeyUsagesExtension,
   Name as X509Name,
+  SubjectAlternativeNameExtension,
   SubjectKeyIdentifierExtension,
   X509Certificate,
   X509Certificates,
@@ -124,18 +125,20 @@ export class ChainBuilder {
    * Enforce nameConstraints asserted by any CA above the leaf against the
    * leaf's identities. RFC 5280 §4.2.1.10 requires both permitted (leaf must
    * match at least one) and excluded (leaf must match none) to hold for each
-   * name type that appears in the constraint. This task implements DN
-   * subtrees only; DNS/email/URI follow in a later task.
+   * name type that appears in the constraint.
    */
   private checkNameConstraints(leaf: X509Certificate, chainAboveLeaf: X509Certificate[]): void {
     const leafNames = collectLeafNames(leaf);
+    const types: SubtreeName["type"][] = ["dn", "dns", "email", "uri"];
     for (const ca of chainAboveLeaf) {
       const ext = ca.extensions.find((e) => e.type === NAME_CONSTRAINTS_OID);
       if (!ext) continue;
       const nc = AsnConvert.parse(ext.value, NameConstraints);
       const permitted = extractSubtrees(nc.permittedSubtrees);
       const excluded = extractSubtrees(nc.excludedSubtrees);
-      this.applyConstraintsForType(leaf, leafNames, permitted, excluded, "dn", ca.subject);
+      for (const type of types) {
+        this.applyConstraintsForType(leaf, leafNames, permitted, excluded, type, ca.subject);
+      }
     }
   }
 
@@ -293,11 +296,25 @@ function mapX509AlgoToJwaName(cert: X509Certificate): string {
 
 /**
  * Collect all identities asserted by the leaf that name constraints can
- * apply to. For now this is limited to the subject DN — DNS/email/URI from
- * the SAN extension are handled in a subsequent task.
+ * apply to: subject DN plus any SAN entries of supported types.
+ *
+ * Note: `@peculiar/x509`'s `GeneralName.type` uses the literal `'url'` for
+ * URIs (URL constant), while the constraint side in `@peculiar/asn1-x509`
+ * uses `uniformResourceIdentifier`, which `generalNameToSubtree` maps to
+ * `{type: 'uri', ...}`. We normalize SAN entries here to `'uri'` so both
+ * read paths agree on one canonical type tag.
  */
 function collectLeafNames(leaf: X509Certificate): SubtreeName[] {
-  return [{ type: "dn", value: leaf.subject }];
+  const out: SubtreeName[] = [{ type: "dn", value: leaf.subject }];
+  const san = leaf.getExtension(SubjectAlternativeNameExtension);
+  if (san?.names?.items) {
+    for (const name of san.names.items) {
+      if (name.type === "dns") out.push({ type: "dns", value: name.value });
+      else if (name.type === "email") out.push({ type: "email", value: name.value });
+      else if (name.type === "url") out.push({ type: "uri", value: name.value });
+    }
+  }
+  return out;
 }
 
 /**
@@ -334,9 +351,61 @@ function generalNameToSubtree(gn: Asn1GeneralName): SubtreeName | null {
 
 function matchesSubtree(leafName: SubtreeName, subtree: SubtreeName): boolean {
   if (leafName.type !== subtree.type) return false;
-  if (subtree.type === "dn") return dnIsUnder(leafName.value, subtree.value);
-  // DNS/email/URI matching lands in the next task.
-  return false;
+  switch (subtree.type) {
+    case "dn":
+      return dnIsUnder(leafName.value, subtree.value);
+    case "dns":
+      return dnsIsUnder(leafName.value, subtree.value);
+    case "email":
+      return emailIsUnder(leafName.value, subtree.value);
+    case "uri":
+      return uriIsUnder(leafName.value, subtree.value);
+  }
+}
+
+/**
+ * DNS subtree match per RFC 5280 §4.2.1.10: case-insensitive exact match,
+ * or left-side label(s) extension (`api.example.com` is under `example.com`).
+ */
+function dnsIsUnder(leafDns: string, subtree: string): boolean {
+  const leaf = leafDns.toLowerCase();
+  const sub = subtree.toLowerCase();
+  if (leaf === sub) return true;
+  return leaf.endsWith(`.${sub}`);
+}
+
+/**
+ * rfc822Name subtree match per RFC 5280 §4.2.1.10. Three shapes:
+ *  - full mailbox (`user@host`): exact match;
+ *  - host (`host.example`): match by leaf's domain part;
+ *  - dot-prefixed (`.example.com`): any descendant host, including the
+ *    bare domain (`example.com`) per §4.2.1.6 conventions.
+ */
+function emailIsUnder(leafEmail: string, subtree: string): boolean {
+  const leaf = leafEmail.toLowerCase();
+  const sub = subtree.toLowerCase();
+  if (sub.includes("@")) return leaf === sub;
+  const at = leaf.indexOf("@");
+  if (at < 0) return false;
+  const leafHost = leaf.slice(at + 1);
+  if (sub.startsWith(".")) {
+    const bare = sub.slice(1);
+    return leafHost === bare || leafHost.endsWith(sub);
+  }
+  return leafHost === sub;
+}
+
+/**
+ * URI subtree match per RFC 5280 §4.2.1.10: parse the leaf URI and run the
+ * DNS subtree comparison on its hostname.
+ */
+function uriIsUnder(leafUri: string, subtree: string): boolean {
+  try {
+    const url = new URL(leafUri);
+    return dnsIsUnder(url.hostname, subtree);
+  } catch {
+    return false;
+  }
 }
 
 /**
