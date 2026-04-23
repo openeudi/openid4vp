@@ -16,13 +16,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `PresentationResult.trust` field populated when `trustStore` is used (chain, anchor, revocationStatus).
 - RFC 5280 chain validation (pragmatic subset): signature, validity period with clock-skew tolerance, algorithm allowlist, issuer/subject DN chaining, AKI/SKI match, basicConstraints (cA + pathLenConstraint), keyUsage, nameConstraints (DN, DNS, RFC 822, URI).
 
+### Added — workstream A.2 (revocation checking)
+
+- `RevokedCertificateError` — thrown when a definitive `revoked` response comes back from CRL or OCSP (`code: 'certificate_revoked'`, `.serial`, `.revokedAt`, optional `.reason`).
+- `RevocationCheckFailedError` — thrown only under `revocationPolicy: 'require'` when the status cannot be determined (`code: 'revocation_check_failed'`).
+- `ParseOptions.revocationPolicy: 'prefer' | 'require'` now work (previously threw at construct time).
+- OCSP and CRL revocation checking per RFC 6960 + RFC 5280 §5: OCSP preferred, CRL fallback, responses cached via the injected `Cache`.
+- OCSP responses verified against (a) direct issuer signature or (b) responder sub-cert carrying `id-kp-OCSPSigning` EKU with chain validated via `ChainBuilder`.
+- Out of scope for this release: OCSP stapling, delta CRLs, signed OCSP requests. Captured in spec §7.5.
+
+### Dependencies — A.2
+
+- Added devDependencies: `@peculiar/asn1-ocsp@^2.6.1`, `@peculiar/asn1-cms@^2.6.1`.
+
 ### Deprecated
 
 - `ParseOptions.trustedCertificates` — kept working for 0.4.0 byte-equality behavior; scheduled for removal in 1.0.0. Migrate to `trustStore: new StaticTrustStore([...rootCAs])` for RFC 5280 chain validation.
 
 ### Coming in 0.5.0 (not yet shipped)
 
-- A.2: CRL + OCSP revocation checking (`revocationPolicy: 'prefer' | 'require'`).
 - A.3: EU LOTL client (`LotlTrustStore`) + LOTL-populated authority provenance metadata.
 
 ## [0.4.0] — 2026-04-21
