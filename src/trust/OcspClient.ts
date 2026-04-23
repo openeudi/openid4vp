@@ -13,11 +13,19 @@ import type { Cache } from './Cache.js';
 import { ChainBuilder } from './ChainBuilder.js';
 import { ecdsaDerToIeee } from './ecdsa-util.js';
 import type { Fetcher } from './Fetcher.js';
+import type { RevocationResult } from './revocation-types.js';
 
 export interface OcspClientOptions {
     fetcher?: Fetcher;
     cache?: Cache;
 }
+
+export interface ExtractVerdictOpts {
+    /** Maximum allowed age of the OCSP response's `thisUpdate`. Default: 7 days. */
+    maxResponseAgeMs?: number;
+}
+
+const DEFAULT_MAX_RESPONSE_AGE_MS = 7 * 24 * 3600 * 1000;
 
 /**
  * Parsed OCSP response envelope. Holds both the decoded `BasicOCSPResponse`
@@ -212,6 +220,66 @@ export class OcspClient {
             'OCSP response signature could not be verified by any responder candidate'
         );
     }
+
+    /**
+     * Extract a `RevocationResult` from a verified `OcspResponseEnvelope` for
+     * `subjectCert`. Locates the matching `SingleResponse` by serial number,
+     * enforces an `opts.maxResponseAgeMs` staleness bound against `thisUpdate`
+     * (default 7 days per RFC 6960 guidance), then maps the three-way
+     * `CertStatus` CHOICE into `RevocationResult`.
+     *
+     * Signature/chain verification is `verifyResponse`'s job — this method
+     * assumes the envelope has already been verified.
+     *
+     * Throws when no matching SingleResponse is found or when the response is
+     * stale. Callers (e.g. `RevocationChecker`) map stale errors into
+     * `RevocationCheckFailedError` per policy.
+     */
+    extractVerdict(
+        envelope: OcspResponseEnvelope,
+        subjectCert: X509Certificate,
+        now: Date,
+        opts: ExtractVerdictOpts = {}
+    ): RevocationResult {
+        const maxAge = opts.maxResponseAgeMs ?? DEFAULT_MAX_RESPONSE_AGE_MS;
+        const subjectSerialNorm = normalizeHexUnsignedInt(subjectCert.serialNumber);
+
+        const single = envelope.basic.tbsResponseData.responses.find((r) => {
+            const serialHex = Buffer.from(r.certID.serialNumber).toString('hex');
+            return normalizeHexUnsignedInt(serialHex) === subjectSerialNorm;
+        });
+        if (!single) {
+            throw new Error(
+                `OCSP response does not contain an entry for subject serial ${subjectCert.serialNumber}`
+            );
+        }
+
+        const thisUpdate = single.thisUpdate;
+        if (now.getTime() - thisUpdate.getTime() > maxAge) {
+            throw new Error(
+                `OCSP response is stale: thisUpdate=${thisUpdate.toISOString()}, now=${now.toISOString()}`
+            );
+        }
+
+        // CertStatus is a CHOICE — exactly one of `good`, `revoked`, `unknown`
+        // is populated. `good` and `unknown` are `null` values so the presence
+        // check MUST use `!== undefined` (truthy-check would miss them).
+        const status = single.certStatus;
+        if (status.good !== undefined) {
+            return { status: 'good', source: 'ocsp', checkedAt: now };
+        }
+        if (status.revoked !== undefined) {
+            const reason = status.revoked.revocationReason;
+            return {
+                status: 'revoked',
+                source: 'ocsp',
+                revokedAt: status.revoked.revocationTime,
+                revocationReason: reason !== undefined ? String(reason) : undefined,
+                checkedAt: now,
+            };
+        }
+        return { status: 'unknown', source: 'ocsp', checkedAt: now };
+    }
 }
 
 /**
@@ -247,6 +315,20 @@ async function verifySig(
             `OCSP signature did not verify against signer ${signer.subject}`
         );
     }
+}
+
+/**
+ * Normalize a hex-encoded unsigned integer to canonical uppercase form
+ * without the ASN.1-mandated leading 0x00 sign byte. Mirrors the helper in
+ * `CrlFetcher.ts` so OCSP and CRL paths apply identical serial-compare
+ * semantics — DRY-by-convention to keep this sub-module self-contained.
+ */
+function normalizeHexUnsignedInt(hex: string): string {
+    const clean = hex.replace(/[^0-9a-fA-F]/g, '');
+    if (clean.length === 0) return '';
+    return BigInt('0x' + clean)
+        .toString(16)
+        .toUpperCase();
 }
 
 /** Convert a hex string (optionally with leading zeros) into the big-endian BigInteger bytes the ASN.1 layer wants. */

@@ -148,3 +148,80 @@ describe('OcspClient — verifyResponse', () => {
         await expect(c.verifyResponse(envelope, root.certificate)).rejects.toThrow();
     });
 });
+
+describe('OcspClient — extractVerdict', () => {
+    it('returns good for a good certStatus', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root);
+        const client = new OcspClient();
+        const requestDer = await client.buildRequest(leaf.certificate, root.certificate);
+        const responseDer = await signOcspResponse(root, requestDer, {
+            status: 'good',
+            thisUpdate: new Date('2026-04-23'),
+            nextUpdate: new Date('2026-04-30'),
+        });
+        const fetcher = async () => new Response(responseDer, { status: 200 });
+        const envelope = await new OcspClient({ fetcher: fetcher as Fetcher }).sendRequest(
+            'http://ocsp.example.com',
+            requestDer
+        );
+        const verdict = client.extractVerdict(
+            envelope,
+            leaf.certificate,
+            new Date('2026-04-23T12:00:00Z')
+        );
+        expect(verdict.status).toBe('good');
+        expect(verdict.source).toBe('ocsp');
+    });
+
+    it('returns revoked with the reported revokedAt', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root);
+        const client = new OcspClient();
+        const requestDer = await client.buildRequest(leaf.certificate, root.certificate);
+        const responseDer = await signOcspResponse(root, requestDer, {
+            status: 'revoked',
+            revokedAt: new Date('2026-01-01T00:00:00Z'),
+            thisUpdate: new Date('2026-04-23'),
+            nextUpdate: new Date('2026-04-30'),
+        });
+        const fetcher = async () => new Response(responseDer, { status: 200 });
+        const envelope = await new OcspClient({ fetcher: fetcher as Fetcher }).sendRequest(
+            'http://ocsp.example.com',
+            requestDer
+        );
+        const verdict = client.extractVerdict(
+            envelope,
+            leaf.certificate,
+            new Date('2026-04-23T12:00:00Z')
+        );
+        expect(verdict.status).toBe('revoked');
+        if (verdict.status === 'revoked') {
+            expect(verdict.revokedAt!.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+        }
+    });
+
+    it('throws when thisUpdate is older than the stale threshold', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root);
+        const client = new OcspClient();
+        const requestDer = await client.buildRequest(leaf.certificate, root.certificate);
+        const responseDer = await signOcspResponse(root, requestDer, {
+            status: 'good',
+            thisUpdate: new Date('2026-01-01'), // 3+ months before "now"
+            nextUpdate: new Date('2026-01-08'),
+        });
+        const fetcher = async () => new Response(responseDer, { status: 200 });
+        const envelope = await new OcspClient({ fetcher: fetcher as Fetcher }).sendRequest(
+            'http://ocsp.example.com',
+            requestDer
+        );
+        expect(() =>
+            client.extractVerdict(
+                envelope,
+                leaf.certificate,
+                new Date('2026-04-23T12:00:00Z')
+            )
+        ).toThrow(/stale/);
+    });
+});
