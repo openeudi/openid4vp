@@ -2,10 +2,11 @@ import {
     AuthorityKeyIdentifierExtension,
     X509Certificate,
 } from '@peculiar/x509';
-import { TrustAnchorNotFoundError } from '../errors.js';
+import { RevokedCertificateError, TrustAnchorNotFoundError } from '../errors.js';
 import type { Cache } from './Cache.js';
 import { ChainBuilder, type ChainBuilderOptions } from './ChainBuilder.js';
 import type { Fetcher } from './Fetcher.js';
+import { RevocationChecker } from './RevocationChecker.js';
 import type { TrustAnchor } from './TrustAnchor.js';
 import type { TrustStore } from './TrustStore.js';
 
@@ -39,23 +40,25 @@ export interface TrustEvaluationResult {
 
 /**
  * Private internal coordinator — NOT exported from the package root.
- * Orchestrates `TrustStore` + `ChainBuilder` (+ `RevocationChecker` in A.2
- * + `ProvenanceResolver` in A.3). Signature is stable across A.1/A.2/A.3
+ * Orchestrates `TrustStore` + `ChainBuilder` + `RevocationChecker` (A.2)
+ * (+ `ProvenanceResolver` in A.3). Signature is stable across A.1/A.2/A.3
  * so parsers don't need to change when later workstreams land.
  */
 export class TrustEvaluator {
     private readonly trustStore: TrustStore;
     private readonly chainBuilder: ChainBuilder;
+    private readonly revocationChecker: RevocationChecker;
 
     constructor(private readonly opts: TrustEvaluatorOptions) {
         this.trustStore = opts.trustStore;
         this.chainBuilder = new ChainBuilder(opts);
         const policy = opts.revocationPolicy ?? 'skip';
-        if (policy !== 'skip') {
-            throw new Error(
-                `revocationPolicy='${policy}' is not implemented yet — ships in 0.5.0 A.2`
-            );
-        }
+        // A.2: policy='prefer'/'require' now supported.
+        this.revocationChecker = new RevocationChecker({
+            policy,
+            fetcher: opts.fetcher,
+            cache: opts.cache,
+        });
     }
 
     async evaluate(
@@ -96,10 +99,36 @@ export class TrustEvaluator {
             anchors.find(
                 (a) => a.certificate.serialNumber === terminusCert.serialNumber
             ) ?? anchors[0];
+
+        // Revocation check — runs against the leaf (chain[0]) with the
+        // leaf's direct issuer (chain[1]) as the signing CA.
+        const issuerForRevocation = chain.length > 1 ? chain[1] : terminusCert;
+        const revocation = await this.revocationChecker.check(
+            leaf,
+            issuerForRevocation
+        );
+
+        if (revocation.status === 'revoked') {
+            throw new RevokedCertificateError(
+                `certificate ${leaf.subject} is revoked`,
+                {
+                    serial: leaf.serialNumber,
+                    revokedAt: revocation.revokedAt!,
+                    reason: revocation.revocationReason,
+                }
+            );
+        }
+
         return {
             chain,
             anchor,
-            revocationStatus: 'skipped',
+            // skip-policy yields source='none'/status='good' — keep the A.1
+            // 'skipped' contract. Otherwise surface 'good' | 'unknown' as-is.
+            revocationStatus:
+                revocation.source === 'none' && revocation.status === 'good'
+                    ? 'skipped'
+                    : revocation.status,
+            revocationCheckedAt: revocation.checkedAt,
         };
     }
 }

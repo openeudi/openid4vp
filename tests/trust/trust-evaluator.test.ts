@@ -4,12 +4,16 @@ import { StaticTrustStore } from '../../src/trust/TrustStore.js';
 import {
     TrustAnchorNotFoundError,
     CertificateChainError,
+    RevokedCertificateError,
+    RevocationCheckFailedError,
 } from '../../src/errors.js';
 import {
     createCa,
     createIntermediate,
     createLeaf,
+    signOcspResponse,
 } from './helpers/synthetic-ca.js';
+import type { Fetcher } from '../../src/trust/Fetcher.js';
 
 describe('TrustEvaluator', () => {
     it('returns a trust verdict for a valid chain', async () => {
@@ -57,7 +61,7 @@ describe('TrustEvaluator', () => {
         ).rejects.toBeInstanceOf(CertificateChainError);
     });
 
-    it('only permits revocationPolicy=skip in A.1', async () => {
+    it('accepts revocationPolicy=prefer (A.2 unlocked)', async () => {
         const root = await createCa();
         const store = new StaticTrustStore([root.certificate]);
         expect(
@@ -66,6 +70,84 @@ describe('TrustEvaluator', () => {
                     trustStore: store,
                     revocationPolicy: 'prefer',
                 })
-        ).toThrow(/revocationPolicy='prefer' is not implemented yet/);
+        ).not.toThrow();
+    });
+});
+
+describe('TrustEvaluator — revocation', () => {
+    it('returns revocationStatus=good under policy=prefer when OCSP says good', async () => {
+        const root = await createCa({ name: 'CN=Root' });
+        const leaf = await createLeaf(root, {
+            ocspUrl: 'http://ocsp.example.com',
+        });
+        const client = new (
+            await import('../../src/trust/OcspClient.js')
+        ).OcspClient();
+        const reqDer = await client.buildRequest(
+            leaf.certificate,
+            root.certificate
+        );
+        const ocspDer = await signOcspResponse(root, reqDer, {
+            status: 'good',
+            thisUpdate: new Date('2026-04-23'),
+            nextUpdate: new Date('2026-04-30'),
+        });
+        const fetcher: Fetcher = async () =>
+            new Response(ocspDer, { status: 200 });
+
+        const store = new StaticTrustStore([root.certificate]);
+        const evaluator = new TrustEvaluator({
+            trustStore: store,
+            revocationPolicy: 'prefer',
+            fetcher,
+        });
+        const result = await evaluator.evaluate(leaf.certificate);
+        expect(result.revocationStatus).toBe('good');
+        expect(result.revocationCheckedAt).toBeInstanceOf(Date);
+    });
+
+    it('throws RevokedCertificateError when OCSP says revoked', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root, {
+            ocspUrl: 'http://ocsp.example.com',
+        });
+        const client = new (
+            await import('../../src/trust/OcspClient.js')
+        ).OcspClient();
+        const reqDer = await client.buildRequest(
+            leaf.certificate,
+            root.certificate
+        );
+        const ocspDer = await signOcspResponse(root, reqDer, {
+            status: 'revoked',
+            revokedAt: new Date('2026-01-01T00:00:00Z'),
+            thisUpdate: new Date('2026-04-23'),
+            nextUpdate: new Date('2026-04-30'),
+        });
+        const fetcher: Fetcher = async () =>
+            new Response(ocspDer, { status: 200 });
+
+        const store = new StaticTrustStore([root.certificate]);
+        const evaluator = new TrustEvaluator({
+            trustStore: store,
+            revocationPolicy: 'prefer',
+            fetcher,
+        });
+        await expect(
+            evaluator.evaluate(leaf.certificate)
+        ).rejects.toBeInstanceOf(RevokedCertificateError);
+    });
+
+    it('throws RevocationCheckFailedError under policy=require when no URL is available', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root);
+        const store = new StaticTrustStore([root.certificate]);
+        const evaluator = new TrustEvaluator({
+            trustStore: store,
+            revocationPolicy: 'require',
+        });
+        await expect(
+            evaluator.evaluate(leaf.certificate)
+        ).rejects.toBeInstanceOf(RevocationCheckFailedError);
     });
 });
