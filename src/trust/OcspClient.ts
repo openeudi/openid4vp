@@ -10,8 +10,9 @@ import {
 import { AlgorithmIdentifier, SubjectPublicKeyInfo } from '@peculiar/asn1-x509';
 import { ExtendedKeyUsageExtension, X509Certificate } from '@peculiar/x509';
 import type { Cache } from './Cache.js';
-import type { Fetcher } from './Fetcher.js';
 import { ChainBuilder } from './ChainBuilder.js';
+import { ecdsaDerToIeee } from './ecdsa-util.js';
+import type { Fetcher } from './Fetcher.js';
 
 export interface OcspClientOptions {
     fetcher?: Fetcher;
@@ -259,26 +260,3 @@ function hexToBigIntBytes(hex: string): Uint8Array {
     return out;
 }
 
-/**
- * Convert ECDSA DER-encoded SEQUENCE { r, s } signature to IEEE P1363
- * r||s fixed-width (as WebCrypto verify() expects). Duplicated from
- * `CrlFetcher.ts` for Task 13; Task 14 extracts to `src/trust/ecdsa-util.ts`.
- */
-function ecdsaDerToIeee(der: Uint8Array, coordBytes: number): Uint8Array {
-    let pos = 0;
-    if (der[pos++] !== 0x30) throw new Error('invalid DER signature: expected SEQUENCE');
-    pos++; // skip seq-length
-    if (der[pos++] !== 0x02) throw new Error('invalid DER signature: expected INTEGER r');
-    const rLen = der[pos++];
-    let r = der.slice(pos, pos + rLen);
-    pos += rLen;
-    if (der[pos++] !== 0x02) throw new Error('invalid DER signature: expected INTEGER s');
-    const sLen = der[pos++];
-    let s = der.slice(pos, pos + sLen);
-    if (r.length > coordBytes) r = r.slice(r.length - coordBytes); // strip leading 0x00 sign byte
-    if (s.length > coordBytes) s = s.slice(s.length - coordBytes);
-    const out = new Uint8Array(coordBytes * 2);
-    out.set(r, coordBytes - r.length);
-    out.set(s, coordBytes * 2 - s.length);
-    return out;
-}
