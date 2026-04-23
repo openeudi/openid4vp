@@ -5,9 +5,12 @@ import {
     createLeaf,
     createCrl,
     createOcspResponder,
+    signOcspResponse,
 } from './synthetic-ca.js';
 import { AsnConvert } from '@peculiar/asn1-schema';
 import { CertificateList } from '@peculiar/asn1-x509';
+import { OCSPResponse } from '@peculiar/asn1-ocsp';
+import { OcspClient } from '../../../src/trust/OcspClient.js';
 
 describe('synthetic-ca smoke', () => {
     it('builds root → intermediate → leaf chain', async () => {
@@ -127,5 +130,22 @@ describe('createOcspResponder', () => {
             (e) => e.type === '1.3.6.1.5.5.7.48.1.5'
         );
         expect(ext).toBeDefined();
+    });
+});
+
+describe('signOcspResponse (helper smoke)', () => {
+    it('produces a parseable OCSPResponse with status=successful + good verdict', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root);
+        const responder = await createOcspResponder(root);
+        const client = new OcspClient();
+        const request = await client.buildRequest(leaf.certificate, root.certificate);
+        const responseDer = await signOcspResponse(responder, request, {
+            status: 'good',
+            thisUpdate: new Date('2026-04-23'),
+            nextUpdate: new Date('2026-04-30'),
+        });
+        const parsed = AsnConvert.parse(responseDer, OCSPResponse);
+        expect(parsed.responseStatus).toBe(0 /* successful */);
     });
 });
