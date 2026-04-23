@@ -96,7 +96,7 @@ export class CompositeTrustStore implements TrustStore {
 
 function toCertificate(input: TrustStoreInput): X509Certificate {
     if (input instanceof X509Certificate) return input;
-    if (input instanceof Uint8Array) return new X509Certificate(input);
+    if (input instanceof Uint8Array) return new X509Certificate(input as Uint8Array<ArrayBuffer>);
     return new X509Certificate(input); // PEM string path
 }
 

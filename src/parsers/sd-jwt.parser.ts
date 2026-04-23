@@ -243,7 +243,7 @@ export class SdJwtParser implements ICredentialParser {
                 clockSkewTolerance: options.clockSkewTolerance,
             });
             const { X509Certificate } = await import('@peculiar/x509');
-            const leaf = new X509Certificate(issuerCertBytes);
+            const leaf = new X509Certificate(issuerCertBytes as Uint8Array<ArrayBuffer>);
             trustResult = await evaluator.evaluate(leaf);
         } else {
             // 0.4.0 byte-equality path — preserved verbatim for backward compatibility.

@@ -44,3 +44,27 @@ export type {
     VerifyResult,
     HaipQueryInput,
 } from './types/index.js';
+
+// -------------------------------------------------------------------
+// 0.5.0 trust module — public plug interfaces and implementations.
+// TrustEvaluator, ChainBuilder, and EU_LOTL_SIGNING_ANCHORS are
+// intentionally NOT exported — they are internal.
+// -------------------------------------------------------------------
+export type { TrustAnchor, LotlAnchorMetadata } from './trust/TrustAnchor.js';
+export type { Fetcher } from './trust/Fetcher.js';
+export { InMemoryCache, type Cache } from './trust/Cache.js';
+export {
+    StaticTrustStore,
+    CompositeTrustStore,
+    type TrustStore,
+    type TrustStoreHint,
+    type TrustStoreInput,
+} from './trust/TrustStore.js';
+
+// Error classes added in 0.5.0
+export {
+    OpenID4VPError,
+    TrustAnchorNotFoundError,
+    CertificateChainError,
+    type ChainErrorReason,
+} from './errors.js';
