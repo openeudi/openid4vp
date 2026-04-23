@@ -37,3 +37,32 @@ describe('CrlFetcher — fetch + parse', () => {
         await expect(f.fetchAndParse('http://example.com/bad.crl')).rejects.toBeInstanceOf(Error);
     });
 });
+
+describe('CrlFetcher — signature verification', () => {
+    it('accepts a CRL signed by the issuer', async () => {
+        const root = await createCa();
+        const { der } = await createCrl(root, {
+            revokedSerials: [],
+            thisUpdate: new Date('2026-04-01T00:00:00Z'),
+            nextUpdate: new Date('2026-05-01T00:00:00Z'),
+        });
+        const fetcher = async () => new Response(der, { status: 200 });
+        const f = new CrlFetcher({ fetcher: fetcher as (url: string) => Promise<Response> });
+        const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
+        await expect(f.verifyCrl(parsed, root.certificate)).resolves.toBeUndefined();
+    });
+
+    it('rejects a CRL signed by a different CA', async () => {
+        const realRoot = await createCa();
+        const attackerRoot = await createCa();
+        const { der } = await createCrl(attackerRoot, {
+            revokedSerials: [],
+            thisUpdate: new Date('2026-04-01T00:00:00Z'),
+            nextUpdate: new Date('2026-05-01T00:00:00Z'),
+        });
+        const fetcher = async () => new Response(der, { status: 200 });
+        const f = new CrlFetcher({ fetcher: fetcher as (url: string) => Promise<Response> });
+        const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
+        await expect(f.verifyCrl(parsed, realRoot.certificate)).rejects.toThrow(/signature/i);
+    });
+});
