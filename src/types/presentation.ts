@@ -24,7 +24,16 @@ export interface PresentationResult {
      * DCQL claim paths address this shape: `['org.iso.18013.5.1', 'age_over_18']`.
      */
     namespacedClaims?: Record<string, Record<string, unknown>>;
+    /**
+     * Populated when `ParseOptions.trustStore` was provided and trust
+     * evaluation succeeded. Contains the validated chain, matched anchor,
+     * and revocation + provenance metadata (populated incrementally across
+     * 0.5.0 A.1/A.2/A.3). Omitted when `skipTrustCheck: true` or when
+     * `trustStore` was not provided.
+     */
+    trust?: TrustEvaluationResult;
 }
 
 import type { IssuerInfo } from './issuer.js';
+import type { TrustEvaluationResult } from '../trust/TrustEvaluator.js';
 export type { IssuerInfo } from './issuer.js';

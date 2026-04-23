@@ -5,6 +5,7 @@ import { decodeCoseSign1, verifyCoseSign1 } from '../crypto/cose-sign1.js';
 import { verifyAllDigests } from '../crypto/digest.js';
 import { decodeMso, validateMsoValidity, validateMsoDocType } from '../crypto/mso.js';
 import { MalformedCredentialError, ExpiredCredentialError } from '../errors.js';
+import type { TrustEvaluationResult } from '../trust/TrustEvaluator.js';
 import type { IssuerInfo } from '../types/issuer.js';
 import type { CredentialFormat, CredentialClaims, PresentationResult } from '../types/presentation.js';
 
@@ -213,22 +214,42 @@ export class MdocParser implements ICredentialParser {
         if (!issuerCertBytes) {
             throw new MalformedCredentialError('Missing issuer certificate in x5chain');
         }
-        if (options.trustedCertificates.length === 0) {
-            if (options.skipTrustCheck !== true) {
-                throw new MalformedCredentialError(
-                    'trustedCertificates must not be empty unless skipTrustCheck is true'
-                );
-            }
+
+        let trustResult: TrustEvaluationResult | undefined;
+
+        if (options.trustStore) {
+            // 0.5.0 path: RFC 5280 chain validation via TrustEvaluator.
+            // Dynamic import keeps the evaluator out of 0.4.0-style callers' bundles.
+            const { TrustEvaluator } = await import('../trust/TrustEvaluator.js');
+            const evaluator = new TrustEvaluator({
+                trustStore: options.trustStore,
+                revocationPolicy: options.revocationPolicy ?? 'skip',
+                fetcher: options.fetcher,
+                cache: options.cache,
+                clockSkewTolerance: options.clockSkewTolerance,
+            });
+            const { X509Certificate } = await import('@peculiar/x509');
+            const leaf = new X509Certificate(issuerCertBytes as Uint8Array<ArrayBuffer>);
+            trustResult = await evaluator.evaluate(leaf);
         } else {
-            const trusted = options.trustedCertificates.some((t) => bytesEqual(t, issuerCertBytes));
-            if (!trusted) {
-                return {
-                    valid: false,
-                    format: this.format,
-                    claims: {},
-                    issuer: { certificate: issuerCertBytes, country: '' },
-                    error: 'Issuer certificate is not trusted',
-                };
+            // 0.4.0 byte-equality path — preserved verbatim for backward compatibility.
+            if (options.trustedCertificates.length === 0) {
+                if (options.skipTrustCheck !== true) {
+                    throw new MalformedCredentialError(
+                        'trustedCertificates must not be empty unless skipTrustCheck is true'
+                    );
+                }
+            } else {
+                const trusted = options.trustedCertificates.some((t) => bytesEqual(t, issuerCertBytes));
+                if (!trusted) {
+                    return {
+                        valid: false,
+                        format: this.format,
+                        claims: {},
+                        issuer: { certificate: issuerCertBytes, country: '' },
+                        error: 'Issuer certificate is not trusted',
+                    };
+                }
             }
         }
 
@@ -304,7 +325,7 @@ export class MdocParser implements ICredentialParser {
             certificate: issuerCertBytes,
             country: extractCountryHintFromCert(issuerCertBytes),
         };
-        return {
+        const result: PresentationResult = {
             valid: true,
             format: this.format,
             claims,
@@ -312,5 +333,7 @@ export class MdocParser implements ICredentialParser {
             docType: mso.docType,
             namespacedClaims,
         };
+        if (trustResult) result.trust = trustResult;
+        return result;
     }
 }

@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased — 0.5.0]
+
+### Added — workstream A.1 (X.509 chain building)
+
+- Public `TrustStore` plug interface with `StaticTrustStore` and `CompositeTrustStore` implementations (`src/trust/`).
+- Public `Fetcher` type and `Cache` interface with `InMemoryCache` LRU default.
+- `OpenID4VPError` base class; `TrustAnchorNotFoundError`, `CertificateChainError` subclasses.
+- `ParseOptions.trustStore`, `ParseOptions.revocationPolicy`, `ParseOptions.fetcher`, `ParseOptions.cache`, `ParseOptions.clockSkewTolerance` fields.
+- `PresentationResult.trust` field populated when `trustStore` is used (chain, anchor, revocationStatus).
+- RFC 5280 chain validation (pragmatic subset): signature, validity period with clock-skew tolerance, algorithm allowlist, issuer/subject DN chaining, AKI/SKI match, basicConstraints (cA + pathLenConstraint), keyUsage, nameConstraints (DN, DNS, RFC 822, URI).
+
+### Deprecated
+
+- `ParseOptions.trustedCertificates` — kept working for 0.4.0 byte-equality behavior; scheduled for removal in 1.0.0. Migrate to `trustStore: new StaticTrustStore([...rootCAs])` for RFC 5280 chain validation.
+
+### Coming in 0.5.0 (not yet shipped)
+
+- A.2: CRL + OCSP revocation checking (`revocationPolicy: 'prefer' | 'require'`).
+- A.3: EU LOTL client (`LotlTrustStore`) + LOTL-populated authority provenance metadata.
+
 ## [0.4.0] — 2026-04-21
 
 ### Added
