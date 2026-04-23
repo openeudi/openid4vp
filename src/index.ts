@@ -66,5 +66,7 @@ export {
     OpenID4VPError,
     TrustAnchorNotFoundError,
     CertificateChainError,
+    RevokedCertificateError,
+    RevocationCheckFailedError,
     type ChainErrorReason,
 } from './errors.js';
