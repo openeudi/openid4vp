@@ -8,9 +8,10 @@ import {
     TBSRequest,
 } from '@peculiar/asn1-ocsp';
 import { AlgorithmIdentifier, SubjectPublicKeyInfo } from '@peculiar/asn1-x509';
-import type { X509Certificate } from '@peculiar/x509';
+import { ExtendedKeyUsageExtension, X509Certificate } from '@peculiar/x509';
 import type { Cache } from './Cache.js';
 import type { Fetcher } from './Fetcher.js';
+import { ChainBuilder } from './ChainBuilder.js';
 
 export interface OcspClientOptions {
     fetcher?: Fetcher;
@@ -130,6 +131,121 @@ export class OcspClient {
         );
         return { basic, responseDer };
     }
+
+    /**
+     * Verify the OCSP response signature per RFC 6960 §4.2.2.2. Two allowed
+     * signer cases:
+     *
+     * 1. Directly issuer-signed — signature verifies against `issuerCert`.
+     * 2. Responder sub-cert — one of the embedded `BasicOCSPResponse.certs`
+     *    chains to `issuerCert` (via `ChainBuilder`) AND asserts the
+     *    `id-kp-OCSPSigning` EKU (OID `1.3.6.1.5.5.7.3.9`).
+     *
+     * If neither path closes, throw. Responder sub-cert revocation is NOT
+     * checked in A.2 (per spec §7.5) — the `id-pkix-ocsp-nocheck` extension
+     * is irrelevant here because we never recurse.
+     */
+    async verifyResponse(
+        envelope: OcspResponseEnvelope,
+        issuerCert: X509Certificate
+    ): Promise<void> {
+        const { basic } = envelope;
+        // Prefer the raw DER bytes captured at parse time (avoids a
+        // re-serialization roundtrip). Mirrors the `tbsCertListRaw` pattern
+        // in `CrlFetcher.verifyCrl`.
+        const tbsDer = basic.tbsResponseDataRaw
+            ? new Uint8Array(basic.tbsResponseDataRaw)
+            : new Uint8Array(AsnConvert.serialize(basic.tbsResponseData));
+
+        // Case 1: direct issuer signature.
+        try {
+            await verifySig(basic, tbsDer, issuerCert);
+            return;
+        } catch {
+            // fall through to responder sub-cert case
+        }
+
+        // Case 2: responder sub-cert. Build candidate set from embedded certs.
+        const embeddedCerts: X509Certificate[] = (basic.certs ?? []).map(
+            (asn) =>
+                new X509Certificate(
+                    new Uint8Array(AsnConvert.serialize(asn)) as Uint8Array<ArrayBuffer>
+                )
+        );
+        if (embeddedCerts.length === 0) {
+            throw new Error(
+                'OCSP response signature did not match issuer and no responder certs were embedded'
+            );
+        }
+
+        // Track whether we saw an embedded cert but rejected it for missing
+        // OCSPSigning EKU — so we can surface that specific reason.
+        let sawNonResponderCandidate = false;
+        const builder = new ChainBuilder();
+        for (const candidate of embeddedCerts) {
+            const eku = candidate.getExtension(ExtendedKeyUsageExtension);
+            if (!eku || !eku.usages.includes('1.3.6.1.5.5.7.3.9')) {
+                sawNonResponderCandidate = true;
+                continue;
+            }
+            // Candidate MUST chain to the issuer. No intermediates in A.2 —
+            // OCSP responder sub-certs are issued directly by the CA.
+            try {
+                await builder.build(candidate, [issuerCert], []);
+            } catch {
+                continue;
+            }
+            try {
+                await verifySig(basic, tbsDer, candidate);
+                return;
+            } catch {
+                continue;
+            }
+        }
+        if (sawNonResponderCandidate) {
+            throw new Error(
+                'OCSP response signed by a cert lacking id-kp-OCSPSigning EKU'
+            );
+        }
+        throw new Error(
+            'OCSP response signature could not be verified by any responder candidate'
+        );
+    }
+}
+
+/**
+ * Verify `BasicOCSPResponse.signature` against `signer.publicKey`. Uses the
+ * SPKI re-import dance so the WebCrypto key is owned by the global provider
+ * (Node rejects foreign-provider CryptoKeys in `crypto.subtle.verify`).
+ *
+ * ECDSA signatures are DER-encoded SEQUENCE { r, s } in the ASN.1 structure
+ * — WebCrypto `verify()` wants IEEE P1363 r||s fixed-width, so we convert.
+ */
+async function verifySig(
+    basic: BasicOCSPResponse,
+    tbsDer: Uint8Array,
+    signer: X509Certificate
+): Promise<void> {
+    const sigIeee = ecdsaDerToIeee(new Uint8Array(basic.signature), 32);
+    const spki = new Uint8Array(signer.publicKey.rawData);
+    const publicKey = await crypto.subtle.importKey(
+        'spki',
+        spki,
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        false,
+        ['verify']
+    );
+    const ok = await crypto.subtle.verify(
+        { name: 'ECDSA', hash: 'SHA-256' },
+        publicKey,
+        sigIeee,
+        tbsDer
+    );
+    if (!ok) {
+        throw new Error(
+            `OCSP signature did not verify against signer ${signer.subject}`
+        );
+    }
 }
 
 /** Convert a hex string (optionally with leading zeros) into the big-endian BigInteger bytes the ASN.1 layer wants. */
@@ -140,5 +256,29 @@ function hexToBigIntBytes(hex: string): Uint8Array {
     for (let i = 0; i < out.length; i++) {
         out[i] = parseInt(padded.slice(i * 2, i * 2 + 2), 16);
     }
+    return out;
+}
+
+/**
+ * Convert ECDSA DER-encoded SEQUENCE { r, s } signature to IEEE P1363
+ * r||s fixed-width (as WebCrypto verify() expects). Duplicated from
+ * `CrlFetcher.ts` for Task 13; Task 14 extracts to `src/trust/ecdsa-util.ts`.
+ */
+function ecdsaDerToIeee(der: Uint8Array, coordBytes: number): Uint8Array {
+    let pos = 0;
+    if (der[pos++] !== 0x30) throw new Error('invalid DER signature: expected SEQUENCE');
+    pos++; // skip seq-length
+    if (der[pos++] !== 0x02) throw new Error('invalid DER signature: expected INTEGER r');
+    const rLen = der[pos++];
+    let r = der.slice(pos, pos + rLen);
+    pos += rLen;
+    if (der[pos++] !== 0x02) throw new Error('invalid DER signature: expected INTEGER s');
+    const sLen = der[pos++];
+    let s = der.slice(pos, pos + sLen);
+    if (r.length > coordBytes) r = r.slice(r.length - coordBytes); // strip leading 0x00 sign byte
+    if (s.length > coordBytes) s = s.slice(s.length - coordBytes);
+    const out = new Uint8Array(coordBytes * 2);
+    out.set(r, coordBytes - r.length);
+    out.set(s, coordBytes * 2 - s.length);
     return out;
 }

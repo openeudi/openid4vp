@@ -73,3 +73,78 @@ describe('OcspClient — sendRequest', () => {
         ).rejects.toThrow(/responseStatus/);
     });
 });
+
+describe('OcspClient — verifyResponse', () => {
+    it('accepts a response signed directly by the issuer', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root);
+        const client = new OcspClient();
+        const requestDer = await client.buildRequest(leaf.certificate, root.certificate);
+        // Sign using the root cert itself as "responder" (same key as issuer).
+        const responseDer = await signOcspResponse(root, requestDer, {
+            status: 'good',
+            thisUpdate: new Date('2026-04-23'),
+            nextUpdate: new Date('2026-04-30'),
+        });
+        const fetcher = async () => new Response(responseDer, { status: 200 });
+        const c = new OcspClient({ fetcher: fetcher as Fetcher });
+        const envelope = await c.sendRequest('http://ocsp.example.com', requestDer);
+        await expect(c.verifyResponse(envelope, root.certificate)).resolves.toBeUndefined();
+    });
+
+    it('accepts a response signed by a responder sub-cert with id-kp-OCSPSigning EKU', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root);
+        const responder = await createOcspResponder(root);
+        const client = new OcspClient();
+        const requestDer = await client.buildRequest(leaf.certificate, root.certificate);
+        const responseDer = await signOcspResponse(responder, requestDer, {
+            status: 'good',
+            thisUpdate: new Date('2026-04-23'),
+            nextUpdate: new Date('2026-04-30'),
+        });
+        const fetcher = async () => new Response(responseDer, { status: 200 });
+        const c = new OcspClient({ fetcher: fetcher as Fetcher });
+        const envelope = await c.sendRequest('http://ocsp.example.com', requestDer);
+        await expect(c.verifyResponse(envelope, root.certificate)).resolves.toBeUndefined();
+    });
+
+    it('rejects a response signed by a cert lacking id-kp-OCSPSigning', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root);
+        const notAResponder = await createLeaf(root, { name: 'CN=Fake Responder' });
+        // Abuse signOcspResponse by passing a non-responder sub-cert as signer.
+        const client = new OcspClient();
+        const requestDer = await client.buildRequest(leaf.certificate, root.certificate);
+        const responseDer = await signOcspResponse(notAResponder, requestDer, {
+            status: 'good',
+            thisUpdate: new Date('2026-04-23'),
+            nextUpdate: new Date('2026-04-30'),
+        });
+        const fetcher = async () => new Response(responseDer, { status: 200 });
+        const c = new OcspClient({ fetcher: fetcher as Fetcher });
+        const envelope = await c.sendRequest('http://ocsp.example.com', requestDer);
+        await expect(c.verifyResponse(envelope, root.certificate)).rejects.toThrow(
+            /OCSPSigning/i
+        );
+    });
+
+    it('rejects a response signed by an unknown key (attacker root)', async () => {
+        const root = await createCa();
+        const attackerRoot = await createCa();
+        const leaf = await createLeaf(root);
+        const client = new OcspClient();
+        const requestDer = await client.buildRequest(leaf.certificate, root.certificate);
+        // Sign with attacker root. The embedded attacker cert won't chain to
+        // the real issuer, so ChainBuilder rejects it.
+        const responseDer = await signOcspResponse(attackerRoot, requestDer, {
+            status: 'good',
+            thisUpdate: new Date('2026-04-23'),
+            nextUpdate: new Date('2026-04-30'),
+        });
+        const fetcher = async () => new Response(responseDer, { status: 200 });
+        const c = new OcspClient({ fetcher: fetcher as Fetcher });
+        const envelope = await c.sendRequest('http://ocsp.example.com', requestDer);
+        await expect(c.verifyResponse(envelope, root.certificate)).rejects.toThrow();
+    });
+});
