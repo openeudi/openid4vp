@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CrlFetcher } from '../../src/trust/CrlFetcher.js';
+import { InMemoryCache } from '../../src/trust/Cache.js';
 import { createCa, createLeaf, createCrl } from './helpers/synthetic-ca.js';
 
 describe('CrlFetcher — fetch + parse', () => {
@@ -130,5 +131,44 @@ describe('CrlFetcher — staleness', () => {
         const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
         expect(f.isStale(parsed, new Date('2026-04-23'))).toBe(true);
         expect(f.isStale(parsed, new Date('2026-01-15'))).toBe(false);
+    });
+});
+
+describe('CrlFetcher — caching', () => {
+    it('caches a fetched CRL by URL and reuses it on the next call', async () => {
+        const root = await createCa();
+        const { der } = await createCrl(root, {
+            revokedSerials: [],
+            thisUpdate: new Date('2026-04-01'),
+            nextUpdate: new Date('2026-05-01'),
+        });
+        let fetchCalls = 0;
+        const fetcher = async () => {
+            fetchCalls++;
+            return new Response(der, { status: 200 });
+        };
+        const cache = new InMemoryCache();
+        const f = new CrlFetcher({ fetcher: fetcher as (url: string) => Promise<Response>, cache });
+        await f.fetchAndParseCached('http://crl.example.com/a.crl');
+        await f.fetchAndParseCached('http://crl.example.com/a.crl');
+        expect(fetchCalls).toBe(1);
+    });
+
+    it('re-fetches when the cache entry is absent', async () => {
+        const root = await createCa();
+        const { der } = await createCrl(root, {
+            revokedSerials: [],
+            thisUpdate: new Date('2026-04-01'),
+            nextUpdate: new Date('2026-05-01'),
+        });
+        let fetchCalls = 0;
+        const fetcher = async () => {
+            fetchCalls++;
+            return new Response(der, { status: 200 });
+        };
+        const f = new CrlFetcher({ fetcher: fetcher as (url: string) => Promise<Response>, cache: new InMemoryCache() });
+        await f.fetchAndParseCached('http://crl.example.com/a.crl');
+        await f.fetchAndParseCached('http://crl.example.com/b.crl');
+        expect(fetchCalls).toBe(2);
     });
 });

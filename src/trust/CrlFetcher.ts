@@ -1,10 +1,12 @@
 import { AsnConvert } from '@peculiar/asn1-schema';
 import { CertificateList } from '@peculiar/asn1-x509';
 import { X509Certificate } from '@peculiar/x509';
+import type { Cache } from './Cache.js';
 import type { Fetcher } from './Fetcher.js';
 
 export interface CrlFetcherOptions {
     fetcher?: Fetcher;
+    cache?: Cache;
 }
 
 export interface ParsedCrl {
@@ -39,9 +41,11 @@ export type CrlRevokedOutcome =
  */
 export class CrlFetcher {
     private readonly fetcher: Fetcher;
+    private readonly cache: Cache | undefined;
 
     constructor(opts: CrlFetcherOptions = {}) {
         this.fetcher = opts.fetcher ?? globalThis.fetch.bind(globalThis);
+        this.cache = opts.cache;
     }
 
     async fetchAndParse(url: string): Promise<ParsedCrl> {
@@ -52,24 +56,44 @@ export class CrlFetcher {
         const der = new Uint8Array(await response.arrayBuffer());
         const parsed = AsnConvert.parse(der, CertificateList);
 
-        const thisUpdate = parsed.tbsCertList.thisUpdate.getTime();
-        const nextUpdate = parsed.tbsCertList.nextUpdate?.getTime();
-        if (!nextUpdate) {
+        // `fetchAndParse` enforces RFC 5280 §5.1.2.5 — a CRL without
+        // nextUpdate is not usable. The cache-hit path in
+        // `fetchAndParseCached` deliberately skips this check: anything
+        // that made it into the cache was valid when stored, and freshness
+        // is enforced separately via `isStale`.
+        if (!parsed.tbsCertList.nextUpdate) {
             throw new Error(`CRL missing nextUpdate — unsupported (RFC 5280 §5.1.2.5)`);
         }
 
-        const revokedSerialsHex =
-            parsed.tbsCertList.revokedCertificates?.map((r) =>
-                normalizeHexUnsignedInt(Buffer.from(r.userCertificate).toString('hex'))
-            ) ?? [];
+        return normalizeCrl(parsed, der);
+    }
 
-        return {
-            thisUpdate,
-            nextUpdate,
-            revokedSerialsHex,
-            der,
-            raw: parsed,
-        };
+    /**
+     * Caching wrapper around `fetchAndParse`. On cache hit, re-parses the
+     * stored DER bytes and returns a fresh `ParsedCrl` (parsing is idempotent
+     * on DER). On miss, delegates to `fetchAndParse` and stores `parsed.der`
+     * under key `crl:{url}` with `TTL = max(floor((nextUpdate - now) / 1000), 60)`
+     * seconds — never less than 60s even if the CRL is already near/past
+     * expiry, to avoid cache thrash while `isStale` handles the verdict.
+     */
+    async fetchAndParseCached(url: string, now: Date = new Date()): Promise<ParsedCrl> {
+        const key = `crl:${url}`;
+        if (this.cache) {
+            const hit = await this.cache.get(key);
+            if (hit) {
+                const parsed = AsnConvert.parse(hit, CertificateList);
+                return normalizeCrl(parsed, hit);
+            }
+        }
+        const parsed = await this.fetchAndParse(url);
+        if (this.cache) {
+            const ttl = Math.max(
+                Math.floor((parsed.nextUpdate.getTime() - now.getTime()) / 1000),
+                60
+            );
+            await this.cache.set(key, parsed.der, ttl);
+        }
+        return parsed;
     }
 
     /**
@@ -153,6 +177,31 @@ export class CrlFetcher {
     isStale(parsed: ParsedCrl, now: Date = new Date()): boolean {
         return now.getTime() > parsed.nextUpdate.getTime();
     }
+}
+
+/**
+ * Derive the `ParsedCrl` shape from a decoded `CertificateList` plus its
+ * original DER bytes. Extracted so both `fetchAndParse` and the cache-hit
+ * branch of `fetchAndParseCached` produce identical results — DRY.
+ *
+ * `nextUpdate` is assumed present here; callers are responsible for the
+ * RFC 5280 §5.1.2.5 check before invoking (the cache-hit path intentionally
+ * skips it, since cached entries were validated at store time).
+ */
+function normalizeCrl(parsed: CertificateList, der: Uint8Array): ParsedCrl {
+    const thisUpdate = parsed.tbsCertList.thisUpdate.getTime();
+    const nextUpdate = parsed.tbsCertList.nextUpdate!.getTime();
+    const revokedSerialsHex =
+        parsed.tbsCertList.revokedCertificates?.map((r) =>
+            normalizeHexUnsignedInt(Buffer.from(r.userCertificate).toString('hex'))
+        ) ?? [];
+    return {
+        thisUpdate,
+        nextUpdate,
+        revokedSerialsHex,
+        der,
+        raw: parsed,
+    };
 }
 
 /**
