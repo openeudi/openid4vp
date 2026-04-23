@@ -45,8 +45,6 @@ export interface OcspResponseEnvelope {
  */
 export class OcspClient {
     private readonly fetcher: Fetcher;
-    // Wired now, consumed by the caching path added in Task 16.
-    // eslint-disable-next-line @typescript-eslint/no-unused-private-class-members
     private readonly cache: Cache | undefined;
 
     constructor(opts: OcspClientOptions = {}) {
@@ -73,14 +71,7 @@ export class OcspClient {
             await crypto.subtle.digest('SHA-1', issuerNameDer)
         );
 
-        const issuerSpki = AsnConvert.parse(
-            new Uint8Array(issuerCert.publicKey.rawData),
-            SubjectPublicKeyInfo
-        );
-        const issuerKeyBytes = new Uint8Array(issuerSpki.subjectPublicKey);
-        const issuerKeyHashBytes = new Uint8Array(
-            await crypto.subtle.digest('SHA-1', issuerKeyBytes)
-        );
+        const issuerKeyHashBytes = await this.computeIssuerKeyHash(issuerCert);
 
         const certId = new CertID({
             hashAlgorithm: new AlgorithmIdentifier({ algorithm: '1.3.14.3.2.26' /* sha1 */ }),
@@ -279,6 +270,96 @@ export class OcspClient {
             };
         }
         return { status: 'unknown', source: 'ocsp', checkedAt: now };
+    }
+
+    /**
+     * End-to-end OCSP check with caching per spec §7.4.
+     *
+     * Cache key: `ocsp:{hex(issuerKeyHash)}:{UPPERCASE subjectSerial}`. The
+     * key-hash component matches RFC 6960 CertID.issuerKeyHash (SHA-1 over
+     * `SubjectPublicKeyInfo.subjectPublicKey`), so the same subject+issuer
+     * pair always maps to the same key regardless of issuer-cert reissuance.
+     *
+     * Cache hits are re-verified and re-extracted — never trust stored bytes
+     * blindly. Only the inner `BasicOCSPResponse` DER is cached (not the
+     * outer `OCSPResponse` envelope), matching the parsed form `verifyResponse`
+     * consumes.
+     *
+     * TTL: `clamp(floor((nextUpdate - now) / 1000), 60, 3600)` seconds when
+     * `nextUpdate` is present; otherwise 3600s. The 1-hour ceiling caps how
+     * stale a cached verdict can be, and the 60s floor avoids immediate
+     * re-fetch storms when a responder publishes very short validity windows.
+     *
+     * Single-flight concurrency is NOT implemented (A.2 spec: naive re-check
+     * on concurrent miss is acceptable for the in-process `InMemoryCache`).
+     */
+    async checkCached(
+        subjectCert: X509Certificate,
+        issuerCert: X509Certificate,
+        url: string,
+        now: Date = new Date()
+    ): Promise<RevocationResult> {
+        const keyHash = await this.computeIssuerKeyHash(issuerCert);
+        const keyHashHex = Buffer.from(keyHash).toString('hex');
+        const cacheKey = `ocsp:${keyHashHex}:${subjectCert.serialNumber.toUpperCase()}`;
+
+        if (this.cache) {
+            const hit = await this.cache.get(cacheKey);
+            if (hit) {
+                const envelope: OcspResponseEnvelope = {
+                    basic: AsnConvert.parse(hit, BasicOCSPResponse),
+                    responseDer: hit,
+                };
+                // Still verify + extract on cache hit — never trust stored bytes blindly.
+                await this.verifyResponse(envelope, issuerCert);
+                return this.extractVerdict(envelope, subjectCert, now);
+            }
+        }
+
+        const requestDer = await this.buildRequest(subjectCert, issuerCert);
+        const envelope = await this.sendRequest(url, requestDer);
+        await this.verifyResponse(envelope, issuerCert);
+        const verdict = this.extractVerdict(envelope, subjectCert, now);
+
+        if (this.cache) {
+            const single = envelope.basic.tbsResponseData.responses[0];
+            const nextUpdate = single?.nextUpdate?.getTime();
+            const maxTtlSec = 3600;
+            const ttl =
+                nextUpdate !== undefined
+                    ? Math.max(
+                          Math.min(
+                              Math.floor((nextUpdate - now.getTime()) / 1000),
+                              maxTtlSec
+                          ),
+                          60
+                      )
+                    : maxTtlSec;
+            await this.cache.set(
+                cacheKey,
+                new Uint8Array(AsnConvert.serialize(envelope.basic)),
+                ttl
+            );
+        }
+        return verdict;
+    }
+
+    /**
+     * SHA-1 hash of the issuer's `SubjectPublicKeyInfo.subjectPublicKey` BIT
+     * STRING value — the same key hash `buildRequest` embeds in `CertID`. Used
+     * as a stable component of the cache key so reissuing an issuer cert with
+     * the same key doesn't invalidate cached verdicts.
+     */
+    private async computeIssuerKeyHash(
+        issuerCert: X509Certificate
+    ): Promise<Uint8Array> {
+        const spki = AsnConvert.parse(
+            new Uint8Array(issuerCert.publicKey.rawData),
+            SubjectPublicKeyInfo
+        );
+        return new Uint8Array(
+            await crypto.subtle.digest('SHA-1', new Uint8Array(spki.subjectPublicKey))
+        );
     }
 }
 

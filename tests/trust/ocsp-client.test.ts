@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AsnConvert } from '@peculiar/asn1-schema';
 import { OCSPRequest, OCSPResponse } from '@peculiar/asn1-ocsp';
 import { OcspClient } from '../../src/trust/OcspClient.js';
+import { InMemoryCache } from '../../src/trust/Cache.js';
 import type { Fetcher } from '../../src/trust/Fetcher.js';
 import {
     createCa,
@@ -223,5 +224,43 @@ describe('OcspClient — extractVerdict', () => {
                 new Date('2026-04-23T12:00:00Z')
             )
         ).toThrow(/stale/);
+    });
+});
+
+describe('OcspClient — caching', () => {
+    it('caches a full OCSP check by issuer-key-hash + serial', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root);
+        const requestDer = await new OcspClient().buildRequest(
+            leaf.certificate,
+            root.certificate
+        );
+        const responseDer = await signOcspResponse(root, requestDer, {
+            status: 'good',
+            thisUpdate: new Date('2026-04-23'),
+            nextUpdate: new Date('2026-04-30'),
+        });
+        let fetchCount = 0;
+        const fetcher: Fetcher = async () => {
+            fetchCount++;
+            return new Response(responseDer, { status: 200 });
+        };
+        const client = new OcspClient({ fetcher, cache: new InMemoryCache() });
+        const now = new Date('2026-04-23T12:00:00Z');
+        // First call: fetches + caches.
+        await client.checkCached(
+            leaf.certificate,
+            root.certificate,
+            'http://ocsp.example.com',
+            now
+        );
+        // Second call: cache hit.
+        await client.checkCached(
+            leaf.certificate,
+            root.certificate,
+            'http://ocsp.example.com',
+            now
+        );
+        expect(fetchCount).toBe(1);
     });
 });
