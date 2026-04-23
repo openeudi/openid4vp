@@ -114,3 +114,54 @@ describe('RevocationChecker — policy=require', () => {
         );
     });
 });
+
+describe('RevocationChecker — revoked verdicts', () => {
+    it('returns status=revoked when OCSP reports revoked', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root, { ocspUrl: 'http://ocsp.example.com' });
+        const { OcspClient } = await import('../../src/trust/OcspClient.js');
+        const client = new OcspClient();
+        const reqDer = await client.buildRequest(leaf.certificate, root.certificate);
+        const ocspDer = await signOcspResponse(root, reqDer, {
+            status: 'revoked',
+            revokedAt: new Date('2026-01-01T00:00:00Z'),
+            thisUpdate: new Date('2026-04-23'),
+            nextUpdate: new Date('2026-04-30'),
+        });
+        const fetcher: Fetcher = async () => new Response(ocspDer, { status: 200 });
+        const checker = new RevocationChecker({ policy: 'prefer', fetcher });
+        const result = await checker.check(
+            leaf.certificate,
+            root.certificate,
+            new Date('2026-04-23T12:00:00Z')
+        );
+        expect(result.status).toBe('revoked');
+        expect(result.source).toBe('ocsp');
+    });
+
+    it('returns status=revoked when CRL lists the serial (no OCSP URL)', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root, {
+            crlUrls: ['http://crl.example.com/a.crl'],
+        });
+        const { der } = await createCrl(root, {
+            revokedSerials: [
+                {
+                    serialHex: leaf.certificate.serialNumber,
+                    revokedAt: new Date('2026-01-01T00:00:00Z'),
+                },
+            ],
+            thisUpdate: new Date('2026-04-01'),
+            nextUpdate: new Date('2026-05-01'),
+        });
+        const fetcher: Fetcher = async () => new Response(der, { status: 200 });
+        const checker = new RevocationChecker({ policy: 'prefer', fetcher });
+        const result = await checker.check(
+            leaf.certificate,
+            root.certificate,
+            new Date('2026-04-15T12:00:00Z')
+        );
+        expect(result.status).toBe('revoked');
+        expect(result.source).toBe('crl');
+    });
+});
