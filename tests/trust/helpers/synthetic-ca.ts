@@ -1,11 +1,37 @@
-import { AsnConvert } from '@peculiar/asn1-schema';
+import { AsnConvert, OctetString } from '@peculiar/asn1-schema';
 import {
+    AccessDescription,
+    AlgorithmIdentifier,
+    AuthorityInfoAccessSyntax,
+    Certificate,
+    CertificateList,
+    CRLDistributionPoints,
+    CRLReason,
+    CRLReasons,
+    DistributionPoint,
+    DistributionPointName,
     GeneralName as AsnGeneralName,
+    GeneralNames as Asn1GeneralNames,
     GeneralSubtree,
     GeneralSubtrees,
     Name as AsnName,
     NameConstraints,
+    RevokedCertificate,
+    TBSCertList,
+    Time,
+    Version,
 } from '@peculiar/asn1-x509';
+import {
+    BasicOCSPResponse,
+    CertStatus,
+    OCSPRequest,
+    OCSPResponse,
+    ResponderID,
+    ResponseBytes,
+    ResponseData,
+    RevokedInfo,
+    SingleResponse,
+} from '@peculiar/asn1-ocsp';
 import * as x509 from '@peculiar/x509';
 import { Crypto as PeculiarCrypto } from '@peculiar/webcrypto';
 
@@ -47,6 +73,8 @@ export interface CreateLeafOpts {
         | { type: 'email'; value: string }
         | { type: 'url'; value: string }
     >;
+    ocspUrl?: string;
+    crlUrls?: string[];
 }
 
 export interface Leaf {
@@ -213,6 +241,46 @@ export async function createLeaf(
     if (opts.subjectAlternativeName && opts.subjectAlternativeName.length > 0) {
         extensions.push(buildSanExtension(opts.subjectAlternativeName));
     }
+    if (opts.ocspUrl) {
+        const aia = new AuthorityInfoAccessSyntax([
+            new AccessDescription({
+                accessMethod: '1.3.6.1.5.5.7.48.1', // id-ad-ocsp
+                accessLocation: new AsnGeneralName({
+                    uniformResourceIdentifier: opts.ocspUrl,
+                }),
+            }),
+        ]);
+        extensions.push(
+            new x509.Extension(
+                '1.3.6.1.5.5.7.1.1',
+                false,
+                AsnConvert.serialize(aia)
+            )
+        );
+    }
+    if (opts.crlUrls && opts.crlUrls.length > 0) {
+        const cdp = new CRLDistributionPoints(
+            opts.crlUrls.map(
+                (url) =>
+                    new DistributionPoint({
+                        distributionPoint: new DistributionPointName({
+                            fullName: new Asn1GeneralNames([
+                                new AsnGeneralName({
+                                    uniformResourceIdentifier: url,
+                                }),
+                            ]),
+                        }),
+                    })
+            )
+        );
+        extensions.push(
+            new x509.Extension(
+                '2.5.29.31',
+                false,
+                AsnConvert.serialize(cdp)
+            )
+        );
+    }
     const cert = await x509.X509CertificateGenerator.create({
         serialNumber: randomSerial(),
         subject: opts.name ?? 'CN=Leaf',
@@ -232,4 +300,246 @@ function randomSerial(): string {
     const bytes = new Uint8Array(16);
     provider.getRandomValues(bytes);
     return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export interface CreateOcspResponderOpts {
+    name?: string;
+    notBefore?: Date;
+    notAfter?: Date;
+    ocspNoCheck?: boolean;
+}
+
+export async function createOcspResponder(
+    issuer: { certificate: x509.X509Certificate; keys: CryptoKeyPair },
+    opts: CreateOcspResponderOpts = {}
+): Promise<Leaf> {
+    const keys = await generateEcKeys();
+    const now = new Date();
+    const extensions: x509.Extension[] = [
+        new x509.BasicConstraintsExtension(false, undefined, true),
+        new x509.KeyUsagesExtension(x509.KeyUsageFlags.digitalSignature, true),
+        new x509.ExtendedKeyUsageExtension(['1.3.6.1.5.5.7.3.9'], true), // id-kp-OCSPSigning
+        await x509.SubjectKeyIdentifierExtension.create(keys.publicKey),
+        await x509.AuthorityKeyIdentifierExtension.create(issuer.certificate, false),
+    ];
+    if (opts.ocspNoCheck) {
+        // id-pkix-ocsp-nocheck, extension value = ASN.1 NULL (0x05 0x00)
+        extensions.push(
+            new x509.Extension(
+                '1.3.6.1.5.5.7.48.1.5',
+                false,
+                new Uint8Array([0x05, 0x00])
+            )
+        );
+    }
+    const certificate = await x509.X509CertificateGenerator.create({
+        serialNumber: randomSerial(),
+        subject: opts.name ?? 'CN=OCSP Responder',
+        issuer: issuer.certificate.subject,
+        notBefore: opts.notBefore ?? new Date(now.getTime() - 1000),
+        notAfter:
+            opts.notAfter ?? new Date(now.getTime() + 365 * 24 * 3600 * 1000),
+        publicKey: keys.publicKey,
+        signingKey: issuer.keys.privateKey,
+        signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+        extensions,
+    });
+    return { certificate, keys };
+}
+
+export interface CreateCrlOpts {
+    revokedSerials: Array<{ serialHex: string; revokedAt: Date; reason?: number }>;
+    thisUpdate: Date;
+    nextUpdate: Date;
+}
+
+export interface CrlResult {
+    der: Uint8Array;
+}
+
+export async function createCrl(
+    issuer: { certificate: x509.X509Certificate; keys: CryptoKeyPair },
+    opts: CreateCrlOpts
+): Promise<CrlResult> {
+    // Build tbsCertList.
+    const tbs = new TBSCertList({
+        version: Version.v2,
+        signature: new AlgorithmIdentifier({ algorithm: '1.2.840.10045.4.3.2' }), // ecdsa-with-SHA256
+        issuer: AsnConvert.parse(
+            issuer.certificate.subjectName.toArrayBuffer(),
+            AsnName
+        ),
+        thisUpdate: new Time(opts.thisUpdate),
+        nextUpdate: new Time(opts.nextUpdate),
+        revokedCertificates: opts.revokedSerials.length
+            ? opts.revokedSerials.map(
+                  (r) =>
+                      new RevokedCertificate({
+                          userCertificate: hexToBigIntBytes(r.serialHex),
+                          revocationDate: new Time(r.revokedAt),
+                      })
+              )
+            : undefined,
+    });
+
+    // Sign tbsCertList with the issuer's private key.
+    // Use the peculiar provider (same one that generated the keys) to avoid
+    // cross-provider CryptoKey incompatibilities under Node.
+    const tbsDer = AsnConvert.serialize(tbs);
+    const signatureBytes = await provider.subtle.sign(
+        { name: 'ECDSA', hash: 'SHA-256' },
+        issuer.keys.privateKey,
+        tbsDer
+    );
+    const signatureDer = ecdsaIeeeToDer(new Uint8Array(signatureBytes));
+
+    const crl = new CertificateList({
+        tbsCertList: tbs,
+        signatureAlgorithm: new AlgorithmIdentifier({ algorithm: '1.2.840.10045.4.3.2' }),
+        signature: signatureDer,
+    });
+    return { der: new Uint8Array(AsnConvert.serialize(crl)) };
+}
+
+/** Convert a hex string (optionally with leading zeros) into the big-endian BigInteger bytes the ASN.1 layer wants. */
+function hexToBigIntBytes(hex: string): Uint8Array {
+    const clean = hex.replace(/[^0-9a-fA-F]/g, '');
+    const padded = clean.length % 2 === 0 ? clean : '0' + clean;
+    const bytes = new Uint8Array(padded.length / 2);
+    for (let i = 0; i < bytes.length; i++) {
+        bytes[i] = parseInt(padded.slice(i * 2, i * 2 + 2), 16);
+    }
+    return bytes;
+}
+
+/**
+ * WebCrypto returns ECDSA signatures in IEEE P1363 format (r||s fixed-width).
+ * ASN.1 CertificateList.signature expects DER-encoded SEQUENCE { r, s }.
+ */
+function ecdsaIeeeToDer(ieee: Uint8Array): Uint8Array {
+    const half = ieee.length / 2;
+    const r = trimLeadingZerosAndAddSignByte(ieee.slice(0, half));
+    const s = trimLeadingZerosAndAddSignByte(ieee.slice(half));
+    const seqLen = 2 + r.length + 2 + s.length;
+    const out = new Uint8Array(2 + seqLen);
+    out[0] = 0x30;
+    out[1] = seqLen;
+    out[2] = 0x02;
+    out[3] = r.length;
+    out.set(r, 4);
+    out[4 + r.length] = 0x02;
+    out[5 + r.length] = s.length;
+    out.set(s, 6 + r.length);
+    return out;
+}
+
+function trimLeadingZerosAndAddSignByte(bytes: Uint8Array): Uint8Array {
+    let start = 0;
+    while (start < bytes.length - 1 && bytes[start] === 0) start++;
+    const trimmed = bytes.slice(start);
+    if (trimmed[0] & 0x80) {
+        const padded = new Uint8Array(trimmed.length + 1);
+        padded[0] = 0;
+        padded.set(trimmed, 1);
+        return padded;
+    }
+    return trimmed;
+}
+
+export interface SignOcspResponseOpts {
+    status: 'good' | 'revoked' | 'unknown';
+    revokedAt?: Date;
+    revocationReason?: number;
+    thisUpdate: Date;
+    nextUpdate?: Date;
+}
+
+/**
+ * Produce a DER-encoded `OCSPResponse` (`responseStatus = successful`) that
+ * wraps a `BasicOCSPResponse` signed by the responder's private key with
+ * ECDSA-SHA256. The responder cert is embedded in `BasicOCSPResponse.certs`
+ * so the consuming test can verify the chain without out-of-band knowledge.
+ */
+export async function signOcspResponse(
+    responder: { certificate: x509.X509Certificate; keys: CryptoKeyPair },
+    requestDer: Uint8Array,
+    opts: SignOcspResponseOpts
+): Promise<Uint8Array> {
+    const request = AsnConvert.parse(requestDer, OCSPRequest);
+    const certId = request.tbsRequest.requestList[0].reqCert;
+
+    let certStatus: CertStatus;
+    if (opts.status === 'good') {
+        certStatus = new CertStatus({ good: null });
+    } else if (opts.status === 'revoked') {
+        if (!opts.revokedAt) {
+            throw new Error('revokedAt is required for status=revoked');
+        }
+        const revokedInfo = new RevokedInfo({ revocationTime: opts.revokedAt });
+        if (opts.revocationReason !== undefined) {
+            revokedInfo.revocationReason = new CRLReason(
+                opts.revocationReason as CRLReasons
+            );
+        }
+        certStatus = new CertStatus({ revoked: revokedInfo });
+    } else {
+        certStatus = new CertStatus({ unknown: null });
+    }
+
+    const responderName = AsnConvert.parse(
+        responder.certificate.subjectName.toArrayBuffer(),
+        AsnName
+    );
+
+    const responseData = new ResponseData({
+        responderID: new ResponderID({ byName: responderName }),
+        producedAt: opts.thisUpdate,
+        responses: [
+            new SingleResponse({
+                certID: certId,
+                certStatus,
+                thisUpdate: opts.thisUpdate,
+                nextUpdate: opts.nextUpdate,
+            }),
+        ],
+    });
+
+    // Sign the ResponseData (== tbsResponseData). Must use the peculiar
+    // provider since the responder's CryptoKey was generated by it.
+    const tbsDer = AsnConvert.serialize(responseData);
+    const signatureBytes = await provider.subtle.sign(
+        { name: 'ECDSA', hash: 'SHA-256' },
+        responder.keys.privateKey,
+        tbsDer
+    );
+    const signatureDer = ecdsaIeeeToDer(new Uint8Array(signatureBytes));
+
+    const responderCertAsn = AsnConvert.parse(
+        new Uint8Array(responder.certificate.rawData),
+        Certificate
+    );
+
+    const basic = new BasicOCSPResponse({
+        tbsResponseData: responseData,
+        signatureAlgorithm: new AlgorithmIdentifier({
+            algorithm: '1.2.840.10045.4.3.2' /* ecdsa-with-SHA256 */,
+        }),
+        signature: signatureDer.buffer.slice(
+            signatureDer.byteOffset,
+            signatureDer.byteOffset + signatureDer.byteLength
+        ) as ArrayBuffer,
+        certs: [responderCertAsn],
+    });
+
+    const response = new OCSPResponse({
+        responseStatus: 0 /* successful */,
+        responseBytes: new ResponseBytes({
+            responseType: '1.3.6.1.5.5.7.48.1.1' /* id-pkix-ocsp-basic */,
+            response: new OctetString(
+                new Uint8Array(AsnConvert.serialize(basic))
+            ),
+        }),
+    });
+
+    return new Uint8Array(AsnConvert.serialize(response));
 }

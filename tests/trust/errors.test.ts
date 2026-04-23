@@ -3,6 +3,8 @@ import {
     OpenID4VPError,
     TrustAnchorNotFoundError,
     CertificateChainError,
+    RevokedCertificateError,
+    RevocationCheckFailedError,
 } from '../../src/errors.js';
 
 describe('OpenID4VPError base', () => {
@@ -61,5 +63,38 @@ describe('CertificateChainError', () => {
             const err = new CertificateChainError('m', { reason });
             expect(err.reason).toBe(reason);
         }
+    });
+});
+
+describe('RevokedCertificateError', () => {
+    it('extends OpenID4VPError and has stable code', () => {
+        const err = new RevokedCertificateError('revoked', {
+            serial: 'ABCDEF01',
+            revokedAt: new Date('2026-01-01T00:00:00Z'),
+        });
+        expect(err).toBeInstanceOf(OpenID4VPError);
+        expect(err.code).toBe('certificate_revoked');
+        expect(err.serial).toBe('ABCDEF01');
+        expect(err.revokedAt.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+        expect(err.name).toBe('RevokedCertificateError');
+    });
+
+    it('optional reason field is preserved', () => {
+        const err = new RevokedCertificateError('revoked', {
+            serial: 'AA',
+            revokedAt: new Date(0),
+            reason: 'keyCompromise',
+        });
+        expect(err.reason).toBe('keyCompromise');
+    });
+});
+
+describe('RevocationCheckFailedError', () => {
+    it('extends OpenID4VPError, carries code and cause', () => {
+        const cause = new Error('network down');
+        const err = new RevocationCheckFailedError('check failed', { cause });
+        expect(err).toBeInstanceOf(OpenID4VPError);
+        expect(err.code).toBe('revocation_check_failed');
+        expect((err as { cause?: unknown }).cause).toBe(cause);
     });
 });

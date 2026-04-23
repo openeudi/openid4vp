@@ -103,3 +103,24 @@ export class CertificateChainError extends OpenID4VPError {
         this.reason = options.reason;
     }
 }
+
+export class RevokedCertificateError extends OpenID4VPError {
+    readonly code = 'certificate_revoked' as const;
+    readonly serial: string;
+    readonly revokedAt: Date;
+    readonly reason?: string;
+
+    constructor(
+        message: string,
+        options: { serial: string; revokedAt: Date; reason?: string; cause?: Error }
+    ) {
+        super(message, { cause: options.cause });
+        this.serial = options.serial;
+        this.revokedAt = options.revokedAt;
+        this.reason = options.reason;
+    }
+}
+
+export class RevocationCheckFailedError extends OpenID4VPError {
+    readonly code = 'revocation_check_failed' as const;
+}
