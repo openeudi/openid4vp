@@ -22,6 +22,15 @@ export interface ParsedCrl {
 }
 
 /**
+ * Outcome of a serial-number lookup against a parsed CRL. Kept decoupled
+ * from `RevocationResult` so `CrlFetcher` stays a pure sub-component;
+ * `RevocationChecker` (Task 17) maps this into the public `RevocationResult`.
+ */
+export type CrlRevokedOutcome =
+    | { status: 'good' }
+    | { status: 'revoked'; revokedAt: Date; revocationReason?: string };
+
+/**
  * Private — NOT exported from the package root. Fetches a CRL from an
  * HTTP(S) URL via the injected `Fetcher`, parses `CertificateList`,
  * and returns normalized metadata. Signature verification happens in
@@ -51,7 +60,7 @@ export class CrlFetcher {
 
         const revokedSerialsHex =
             parsed.tbsCertList.revokedCertificates?.map((r) =>
-                Buffer.from(r.userCertificate).toString('hex').toUpperCase().replace(/^0+/, '')
+                normalizeHexUnsignedInt(Buffer.from(r.userCertificate).toString('hex'))
             ) ?? [];
 
         return {
@@ -108,6 +117,57 @@ export class CrlFetcher {
             );
         }
     }
+
+    /**
+     * Look up a certificate serial number against the CRL's revokedCertificates
+     * list. Returns `{ status: 'revoked', revokedAt }` when found, `{ status: 'good' }`
+     * otherwise. Hex comparison is normalized via `normalizeHexUnsignedInt` on
+     * both sides so that ASN.1 sign padding and input formatting differences
+     * (case, leading zeros) don't yield false negatives.
+     *
+     * `revocationReason` is intentionally omitted in 0.5.0 — decoding the
+     * optional CRLReason extension on each `RevokedCertificate` is non-blocking
+     * for a verdict and can be added without breaking the return shape.
+     */
+    isRevoked(parsed: ParsedCrl, serialHex: string): CrlRevokedOutcome {
+        const normalized = normalizeHexUnsignedInt(serialHex);
+        for (const revoked of parsed.raw.tbsCertList.revokedCertificates ?? []) {
+            const candidateHex = normalizeHexUnsignedInt(
+                Buffer.from(revoked.userCertificate).toString('hex')
+            );
+            if (candidateHex === normalized) {
+                return {
+                    status: 'revoked',
+                    revokedAt: revoked.revocationDate.getTime(),
+                };
+            }
+        }
+        return { status: 'good' };
+    }
+
+    /**
+     * True when `now` is past the CRL's `nextUpdate` — the CA has published
+     * a new CRL (or should have) and this one should not be relied on.
+     * RFC 5280 §5.1.2.5.
+     */
+    isStale(parsed: ParsedCrl, now: Date = new Date()): boolean {
+        return now.getTime() > parsed.nextUpdate.getTime();
+    }
+}
+
+/**
+ * Normalize a hex-encoded unsigned integer to canonical uppercase form
+ * without the ASN.1-mandated leading 0x00 sign byte. Using `BigInt` strips
+ * *only* the leading zeros that would make the value larger than itself —
+ * so `00AF01` → `AF01` but `0B01` stays `B01` and `0A` stays `A`. The prior
+ * `.replace(/^0+/, '')` over-stripped any run of leading zeros including
+ * legitimate nibble-level zeros, yielding intermittent compare misses when
+ * a serial happened to begin with `0x0X` for non-zero X.
+ */
+function normalizeHexUnsignedInt(hex: string): string {
+    const clean = hex.replace(/[^0-9a-fA-F]/g, '');
+    if (clean.length === 0) return '';
+    return BigInt('0x' + clean).toString(16).toUpperCase();
 }
 
 /**

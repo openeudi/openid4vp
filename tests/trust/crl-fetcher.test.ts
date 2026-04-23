@@ -66,3 +66,69 @@ describe('CrlFetcher — signature verification', () => {
         await expect(f.verifyCrl(parsed, realRoot.certificate)).rejects.toThrow(/signature/i);
     });
 });
+
+describe('CrlFetcher — revoked-serial lookup', () => {
+    it('returns revoked for a serial in the revokedCertificates list', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root);
+        const { der } = await createCrl(root, {
+            revokedSerials: [
+                { serialHex: leaf.certificate.serialNumber, revokedAt: new Date('2026-01-01T00:00:00Z') },
+            ],
+            thisUpdate: new Date('2026-04-01T00:00:00Z'),
+            nextUpdate: new Date('2026-05-01T00:00:00Z'),
+        });
+        const fetcher = async () => new Response(der, { status: 200 });
+        const f = new CrlFetcher({ fetcher: fetcher as (url: string) => Promise<Response> });
+        const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
+        const outcome = f.isRevoked(parsed, leaf.certificate.serialNumber);
+        expect(outcome.status).toBe('revoked');
+        if (outcome.status === 'revoked') {
+            expect(outcome.revokedAt.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+        }
+    });
+
+    it('returns good for a serial not in the list', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root);
+        const { der } = await createCrl(root, {
+            revokedSerials: [],
+            thisUpdate: new Date('2026-04-01T00:00:00Z'),
+            nextUpdate: new Date('2026-05-01T00:00:00Z'),
+        });
+        const fetcher = async () => new Response(der, { status: 200 });
+        const f = new CrlFetcher({ fetcher: fetcher as (url: string) => Promise<Response> });
+        const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
+        expect(f.isRevoked(parsed, leaf.certificate.serialNumber).status).toBe('good');
+    });
+
+    it('normalizes hex comparison case-insensitively and ignores leading zeros', async () => {
+        const root = await createCa();
+        const { der } = await createCrl(root, {
+            revokedSerials: [{ serialHex: '00AF01', revokedAt: new Date('2026-01-01') }],
+            thisUpdate: new Date('2026-04-01'),
+            nextUpdate: new Date('2026-05-01'),
+        });
+        const fetcher = async () => new Response(der, { status: 200 });
+        const f = new CrlFetcher({ fetcher: fetcher as (url: string) => Promise<Response> });
+        const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
+        expect(f.isRevoked(parsed, 'af01').status).toBe('revoked');
+        expect(f.isRevoked(parsed, 'AF01').status).toBe('revoked');
+    });
+});
+
+describe('CrlFetcher — staleness', () => {
+    it('reports stale when now > nextUpdate', async () => {
+        const root = await createCa();
+        const { der } = await createCrl(root, {
+            revokedSerials: [],
+            thisUpdate: new Date('2026-01-01'),
+            nextUpdate: new Date('2026-02-01'),
+        });
+        const fetcher = async () => new Response(der, { status: 200 });
+        const f = new CrlFetcher({ fetcher: fetcher as (url: string) => Promise<Response> });
+        const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
+        expect(f.isStale(parsed, new Date('2026-04-23'))).toBe(true);
+        expect(f.isStale(parsed, new Date('2026-01-15'))).toBe(false);
+    });
+});
