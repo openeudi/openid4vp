@@ -133,8 +133,8 @@ export class CrlFetcher {
         const ok = await crypto.subtle.verify(
             { name: 'ECDSA', hash: 'SHA-256' },
             publicKey,
-            sigIeee,
-            tbsDer
+            sigIeee as Uint8Array<ArrayBuffer>,
+            tbsDer as Uint8Array<ArrayBuffer>
         );
         if (!ok) {
             throw new Error(
@@ -158,7 +158,7 @@ export class CrlFetcher {
         const normalized = normalizeHexUnsignedInt(serialHex);
         for (const revoked of parsed.raw.tbsCertList.revokedCertificates ?? []) {
             const candidateHex = normalizeHexUnsignedInt(
-                Buffer.from(revoked.userCertificate).toString('hex')
+                bytesToHex(revoked.userCertificate)
             );
             if (candidateHex === normalized) {
                 return {
@@ -194,7 +194,7 @@ function normalizeCrl(parsed: CertificateList, der: Uint8Array): ParsedCrl {
     const nextUpdate = parsed.tbsCertList.nextUpdate!.getTime();
     const revokedSerialsHex =
         parsed.tbsCertList.revokedCertificates?.map((r) =>
-            normalizeHexUnsignedInt(Buffer.from(r.userCertificate).toString('hex'))
+            normalizeHexUnsignedInt(bytesToHex(r.userCertificate))
         ) ?? [];
     return {
         thisUpdate,
@@ -218,4 +218,14 @@ function normalizeHexUnsignedInt(hex: string): string {
     const clean = hex.replace(/[^0-9a-fA-F]/g, '');
     if (clean.length === 0) return '';
     return BigInt('0x' + clean).toString(16).toUpperCase();
+}
+
+/** Hex-encode raw bytes. Node's `Buffer` would work but isn't in the TS lib without `@types/node`. */
+function bytesToHex(bytes: ArrayBuffer | Uint8Array): string {
+    const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    let out = '';
+    for (let i = 0; i < view.length; i++) {
+        out += view[i].toString(16).padStart(2, '0');
+    }
+    return out;
 }

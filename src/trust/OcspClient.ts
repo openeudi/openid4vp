@@ -104,7 +104,7 @@ export class OcspClient {
         const response = await this.fetcher(url, {
             method: 'POST',
             headers: { 'content-type': 'application/ocsp-request' },
-            body: requestDer,
+            body: requestDer as Uint8Array<ArrayBuffer>,
         });
         if (!response.ok) {
             throw new Error(`OCSP fetch failed: HTTP ${response.status} for ${url}`);
@@ -236,7 +236,7 @@ export class OcspClient {
         const subjectSerialNorm = normalizeHexUnsignedInt(subjectCert.serialNumber);
 
         const single = envelope.basic.tbsResponseData.responses.find((r) => {
-            const serialHex = Buffer.from(r.certID.serialNumber).toString('hex');
+            const serialHex = bytesToHex(r.certID.serialNumber);
             return normalizeHexUnsignedInt(serialHex) === subjectSerialNorm;
         });
         if (!single) {
@@ -300,7 +300,7 @@ export class OcspClient {
         now: Date = new Date()
     ): Promise<RevocationResult> {
         const keyHash = await this.computeIssuerKeyHash(issuerCert);
-        const keyHashHex = Buffer.from(keyHash).toString('hex');
+        const keyHashHex = bytesToHex(keyHash);
         const cacheKey = `ocsp:${keyHashHex}:${subjectCert.serialNumber.toUpperCase()}`;
 
         if (this.cache) {
@@ -388,8 +388,8 @@ async function verifySig(
     const ok = await crypto.subtle.verify(
         { name: 'ECDSA', hash: 'SHA-256' },
         publicKey,
-        sigIeee,
-        tbsDer
+        sigIeee as Uint8Array<ArrayBuffer>,
+        tbsDer as Uint8Array<ArrayBuffer>
     );
     if (!ok) {
         throw new Error(
@@ -410,6 +410,16 @@ function normalizeHexUnsignedInt(hex: string): string {
     return BigInt('0x' + clean)
         .toString(16)
         .toUpperCase();
+}
+
+/** Hex-encode raw bytes. Node's `Buffer` would work but isn't in the TS lib without `@types/node`. */
+function bytesToHex(bytes: ArrayBuffer | Uint8Array): string {
+    const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    let out = '';
+    for (let i = 0; i < view.length; i++) {
+        out += view[i].toString(16).padStart(2, '0');
+    }
+    return out;
 }
 
 /** Convert a hex string (optionally with leading zeros) into the big-endian BigInteger bytes the ASN.1 layer wants. */
