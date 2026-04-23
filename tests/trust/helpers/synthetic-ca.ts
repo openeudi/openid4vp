@@ -1,8 +1,14 @@
 import { AsnConvert } from '@peculiar/asn1-schema';
 import {
+    AccessDescription,
     AlgorithmIdentifier,
+    AuthorityInfoAccessSyntax,
     CertificateList,
+    CRLDistributionPoints,
+    DistributionPoint,
+    DistributionPointName,
     GeneralName as AsnGeneralName,
+    GeneralNames as Asn1GeneralNames,
     GeneralSubtree,
     GeneralSubtrees,
     Name as AsnName,
@@ -53,6 +59,8 @@ export interface CreateLeafOpts {
         | { type: 'email'; value: string }
         | { type: 'url'; value: string }
     >;
+    ocspUrl?: string;
+    crlUrls?: string[];
 }
 
 export interface Leaf {
@@ -219,6 +227,46 @@ export async function createLeaf(
     if (opts.subjectAlternativeName && opts.subjectAlternativeName.length > 0) {
         extensions.push(buildSanExtension(opts.subjectAlternativeName));
     }
+    if (opts.ocspUrl) {
+        const aia = new AuthorityInfoAccessSyntax([
+            new AccessDescription({
+                accessMethod: '1.3.6.1.5.5.7.48.1', // id-ad-ocsp
+                accessLocation: new AsnGeneralName({
+                    uniformResourceIdentifier: opts.ocspUrl,
+                }),
+            }),
+        ]);
+        extensions.push(
+            new x509.Extension(
+                '1.3.6.1.5.5.7.1.1',
+                false,
+                AsnConvert.serialize(aia)
+            )
+        );
+    }
+    if (opts.crlUrls && opts.crlUrls.length > 0) {
+        const cdp = new CRLDistributionPoints(
+            opts.crlUrls.map(
+                (url) =>
+                    new DistributionPoint({
+                        distributionPoint: new DistributionPointName({
+                            fullName: new Asn1GeneralNames([
+                                new AsnGeneralName({
+                                    uniformResourceIdentifier: url,
+                                }),
+                            ]),
+                        }),
+                    })
+            )
+        );
+        extensions.push(
+            new x509.Extension(
+                '2.5.29.31',
+                false,
+                AsnConvert.serialize(cdp)
+            )
+        );
+    }
     const cert = await x509.X509CertificateGenerator.create({
         serialNumber: randomSerial(),
         subject: opts.name ?? 'CN=Leaf',
@@ -238,6 +286,51 @@ function randomSerial(): string {
     const bytes = new Uint8Array(16);
     provider.getRandomValues(bytes);
     return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export interface CreateOcspResponderOpts {
+    name?: string;
+    notBefore?: Date;
+    notAfter?: Date;
+    ocspNoCheck?: boolean;
+}
+
+export async function createOcspResponder(
+    issuer: { certificate: x509.X509Certificate; keys: CryptoKeyPair },
+    opts: CreateOcspResponderOpts = {}
+): Promise<Leaf> {
+    const keys = await generateEcKeys();
+    const now = new Date();
+    const extensions: x509.Extension[] = [
+        new x509.BasicConstraintsExtension(false, undefined, true),
+        new x509.KeyUsagesExtension(x509.KeyUsageFlags.digitalSignature, true),
+        new x509.ExtendedKeyUsageExtension(['1.3.6.1.5.5.7.3.9'], true), // id-kp-OCSPSigning
+        await x509.SubjectKeyIdentifierExtension.create(keys.publicKey),
+        await x509.AuthorityKeyIdentifierExtension.create(issuer.certificate, false),
+    ];
+    if (opts.ocspNoCheck) {
+        // id-pkix-ocsp-nocheck, extension value = ASN.1 NULL (0x05 0x00)
+        extensions.push(
+            new x509.Extension(
+                '1.3.6.1.5.5.7.48.1.5',
+                false,
+                new Uint8Array([0x05, 0x00])
+            )
+        );
+    }
+    const certificate = await x509.X509CertificateGenerator.create({
+        serialNumber: randomSerial(),
+        subject: opts.name ?? 'CN=OCSP Responder',
+        issuer: issuer.certificate.subject,
+        notBefore: opts.notBefore ?? new Date(now.getTime() - 1000),
+        notAfter:
+            opts.notAfter ?? new Date(now.getTime() + 365 * 24 * 3600 * 1000),
+        publicKey: keys.publicKey,
+        signingKey: issuer.keys.privateKey,
+        signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+        extensions,
+    });
+    return { certificate, keys };
 }
 
 export interface CreateCrlOpts {
