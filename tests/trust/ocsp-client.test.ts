@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { AsnConvert } from '@peculiar/asn1-schema';
-import { OCSPRequest } from '@peculiar/asn1-ocsp';
+import { OCSPRequest, OCSPResponse } from '@peculiar/asn1-ocsp';
 import { OcspClient } from '../../src/trust/OcspClient.js';
-import { createCa, createLeaf } from './helpers/synthetic-ca.js';
+import type { Fetcher } from '../../src/trust/Fetcher.js';
+import {
+    createCa,
+    createLeaf,
+    createOcspResponder,
+    signOcspResponse,
+} from './helpers/synthetic-ca.js';
 
 describe('OcspClient — buildRequest', () => {
     it('produces a valid DER-encoded OCSPRequest', async () => {
@@ -24,5 +30,46 @@ describe('OcspClient — buildRequest', () => {
         const requestDer = await client.buildRequest(leaf.certificate, root.certificate);
         const parsed = AsnConvert.parse(requestDer, OCSPRequest);
         expect(parsed.optionalSignature).toBeUndefined();
+    });
+});
+
+describe('OcspClient — sendRequest', () => {
+    it('posts the request and parses a successful BasicOCSPResponse', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root);
+        const responder = await createOcspResponder(root);
+        const client = new OcspClient();
+        const requestDer = await client.buildRequest(leaf.certificate, root.certificate);
+        const responseDer = await signOcspResponse(responder, requestDer, {
+            status: 'good',
+            thisUpdate: new Date('2026-04-23'),
+            nextUpdate: new Date('2026-04-30'),
+        });
+
+        const fetcher = async (_url: string, init?: RequestInit): Promise<Response> => {
+            expect(init?.method).toBe('POST');
+            expect((init?.headers as Record<string, string>)?.['content-type']).toBe(
+                'application/ocsp-request'
+            );
+            return new Response(responseDer, {
+                status: 200,
+                headers: { 'content-type': 'application/ocsp-response' },
+            });
+        };
+        const c = new OcspClient({ fetcher: fetcher as Fetcher });
+        const parsed = await c.sendRequest('http://ocsp.example.com', requestDer);
+        expect(parsed.basic.tbsResponseData.responses).toHaveLength(1);
+    });
+
+    it('throws on non-successful responseStatus', async () => {
+        const malformedResponse = AsnConvert.serialize(
+            new OCSPResponse({ responseStatus: 1 /* malformedRequest */ })
+        );
+        const fetcher = async () =>
+            new Response(new Uint8Array(malformedResponse), { status: 200 });
+        const c = new OcspClient({ fetcher: fetcher as Fetcher });
+        await expect(
+            c.sendRequest('http://ocsp.example.com', new Uint8Array([0x30, 0x00]))
+        ).rejects.toThrow(/responseStatus/);
     });
 });

@@ -1,7 +1,9 @@
 import { AsnConvert, OctetString } from '@peculiar/asn1-schema';
 import {
+    BasicOCSPResponse,
     CertID,
     OCSPRequest,
+    OCSPResponse,
     Request,
     TBSRequest,
 } from '@peculiar/asn1-ocsp';
@@ -13,6 +15,16 @@ import type { Fetcher } from './Fetcher.js';
 export interface OcspClientOptions {
     fetcher?: Fetcher;
     cache?: Cache;
+}
+
+/**
+ * Parsed OCSP response envelope. Holds both the decoded `BasicOCSPResponse`
+ * (for verification and verdict extraction) and the raw DER bytes (used by
+ * the Task 16 caching path). NOT exported from the package root.
+ */
+export interface OcspResponseEnvelope {
+    basic: BasicOCSPResponse;
+    responseDer: Uint8Array;
 }
 
 /**
@@ -73,6 +85,50 @@ export class OcspClient {
             }),
         });
         return new Uint8Array(AsnConvert.serialize(request));
+    }
+
+    /**
+     * POST a DER-encoded OCSP request to the responder URL, parse the reply,
+     * and return the decoded `BasicOCSPResponse` plus the raw DER (for later
+     * caching).
+     *
+     * Throws on non-ok HTTP, on non-successful `responseStatus`, or on any
+     * `responseType` other than `id-pkix-ocsp-basic` (1.3.6.1.5.5.7.48.1.1).
+     * Signature verification is deferred to `verifyResponse` (Task 13).
+     */
+    async sendRequest(
+        url: string,
+        requestDer: Uint8Array
+    ): Promise<OcspResponseEnvelope> {
+        const response = await this.fetcher(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/ocsp-request' },
+            body: requestDer,
+        });
+        if (!response.ok) {
+            throw new Error(`OCSP fetch failed: HTTP ${response.status} for ${url}`);
+        }
+        const responseDer = new Uint8Array(await response.arrayBuffer());
+        const parsed = AsnConvert.parse(responseDer, OCSPResponse);
+        if (parsed.responseStatus !== 0) {
+            throw new Error(
+                `OCSP non-successful responseStatus=${parsed.responseStatus} for ${url}`
+            );
+        }
+        if (
+            !parsed.responseBytes ||
+            parsed.responseBytes.responseType !== '1.3.6.1.5.5.7.48.1.1'
+        ) {
+            throw new Error(`OCSP response is not id-pkix-ocsp-basic`);
+        }
+        // `responseBytes.response` is an `OctetString` (ArrayBufferView).
+        // Copy through `.buffer` so the DER bytes are unwrapped regardless of
+        // the view's byteOffset/byteLength.
+        const basic = AsnConvert.parse(
+            new Uint8Array(parsed.responseBytes.response.buffer),
+            BasicOCSPResponse
+        );
+        return { basic, responseDer };
     }
 }
 
