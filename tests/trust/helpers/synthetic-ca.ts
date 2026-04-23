@@ -1,10 +1,16 @@
 import { AsnConvert } from '@peculiar/asn1-schema';
 import {
+    AlgorithmIdentifier,
+    CertificateList,
     GeneralName as AsnGeneralName,
     GeneralSubtree,
     GeneralSubtrees,
     Name as AsnName,
     NameConstraints,
+    RevokedCertificate,
+    TBSCertList,
+    Time,
+    Version,
 } from '@peculiar/asn1-x509';
 import * as x509 from '@peculiar/x509';
 import { Crypto as PeculiarCrypto } from '@peculiar/webcrypto';
@@ -232,4 +238,103 @@ function randomSerial(): string {
     const bytes = new Uint8Array(16);
     provider.getRandomValues(bytes);
     return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export interface CreateCrlOpts {
+    revokedSerials: Array<{ serialHex: string; revokedAt: Date; reason?: number }>;
+    thisUpdate: Date;
+    nextUpdate: Date;
+}
+
+export interface CrlResult {
+    der: Uint8Array;
+}
+
+export async function createCrl(
+    issuer: { certificate: x509.X509Certificate; keys: CryptoKeyPair },
+    opts: CreateCrlOpts
+): Promise<CrlResult> {
+    // Build tbsCertList.
+    const tbs = new TBSCertList({
+        version: Version.v2,
+        signature: new AlgorithmIdentifier({ algorithm: '1.2.840.10045.4.3.2' }), // ecdsa-with-SHA256
+        issuer: AsnConvert.parse(
+            issuer.certificate.subjectName.toArrayBuffer(),
+            AsnName
+        ),
+        thisUpdate: new Time(opts.thisUpdate),
+        nextUpdate: new Time(opts.nextUpdate),
+        revokedCertificates: opts.revokedSerials.length
+            ? opts.revokedSerials.map(
+                  (r) =>
+                      new RevokedCertificate({
+                          userCertificate: hexToBigIntBytes(r.serialHex),
+                          revocationDate: new Time(r.revokedAt),
+                      })
+              )
+            : undefined,
+    });
+
+    // Sign tbsCertList with the issuer's private key.
+    // Use the peculiar provider (same one that generated the keys) to avoid
+    // cross-provider CryptoKey incompatibilities under Node.
+    const tbsDer = AsnConvert.serialize(tbs);
+    const signatureBytes = await provider.subtle.sign(
+        { name: 'ECDSA', hash: 'SHA-256' },
+        issuer.keys.privateKey,
+        tbsDer
+    );
+    const signatureDer = ecdsaIeeeToDer(new Uint8Array(signatureBytes));
+
+    const crl = new CertificateList({
+        tbsCertList: tbs,
+        signatureAlgorithm: new AlgorithmIdentifier({ algorithm: '1.2.840.10045.4.3.2' }),
+        signature: signatureDer,
+    });
+    return { der: new Uint8Array(AsnConvert.serialize(crl)) };
+}
+
+/** Convert a hex string (optionally with leading zeros) into the big-endian BigInteger bytes the ASN.1 layer wants. */
+function hexToBigIntBytes(hex: string): Uint8Array {
+    const clean = hex.replace(/[^0-9a-fA-F]/g, '');
+    const padded = clean.length % 2 === 0 ? clean : '0' + clean;
+    const bytes = new Uint8Array(padded.length / 2);
+    for (let i = 0; i < bytes.length; i++) {
+        bytes[i] = parseInt(padded.slice(i * 2, i * 2 + 2), 16);
+    }
+    return bytes;
+}
+
+/**
+ * WebCrypto returns ECDSA signatures in IEEE P1363 format (r||s fixed-width).
+ * ASN.1 CertificateList.signature expects DER-encoded SEQUENCE { r, s }.
+ */
+function ecdsaIeeeToDer(ieee: Uint8Array): Uint8Array {
+    const half = ieee.length / 2;
+    const r = trimLeadingZerosAndAddSignByte(ieee.slice(0, half));
+    const s = trimLeadingZerosAndAddSignByte(ieee.slice(half));
+    const seqLen = 2 + r.length + 2 + s.length;
+    const out = new Uint8Array(2 + seqLen);
+    out[0] = 0x30;
+    out[1] = seqLen;
+    out[2] = 0x02;
+    out[3] = r.length;
+    out.set(r, 4);
+    out[4 + r.length] = 0x02;
+    out[5 + r.length] = s.length;
+    out.set(s, 6 + r.length);
+    return out;
+}
+
+function trimLeadingZerosAndAddSignByte(bytes: Uint8Array): Uint8Array {
+    let start = 0;
+    while (start < bytes.length - 1 && bytes[start] === 0) start++;
+    const trimmed = bytes.slice(start);
+    if (trimmed[0] & 0x80) {
+        const padded = new Uint8Array(trimmed.length + 1);
+        padded[0] = 0;
+        padded.set(trimmed, 1);
+        return padded;
+    }
+    return trimmed;
 }
