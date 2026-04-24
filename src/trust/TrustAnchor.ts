@@ -8,6 +8,13 @@ export interface TrustAnchor {
     readonly certificate: X509Certificate;
     readonly source: 'static' | 'lotl';
     readonly metadata?: LotlAnchorMetadata;
+    /**
+     * Authority identifiers this anchor stands for. Populated by
+     * `LotlTrustStore` from `ServiceDigitalIdentity`'s SKI; synthesized by
+     * `TrustEvaluator` from the anchor SKI for static stores. Used by
+     * `verifyPresentation` to populate `DecodedCredential.trusted_authority_ids`.
+     */
+    readonly trustedAuthorityIds?: readonly string[];
 }
 
 /**

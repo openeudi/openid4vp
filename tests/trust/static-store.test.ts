@@ -70,3 +70,16 @@ describe('StaticTrustStore', () => {
         for (const r of results) expect(r).toHaveLength(1);
     });
 });
+
+describe('StaticTrustStore — trustedAuthorityIds field shape', () => {
+    it('anchors may carry an optional trustedAuthorityIds list', async () => {
+        const root = await createCa();
+        const store = new StaticTrustStore([root.certificate]);
+        const anchors = await store.getAnchors({ issuer: root.certificate.subject });
+        expect(anchors).toHaveLength(1);
+        // Field is optional; A.1 StaticTrustStore does not populate it. A.3
+        // TrustEvaluator will synthesize a value from the anchor's SKI so
+        // consumers see a non-empty list either way.
+        expect(anchors[0].trustedAuthorityIds).toBeUndefined();
+    });
+});
