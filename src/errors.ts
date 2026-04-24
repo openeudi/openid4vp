@@ -141,3 +141,63 @@ export class LotlFetchError extends OpenID4VPError {
 export class LotlSignatureError extends OpenID4VPError {
     readonly code = 'lotl_signature_invalid' as const;
 }
+
+// ---------------------------------------------------------------------------
+// New in 0.7.0: workstream B-remaining (signed requests + direct_post.jwt)
+// ---------------------------------------------------------------------------
+
+export type SignedRequestBuildErrorCode =
+    | 'empty_cert_chain'
+    | 'hostname_cert_mismatch'
+    | 'signing_key_cert_mismatch'
+    | 'missing_encryption_jwk'
+    | 'missing_encryption_alg'
+    | 'missing_vp_formats'
+    | 'unsupported_signing_alg';
+
+export class SignedRequestBuildError extends OpenID4VPError {
+    readonly code: SignedRequestBuildErrorCode;
+    constructor(code: SignedRequestBuildErrorCode, message: string) {
+        super(message);
+        this.code = code;
+    }
+}
+
+export class UnsupportedJweError extends OpenID4VPError {
+    readonly code = 'unsupported_jwe' as const;
+    readonly alg: string;
+    readonly enc: string;
+    constructor(alg: string, enc: string) {
+        super(`Unsupported JWE algorithms: alg=${alg}, enc=${enc}`);
+        this.alg = alg;
+        this.enc = enc;
+    }
+}
+
+export class DecryptionFailedError extends OpenID4VPError {
+    readonly code = 'decryption_failed' as const;
+    constructor(message = 'Failed to decrypt authorization response', options?: { cause?: Error }) {
+        super(message, options);
+    }
+}
+
+export class MissingDecryptionKeyError extends OpenID4VPError {
+    readonly code = 'missing_decryption_key' as const;
+    constructor(message = 'decryptionKey is required to verify a direct_post.jwt response') {
+        super(message);
+    }
+}
+
+export class MultipleCredentialsNotSupportedError extends OpenID4VPError {
+    readonly code = 'multi_credential_unsupported' as const;
+    readonly entryCount: number;
+    readonly presentationCount: number;
+    constructor(entryCount: number, presentationCount: number) {
+        super(
+            `Multi-credential presentations are not yet supported: ` +
+                `${entryCount} queryId entries, ${presentationCount} presentations`
+        );
+        this.entryCount = entryCount;
+        this.presentationCount = presentationCount;
+    }
+}

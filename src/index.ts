@@ -72,5 +72,11 @@ export {
     RevocationCheckFailedError,
     LotlFetchError,
     LotlSignatureError,
+    SignedRequestBuildError,
+    UnsupportedJweError,
+    DecryptionFailedError,
+    MissingDecryptionKeyError,
+    MultipleCredentialsNotSupportedError,
     type ChainErrorReason,
+    type SignedRequestBuildErrorCode,
 } from './errors.js';
