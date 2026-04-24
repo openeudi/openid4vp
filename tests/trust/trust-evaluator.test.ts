@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TrustEvaluator } from '../../src/trust/TrustEvaluator.js';
-import { StaticTrustStore } from '../../src/trust/TrustStore.js';
+import { CompositeTrustStore, StaticTrustStore } from '../../src/trust/TrustStore.js';
 import {
     TrustAnchorNotFoundError,
     CertificateChainError,
@@ -211,6 +211,57 @@ describe('TrustEvaluator — LOTL provenance', () => {
         expect(result.provenance?.country).toBe('FR');
         expect(result.provenance?.loa).toBe('high');
         expect(result.trustedAuthorityIds).toHaveLength(1);
+    });
+
+    it('populates provenance when LotlTrustStore is wrapped in CompositeTrustStore', async () => {
+        const lotlSigner = await createLotlSigner();
+        const frSigner = await createLotlSigner({ name: 'CN=FR TL Signer' });
+        const tspRoot = await createCa({ name: 'CN=ANTS Root 2' });
+        const tspLeaf = await createLeaf(tspRoot, { name: 'CN=Issuer 02' });
+        const frXml = await buildSignedNationalTlXml(frSigner, {
+            country: 'FR',
+            issueDate: new Date('2026-04-01'),
+            nextUpdate: null,
+            services: [
+                {
+                    providerName: 'ANTS',
+                    serviceTypeIdentifier:
+                        'http://uri.etsi.org/TrstSvc/Svctype/CA/QC',
+                    serviceStatus:
+                        'http://uri.etsi.org/TrstSvc/TrustedList/Svcstatus/granted',
+                    serviceName: 'ANTS Qualified CA',
+                    certificates: [tspRoot.certificate],
+                    additionalServiceInformationUris: [],
+                },
+            ],
+        });
+        const lotlXml = await buildSignedLotlXml(lotlSigner, {
+            issueDate: new Date('2026-04-01'),
+            nextUpdate: null,
+            pointers: [
+                {
+                    country: 'FR',
+                    tslLocation: 'http://fr.test/tl.xml',
+                    signingCertificates: [frSigner.certificate],
+                },
+            ],
+        });
+        const fetcher: Fetcher = async (url) => {
+            if (url.includes('eu-lotl')) return new Response(lotlXml, { status: 200 });
+            if (url.includes('fr.test')) return new Response(frXml, { status: 200 });
+            return new Response('', { status: 404 });
+        };
+        const lotlStore = new LotlTrustStore({
+            fetcher,
+            signingAnchors: [lotlSigner.certificate],
+            lotlUrl: 'http://ec.test/eu-lotl.xml',
+        });
+        const composite = new CompositeTrustStore([lotlStore]);
+        const evaluator = new TrustEvaluator({ trustStore: composite });
+        const result = await evaluator.evaluate(tspLeaf.certificate);
+        expect(result.anchor.source).toBe('lotl');
+        expect(result.provenance?.country).toBe('FR');
+        expect(result.provenance?.qualified).toBe(true);
     });
 
     it('populates trustedAuthorityIds from SKI for static-store anchors', async () => {

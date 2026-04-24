@@ -178,8 +178,15 @@ async function resolveProvenance(
         getNationalTls?: () => Promise<readonly NationalTlSnapshot[]>;
     };
     if (typeof withTls.getNationalTls !== 'function') return undefined;
-    const tls = await withTls.getNationalTls();
-    const { ProvenanceResolver } = await import('./ProvenanceResolver.js');
-    const resolved = new ProvenanceResolver().resolve(anchor.certificate, tls);
-    return resolved?.provenance;
+    try {
+        const tls = await withTls.getNationalTls();
+        const { ProvenanceResolver } = await import('./ProvenanceResolver.js');
+        const resolved = new ProvenanceResolver().resolve(anchor.certificate, tls);
+        return resolved?.provenance;
+    } catch (err) {
+        console.warn(
+            `[openid4vp] provenance lookup failed for ${anchor.certificate.subject} — ${(err as Error).message}`
+        );
+        return undefined;
+    }
 }

@@ -1,5 +1,6 @@
 import { X509Certificate } from '@peculiar/x509';
 import type { TrustAnchor } from './TrustAnchor.js';
+import type { NationalTlSnapshot } from './lotl-types.js';
 import { getSkiHex } from './x509-utils.js';
 
 /**
@@ -89,6 +90,18 @@ export class CompositeTrustStore implements TrustStore {
             }
         }
         return out;
+    }
+
+    async getNationalTls(): Promise<readonly NationalTlSnapshot[]> {
+        for (const store of this.stores) {
+            const s = store as TrustStore & {
+                getNationalTls?: () => Promise<readonly NationalTlSnapshot[]>;
+            };
+            if (typeof s.getNationalTls === 'function') {
+                return s.getNationalTls();
+            }
+        }
+        return [];
     }
 }
 
