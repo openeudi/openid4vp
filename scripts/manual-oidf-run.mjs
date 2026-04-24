@@ -19,6 +19,7 @@
  * NOT shipped in the npm package (scripts/ excluded from package.json "files").
  */
 
+import 'reflect-metadata';
 import http from 'node:http';
 import { URL } from 'node:url';
 import * as x509 from '@peculiar/x509';
