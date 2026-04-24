@@ -97,6 +97,20 @@ describe('LotlFetcher — signature failures', () => {
         ).rejects.toBeInstanceOf(LotlSignatureError);
     });
 
+    it('throws LotlSignatureError on empty anchor list', async () => {
+        const signer = await createLotlSigner();
+        const xml = await buildSignedLotlXml(signer, {
+            issueDate: new Date('2026-04-01'),
+            nextUpdate: null,
+            pointers: [],
+        });
+        const fetcher: Fetcher = async () => respond(xml);
+        const lotlFetcher = new LotlFetcher({ fetcher });
+        await expect(
+            lotlFetcher.fetchSigned('http://ec.test/eu-lotl.xml', [])
+        ).rejects.toBeInstanceOf(LotlSignatureError);
+    });
+
     it('verifies against any anchor in the provided list (first match wins)', async () => {
         const anchorA = await createLotlSigner({ name: 'CN=Anchor A' });
         const anchorB = await createLotlSigner({ name: 'CN=Anchor B' });
@@ -110,6 +124,24 @@ describe('LotlFetcher — signature failures', () => {
         const doc = await lotlFetcher.fetchSigned(
             'http://ec.test/eu-lotl.xml',
             [anchorA.certificate, anchorB.certificate]
+        );
+        expect(doc).toBeDefined();
+    });
+});
+
+describe('LotlFetcher — algorithm detection', () => {
+    it('verifies P-384 anchors correctly', async () => {
+        const signer = await createLotlSigner({ curve: 'P-384' });
+        const xml = await buildSignedLotlXml(signer, {
+            issueDate: new Date('2026-04-01'),
+            nextUpdate: null,
+            pointers: [],
+        });
+        const fetcher: Fetcher = async () => respond(xml);
+        const lotlFetcher = new LotlFetcher({ fetcher });
+        const doc = await lotlFetcher.fetchSigned(
+            'http://ec.test/eu-lotl.xml',
+            [signer.certificate]
         );
         expect(doc).toBeDefined();
     });

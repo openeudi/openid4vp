@@ -35,6 +35,8 @@ export interface CreateLotlSignerOpts {
     readonly name?: string;
     readonly notBefore?: Date;
     readonly notAfter?: Date;
+    /** EC named curve to use. Defaults to 'P-256'. Use 'P-384' to test non-default curves. */
+    readonly curve?: 'P-256' | 'P-384';
 }
 
 /**
@@ -45,20 +47,23 @@ export interface CreateLotlSignerOpts {
 export async function createLotlSigner(
     opts: CreateLotlSignerOpts = {}
 ): Promise<LotlSigner> {
+    const namedCurve = opts.curve ?? 'P-256';
     const keys = await provider.subtle.generateKey(
-        { name: 'ECDSA', namedCurve: 'P-256' },
+        { name: 'ECDSA', namedCurve },
         true,
         ['sign', 'verify']
     );
     const now = opts.notBefore ?? new Date();
     const end = opts.notAfter ?? new Date(now.getTime() + 365 * 24 * 3600_000);
+    // Match the hash strength to the curve per NIST recommendations.
+    const signingHash = namedCurve === 'P-384' ? 'SHA-384' : 'SHA-256';
     const certificate = await x509.X509CertificateGenerator.createSelfSigned({
         name: opts.name ?? 'CN=LOTL Test Signer',
         serialNumber: '01',
         notBefore: now,
         notAfter: end,
         keys,
-        signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+        signingAlgorithm: { name: 'ECDSA', hash: signingHash },
         extensions: [
             new x509.KeyUsagesExtension(x509.KeyUsageFlags.digitalSignature, true),
         ],
@@ -204,9 +209,12 @@ export async function buildSignedNationalTlXml(
 // ---------------------------------------------------------------------------
 
 /**
- * Sign an XML string with an enveloped ECDSA-SHA-256 signature over the
- * element whose Id="tsl-root". The signer cert is embedded in the
- * <X509Data> block so xmldsigjs can verify without an external key argument.
+ * Sign an XML string with an enveloped ECDSA signature over the element whose
+ * Id="tsl-root". The signer cert is embedded in the <X509Data> block so
+ * xmldsigjs can verify without an external key argument.
+ *
+ * The hash algorithm is derived from the signer key's namedCurve:
+ *   P-256 → SHA-256, P-384 → SHA-384 (NIST recommendation).
  *
  * Deviation from the reference snippet: Sign() returns Promise<Signature>
  * (an xml-core XmlObject), NOT an Element. We call signed.GetXml() to obtain
@@ -215,8 +223,15 @@ export async function buildSignedNationalTlXml(
 async function signXml(xml: string, signer: LotlSigner): Promise<string> {
     const doc = new DOMParser().parseFromString(xml, 'application/xml');
     const signed = new xmldsig.SignedXml();
+
+    // Detect the curve from the private key algorithm so we use the matching
+    // hash (P-384 requires SHA-384; defaulting to SHA-256 for all others).
+    const privKeyAlg = (signer.keys.privateKey as unknown as { algorithm?: { namedCurve?: string } }).algorithm;
+    const namedCurve = privKeyAlg?.namedCurve ?? 'P-256';
+    const signingHash = namedCurve === 'P-384' ? 'SHA-384' : 'SHA-256';
+
     await signed.Sign(
-        { name: 'ECDSA', hash: 'SHA-256' } as EcdsaParams,
+        { name: 'ECDSA', hash: signingHash } as EcdsaParams,
         signer.keys.privateKey,
         doc,
         {
