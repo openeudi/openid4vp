@@ -9,6 +9,8 @@ import type { Fetcher } from './Fetcher.js';
 import { RevocationChecker } from './RevocationChecker.js';
 import type { TrustAnchor } from './TrustAnchor.js';
 import type { TrustStore } from './TrustStore.js';
+import type { NationalTlSnapshot } from './lotl-types.js';
+import { getSkiHex } from './x509-utils.js';
 
 export type RevocationPolicy = 'skip' | 'prefer' | 'require';
 
@@ -30,6 +32,7 @@ export interface TrustEvaluationResult {
     revocationCheckedAt?: Date;
     revokedAt?: Date;
     revocationReason?: string;
+    trustedAuthorityIds?: readonly string[];
     provenance?: {
         loa?: 'substantial' | 'high';
         qualified?: boolean;
@@ -119,6 +122,9 @@ export class TrustEvaluator {
             );
         }
 
+        const trustedAuthorityIds = deriveAuthorityIds(anchor);
+        const provenance = await resolveProvenance(this.trustStore, anchor);
+
         return {
             chain,
             anchor,
@@ -129,6 +135,8 @@ export class TrustEvaluator {
                     ? 'skipped'
                     : revocation.status,
             revocationCheckedAt: revocation.checkedAt,
+            trustedAuthorityIds,
+            ...(provenance ? { provenance } : {}),
         };
     }
 }
@@ -150,4 +158,28 @@ function hexToBytes(s: string): Uint8Array {
         out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
     }
     return out;
+}
+
+function deriveAuthorityIds(anchor: TrustAnchor): readonly string[] {
+    if (anchor.trustedAuthorityIds && anchor.trustedAuthorityIds.length > 0) {
+        return anchor.trustedAuthorityIds;
+    }
+    // Static-store fallback: synthesize from the anchor's SKI.
+    const ski = getSkiHex(anchor.certificate);
+    return ski ? [ski] : [];
+}
+
+async function resolveProvenance(
+    store: TrustStore,
+    anchor: TrustAnchor
+): Promise<TrustEvaluationResult['provenance']> {
+    if (anchor.source !== 'lotl') return undefined;
+    const withTls = store as TrustStore & {
+        getNationalTls?: () => Promise<readonly NationalTlSnapshot[]>;
+    };
+    if (typeof withTls.getNationalTls !== 'function') return undefined;
+    const tls = await withTls.getNationalTls();
+    const { ProvenanceResolver } = await import('./ProvenanceResolver.js');
+    const resolved = new ProvenanceResolver().resolve(anchor.certificate, tls);
+    return resolved?.provenance;
 }
