@@ -2,6 +2,7 @@ export const VERSION = '0.5.0';
 
 // Builders
 export { createAuthorizationRequest } from './authorization.js';
+export { createSignedAuthorizationRequest } from './signed-authorization.js';
 export {
     buildHaipQuery,
     validateHaipQuery,
@@ -40,6 +41,8 @@ export type {
     IssuerInfo,
     AuthorizationRequestInput,
     AuthorizationRequest,
+    SignedAuthorizationRequestInput,
+    SignedAuthorizationRequest,
     VerifyOptions,
     VerifyResult,
     HaipQueryInput,
