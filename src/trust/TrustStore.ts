@@ -1,8 +1,6 @@
-import {
-    SubjectKeyIdentifierExtension,
-    X509Certificate,
-} from '@peculiar/x509';
+import { X509Certificate } from '@peculiar/x509';
 import type { TrustAnchor } from './TrustAnchor.js';
+import { getSkiHex } from './x509-utils.js';
 
 /**
  * Resolves trust anchors for a given leaf credential. The library calls
@@ -43,7 +41,7 @@ export class StaticTrustStore implements TrustStore {
             const anchor: TrustAnchor = { certificate: cert, source: 'static' };
             this.anchors.push(anchor);
             pushInto(this.subjectIndex, cert.subject, anchor);
-            const ski = getSubjectKeyIdentifierHex(cert);
+            const ski = getSkiHex(cert);
             if (ski) pushInto(this.skiIndex, ski, anchor);
         }
     }
@@ -83,7 +81,7 @@ export class CompositeTrustStore implements TrustStore {
         const out: TrustAnchor[] = [];
         for (const batch of results) {
             for (const anchor of batch) {
-                const ski = getSubjectKeyIdentifierHex(anchor.certificate);
+                const ski = getSkiHex(anchor.certificate);
                 const key = ski ?? anchor.certificate.serialNumber;
                 if (seen.has(key)) continue;
                 seen.add(key);
@@ -98,12 +96,6 @@ function toCertificate(input: TrustStoreInput): X509Certificate {
     if (input instanceof X509Certificate) return input;
     if (input instanceof Uint8Array) return new X509Certificate(input as Uint8Array<ArrayBuffer>);
     return new X509Certificate(input); // PEM string path
-}
-
-function getSubjectKeyIdentifierHex(cert: X509Certificate): string | null {
-    const ext = cert.getExtension(SubjectKeyIdentifierExtension);
-    if (!ext) return null;
-    return ext.keyId.toLowerCase();
 }
 
 function pushInto<K>(map: Map<K, TrustAnchor[]>, key: K, anchor: TrustAnchor): void {

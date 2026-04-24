@@ -1,9 +1,7 @@
-import {
-    SubjectKeyIdentifierExtension,
-    X509Certificate,
-} from '@peculiar/x509';
-import { mapLoA } from './lotl-loa-mapping.js';
+import { X509Certificate } from '@peculiar/x509';
 import type { NationalTlSnapshot, TspService } from './lotl-types.js';
+import { deriveServiceMetadata } from './service-metadata.js';
+import { getSkiHex } from './x509-utils.js';
 
 export interface ResolvedProvenance {
     readonly provenance: {
@@ -52,23 +50,14 @@ function buildProvenance(
     service: TspService,
     anchorSki: string
 ): ResolvedProvenance {
-    const qualified =
-        service.serviceTypeIdentifier.endsWith('/CA/QC') &&
-        service.serviceStatus.endsWith('/granted');
-    const loa = mapLoA(service.additionalServiceInformationUris);
+    const derived = deriveServiceMetadata(service);
     const provenance: ResolvedProvenance['provenance'] = {
-        qualified,
         country: service.country,
         serviceName: service.serviceName,
-        ...(loa !== undefined ? { loa } : {}),
+        ...derived,
     };
     return {
         provenance,
         trustedAuthorityIds: [anchorSki],
     };
-}
-
-function getSkiHex(cert: X509Certificate): string | null {
-    const ext = cert.getExtension(SubjectKeyIdentifierExtension);
-    return ext ? ext.keyId.toLowerCase() : null;
 }

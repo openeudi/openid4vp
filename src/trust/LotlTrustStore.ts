@@ -1,7 +1,4 @@
-import {
-    SubjectKeyIdentifierExtension,
-    X509Certificate,
-} from '@peculiar/x509';
+import { X509Certificate } from '@peculiar/x509';
 import type { Cache } from './Cache.js';
 import type { Fetcher } from './Fetcher.js';
 import { EU_LOTL_SIGNING_ANCHORS } from './lotl-signing-anchors.js';
@@ -14,8 +11,9 @@ import { LotlFetcher } from './LotlFetcher.js';
 import { LotlParser } from './LotlParser.js';
 import { NationalTlResolver } from './NationalTlResolver.js';
 import type { LotlAnchorMetadata, TrustAnchor } from './TrustAnchor.js';
-import { mapLoA } from './lotl-loa-mapping.js';
 import type { TrustStore, TrustStoreHint } from './TrustStore.js';
+import { deriveServiceMetadata } from './service-metadata.js';
+import { getSkiBytes, getSkiHex } from './x509-utils.js';
 
 const DEFAULT_LOTL_URL = 'https://ec.europa.eu/tools/lotl/eu-lotl.xml';
 const DEFAULT_REFRESH_INTERVAL_MS = 24 * 3600 * 1000;
@@ -141,17 +139,13 @@ function matchesHint(cert: X509Certificate, hint: TrustStoreHint): boolean {
 }
 
 function buildAnchor(service: TspService, cert: X509Certificate): TrustAnchor {
-    const qualified =
-        service.serviceTypeIdentifier.endsWith('/CA/QC') &&
-        service.serviceStatus.endsWith('/granted');
-    const loa = mapLoA(service.additionalServiceInformationUris);
+    const derived = deriveServiceMetadata(service);
     const metadata: LotlAnchorMetadata = {
         country: service.country,
         serviceName: service.serviceName,
         serviceTypeIdentifier: service.serviceTypeIdentifier,
         serviceStatus: service.serviceStatus,
-        qualified,
-        ...(loa !== undefined ? { loa } : {}),
+        ...derived,
     };
     const ski = getSkiHex(cert);
     return {
@@ -160,22 +154,6 @@ function buildAnchor(service: TspService, cert: X509Certificate): TrustAnchor {
         metadata,
         trustedAuthorityIds: ski ? [ski] : [],
     };
-}
-
-function getSkiBytes(cert: X509Certificate): Uint8Array | null {
-    const ext = cert.getExtension(SubjectKeyIdentifierExtension);
-    if (!ext) return null;
-    const hex = ext.keyId;
-    const out = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < out.length; i++) {
-        out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    }
-    return out;
-}
-
-function getSkiHex(cert: X509Certificate): string | null {
-    const ext = cert.getExtension(SubjectKeyIdentifierExtension);
-    return ext ? ext.keyId.toLowerCase() : null;
 }
 
 function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
