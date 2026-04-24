@@ -124,3 +124,20 @@ export class RevokedCertificateError extends OpenID4VPError {
 export class RevocationCheckFailedError extends OpenID4VPError {
     readonly code = 'revocation_check_failed' as const;
 }
+
+export class LotlFetchError extends OpenID4VPError {
+    readonly code = 'lotl_fetch_failed' as const;
+    readonly url: string;
+
+    constructor(
+        message: string,
+        options: { url: string; cause?: Error }
+    ) {
+        super(message, { cause: options.cause });
+        this.url = options.url;
+    }
+}
+
+export class LotlSignatureError extends OpenID4VPError {
+    readonly code = 'lotl_signature_invalid' as const;
+}
