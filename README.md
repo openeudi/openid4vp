@@ -124,6 +124,79 @@ Mismatches return `valid: false` — they do not throw. Only crypto/structural f
 
 > **Privacy — diagnostics are verifier-internal.** `match.unmatched[].reason` and `detail` (including `value_mismatch`) are intended for verifier-side logging, debugging, and admin UIs. OpenID4VP §11 warns that per-claim verification outcomes can reveal wallet contents to observers. Do NOT echo these diagnostics into the OpenID4VP wire response sent back to the wallet, into end-user-visible error messages that another party could correlate, or into public analytics/third-party logs. The protocol's own error codes are the public interface; these fields are your internal instrumentation.
 
+## Signed authorization requests (x509_san_dns)
+
+For flows that require a signed request object (JAR) per OpenID4VP 1.0 §5.10, use `createSignedAuthorizationRequest`:
+
+```ts
+import { createSignedAuthorizationRequest } from "@openeudi/openid4vp";
+
+const req = await createSignedAuthorizationRequest({
+  hostname: "verifier.example.com",
+  requestUri: "https://verifier.example.com/request.jwt",
+  responseUri: "https://verifier.example.com/response",
+  nonce,
+  signer: verifierKeyPair,          // CryptoKeyPair with public+private
+  certificateChain: [leafCertDer],  // DER-encoded, leaf SAN DNSName must equal hostname
+  encryptionKey: {
+    publicJwk: encryptionPublicJwk, // must include alg, e.g. "ECDH-ES"
+  },
+  vpFormatsSupported: {
+    "dc+sd-jwt": { "sd-jwt_alg_values": ["ES256"] },
+  },
+}, dcqlQuery);
+
+// req.uri — the short URI to hand to the wallet
+// req.requestObject — the JWS the verifier must host at requestUri
+//                     (Content-Type: application/oauth-authz-req+jwt)
+```
+
+The caller hosts `req.requestObject` at `requestUri` (the library does not host HTTP). The library verifies that the signing key's public SPKI matches the leaf certificate's public key — an attempt to sign with a mismatched key fails with `SignedRequestBuildError: signing_key_cert_mismatch`.
+
+## Authorization responses (direct_post and direct_post.jwt)
+
+Wallets POST the Authorization Response to your `responseUri`. Pass the envelope (encrypted or unencrypted) to `verifyAuthorizationResponse`:
+
+```ts
+import { verifyAuthorizationResponse } from "@openeudi/openid4vp";
+
+// Unencrypted direct_post — caller parsed the form-encoded body:
+const result = await verifyAuthorizationResponse(
+  { vp_token: parsedVpTokenObject, state: submittedState },
+  dcqlQuery,
+  {
+    trustedCertificates: [issuerCertDer],
+    nonce,
+  },
+);
+
+// Encrypted direct_post.jwt — caller has the `response` JWE string:
+const result = await verifyAuthorizationResponse(
+  { response: form.get("response") },
+  dcqlQuery,
+  {
+    trustedCertificates: [issuerCertDer],
+    nonce,
+    decryptionKey: verifierEncryptionPrivateKey,
+  },
+);
+```
+
+`verifyAuthorizationResponse` accepts the OpenID4VP 1.0 §8.1 envelope shape: `vp_token` is always an object keyed by DCQL credential query id, with arrays of presentations. This release supports **single-credential single-presentation only** — multi-credential queries or multi-presentation arrays throw `MultipleCredentialsNotSupportedError`.
+
+### State binding is the caller's responsibility
+
+The library is stateless. Verifiers MUST track the `state` values they issued and compare them against the decrypted envelope's `state` before trusting the response.
+
+### Supported JWE algorithms
+
+`direct_post.jwt` decryption supports:
+
+- `alg`: `ECDH-ES` (driven by the encryption JWK's `alg` parameter)
+- `enc`: `A128GCM`, `A256GCM` (HAIP requires both)
+
+Other algorithms throw `UnsupportedJweError`.
+
 ### ParseOptions / VerifyOptions
 
 Both `parsePresentation` and `verifyPresentation` accept:
