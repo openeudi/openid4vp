@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { LotlTrustStore } from '../../src/trust/LotlTrustStore.js';
 import type { Fetcher } from '../../src/trust/Fetcher.js';
 import {
@@ -160,5 +160,46 @@ describe('LotlTrustStore — single-flight refresh', () => {
         await new Promise((r) => setTimeout(r, 5));
         await store.getAnchors({ issuer: 'CN=b' });
         expect(fetchCount).toBe(2);
+    });
+});
+
+describe('LotlTrustStore — graceful degradation', () => {
+    it('serves the cached snapshot with console.warn when a refresh fails', async () => {
+        const lotlSigner = await createLotlSigner();
+        const xmlV1 = await buildSignedLotlXml(lotlSigner, {
+            issueDate: new Date('2026-04-01'),
+            nextUpdate: null,
+            pointers: [],
+        });
+        let fetchCount = 0;
+        const fetcher: Fetcher = async () => {
+            fetchCount++;
+            if (fetchCount === 1) return new Response(xmlV1, { status: 200 });
+            return new Response('', { status: 500 });
+        };
+        const store = new LotlTrustStore({
+            fetcher,
+            signingAnchors: [lotlSigner.certificate],
+            lotlUrl: 'http://ec.test/eu-lotl.xml',
+            refreshInterval: 1,
+        });
+        await store.getAnchors({ issuer: 'CN=a' });
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        await new Promise((r) => setTimeout(r, 5));
+        const anchors = await store.getAnchors({ issuer: 'CN=a' });
+        expect(anchors).toEqual([]); // the pointerless cached snapshot
+        expect(warnSpy).toHaveBeenCalled();
+        warnSpy.mockRestore();
+    });
+
+    it('propagates the error when the very first fetch fails', async () => {
+        const lotlSigner = await createLotlSigner();
+        const fetcher: Fetcher = async () => new Response('', { status: 500 });
+        const store = new LotlTrustStore({
+            fetcher,
+            signingAnchors: [lotlSigner.certificate],
+            lotlUrl: 'http://ec.test/eu-lotl.xml',
+        });
+        await expect(store.getAnchors({ issuer: 'CN=a' })).rejects.toThrow();
     });
 });

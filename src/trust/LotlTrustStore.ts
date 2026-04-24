@@ -121,6 +121,14 @@ export class LotlTrustStore implements TrustStore {
                     fetchedAt: Date.now(),
                 };
                 return this.snapshot;
+            } catch (err) {
+                if (this.snapshot) {
+                    console.warn(
+                        `[openid4vp] LOTL refresh failed; serving cached snapshot (${(err as Error).message})`
+                    );
+                    return this.snapshot;
+                }
+                throw err;
             } finally {
                 this.inFlight = null;
             }
