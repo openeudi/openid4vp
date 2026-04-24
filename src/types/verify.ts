@@ -10,3 +10,11 @@ export interface VerifyResult {
     submission: DcqlSubmission | null;
     valid: boolean;
 }
+
+export interface EncryptedResponse {
+    response: string;
+}
+
+export type VerifyAuthorizationResponseOptions = VerifyOptions & {
+    decryptionKey?: CryptoKey;
+};
