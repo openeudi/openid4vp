@@ -1,4 +1,4 @@
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
 
 // Builders
 export { createAuthorizationRequest } from './authorization.js';
@@ -56,10 +56,12 @@ export { InMemoryCache, type Cache } from './trust/Cache.js';
 export {
     StaticTrustStore,
     CompositeTrustStore,
+    LotlTrustStore,
     type TrustStore,
     type TrustStoreHint,
     type TrustStoreInput,
-} from './trust/TrustStore.js';
+    type LotlTrustStoreOptions,
+} from './trust/index.js';
 
 // Error classes added in 0.5.0
 export {
@@ -68,5 +70,7 @@ export {
     CertificateChainError,
     RevokedCertificateError,
     RevocationCheckFailedError,
+    LotlFetchError,
+    LotlSignatureError,
     type ChainErrorReason,
 } from './errors.js';

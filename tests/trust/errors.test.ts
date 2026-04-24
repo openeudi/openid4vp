@@ -5,6 +5,8 @@ import {
     CertificateChainError,
     RevokedCertificateError,
     RevocationCheckFailedError,
+    LotlFetchError,
+    LotlSignatureError,
 } from '../../src/errors.js';
 
 describe('OpenID4VPError base', () => {
@@ -95,6 +97,36 @@ describe('RevocationCheckFailedError', () => {
         const err = new RevocationCheckFailedError('check failed', { cause });
         expect(err).toBeInstanceOf(OpenID4VPError);
         expect(err.code).toBe('revocation_check_failed');
+        expect((err as { cause?: unknown }).cause).toBe(cause);
+    });
+});
+
+describe('LotlFetchError', () => {
+    it('extends OpenID4VPError, carries code, url, and cause', () => {
+        const cause = new Error('connection reset');
+        const err = new LotlFetchError('failed to fetch LOTL', {
+            url: 'https://ec.europa.eu/tools/lotl/eu-lotl.xml',
+            cause,
+        });
+        expect(err).toBeInstanceOf(OpenID4VPError);
+        expect(err.code).toBe('lotl_fetch_failed');
+        expect(err.url).toBe('https://ec.europa.eu/tools/lotl/eu-lotl.xml');
+        expect((err as { cause?: unknown }).cause).toBe(cause);
+        expect(err.name).toBe('LotlFetchError');
+    });
+});
+
+describe('LotlSignatureError', () => {
+    it('extends OpenID4VPError and has stable code', () => {
+        const err = new LotlSignatureError('signature did not verify');
+        expect(err).toBeInstanceOf(OpenID4VPError);
+        expect(err.code).toBe('lotl_signature_invalid');
+        expect(err.name).toBe('LotlSignatureError');
+    });
+
+    it('preserves cause when provided', () => {
+        const cause = new Error('xmldsig core failure');
+        const err = new LotlSignatureError('sig invalid', { cause });
         expect((err as { cause?: unknown }).cause).toBe(cause);
     });
 });

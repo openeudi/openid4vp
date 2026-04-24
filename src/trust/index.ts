@@ -8,3 +8,4 @@ export {
     type TrustStoreHint,
     type TrustStoreInput,
 } from './TrustStore.js';
+export { LotlTrustStore, type LotlTrustStoreOptions } from './LotlTrustStore.js';

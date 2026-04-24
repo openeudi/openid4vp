@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased — 0.5.0]
+## [0.5.0] — 2026-04-23
 
 ### Added — workstream A.1 (X.509 chain building)
 
@@ -29,13 +29,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Added devDependencies: `@peculiar/asn1-ocsp@^2.6.1`, `@peculiar/asn1-cms@^2.6.1`.
 
+### Added — workstream A.3 (EU LOTL client)
+
+- Public `LotlTrustStore` — fetches the EU LOTL (default `https://ec.europa.eu/tools/lotl/eu-lotl.xml`), verifies XML-DSig against a bundled set of signing anchors, resolves all national TLs, and exposes `TrustAnchor[]` with populated `LotlAnchorMetadata` (country, serviceName, qualified, loa).
+- `LotlFetchError` (`code: 'lotl_fetch_failed'`, carries `url` + optional `cause`) and `LotlSignatureError` (`code: 'lotl_signature_invalid'`).
+- `TrustAnchor.trustedAuthorityIds` — derived from `ServiceDigitalIdentity` SKI for LOTL anchors, synthesized from the anchor's own SKI for static-store anchors. `TrustEvaluator` populates `trustedAuthorityIds` on every result.
+- `PresentationResult.trust.provenance` — `{ loa, qualified, country, serviceName }` populated when the chain terminates at a LOTL-sourced anchor (spec §8.5).
+- `DecodedCredential.trusted_authority_ids` — now populated by `verifyPresentation`. DCQL queries with `trusted_authorities` filters work correctly for the first time (the 0.4.0 known-limitation is closed).
+- LOTL refresh: 24h default, single-flight, graceful degradation on failure (serves cached snapshot + logs via `console.warn`).
+- ETSI-URI → LoA mapping for the current eIDAS Article 8 notified levels (`substantial`, `high`).
+
+### Dependencies — A.3
+
+- Added dependencies: `xadesjs@^2.6.7`, `xmldsigjs@^2.8.7` (installed versions from Task 1).
+- Added dependency: `@xmldom/xmldom@^0.9.0` — promoted from devDep to runtime dep in Task 7 because `LotlFetcher` uses it.
+
+### Known limitations
+
+- The EU LOTL signing anchors are bundled at release time. When the European Commission rotates signing certs (rare — ~2-3 year cadence), a patch release of this package is required. Consumers can override the bundled set via `new LotlTrustStore({ signingAnchors: [...] })` for emergency rotations.
+- LOTL refresh runs on-demand (first `getAnchors` triggers the fetch, then honors `refreshInterval`). There is no background-timer variant in 0.5.0 — consumers wanting fixed-interval refresh can call a noop `getAnchors` in a timer of their own.
+
 ### Deprecated
 
 - `ParseOptions.trustedCertificates` — kept working for 0.4.0 byte-equality behavior; scheduled for removal in 1.0.0. Migrate to `trustStore: new StaticTrustStore([...rootCAs])` for RFC 5280 chain validation.
-
-### Coming in 0.5.0 (not yet shipped)
-
-- A.3: EU LOTL client (`LotlTrustStore`) + LOTL-populated authority provenance metadata.
 
 ## [0.4.0] — 2026-04-21
 
@@ -111,6 +127,7 @@ Note: `ParseOptions` in this package accepts `{ nonce, trustedCertificates, audi
 
 If you imported types from `@sphereon/pex` or `@sphereon/ssi-types` transitively via this package, install those packages directly — they are no longer transitive.
 
+[0.5.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.5.0
 [0.4.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.4.0
 
 ## [0.3.0] — 2026-04-21
