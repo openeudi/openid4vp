@@ -1,6 +1,6 @@
 {
   "name": "@openeudi/openid4vp",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "OpenID4VP credential parsing and validation for EUDI Wallets (SD-JWT VC + mDOC)",
   "license": "Apache-2.0",
   "type": "module",
@@ -32,7 +32,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@openeudi/dcql": "^0.1.1",
+    "@openeudi/dcql": "^0.2.0",
     "@peculiar/x509": "^2.0.0",
     "@sd-jwt/decode": "^0.19.0",
     "@xmldom/xmldom": "^0.9.10",

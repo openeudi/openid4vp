@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — 2026-04-24
+
+### Added
+
+- `value_mismatch` is now emitted by `verifyPresentation` when a credential's claim is present but excluded by a DCQL `values:` filter. Previously this case was misreported as `missing_claims`.
+
+### Changed
+
+- Specific `UnmatchedReason` values (`format_mismatch`, `vct_mismatch`, `doctype_mismatch`, `missing_claims`, `value_mismatch`, `trusted_authority_mismatch`) are now sourced directly from `@openeudi/dcql@0.2.0`'s `matchQuery` output. The internal post-processor (`refineUnmatched` / `classifyMismatch`) that replicated dcql's classification has been removed.
+- README documents a privacy caveat: `match.unmatched` diagnostics are verifier-internal and must not be echoed into OpenID4VP wire responses or end-user-visible errors.
+
+### Dependencies
+
+- `@openeudi/dcql`: `^0.1.1` → `^0.2.0` (breaking change in dcql — see its 0.2.0 changelog).
+
 ## [0.5.0] — 2026-04-23
 
 ### Added — workstream A.1 (X.509 chain building)
@@ -127,6 +142,7 @@ Note: `ParseOptions` in this package accepts `{ nonce, trustedCertificates, audi
 
 If you imported types from `@sphereon/pex` or `@sphereon/ssi-types` transitively via this package, install those packages directly — they are no longer transitive.
 
+[0.6.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.6.0
 [0.5.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.5.0
 [0.4.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.4.0
 
