@@ -84,17 +84,6 @@ describe('verifyPresentation — happy paths', () => {
 });
 
 describe('verifyPresentation — mismatch paths (valid: false)', () => {
-    // NOTE on reasons: @openeudi/dcql@0.1.1 `matchQuery` collapses every
-    // per-credential rejection to `no_credential_found` at its public API —
-    // the internal `matchCredentialQuery` knows the specific cause
-    // (format_mismatch / missing_claims / trusted_authority_mismatch / etc.)
-    // but it is not surfaced. `verifyPresentation` now post-processes
-    // `match.unmatched` via a local classifier (`refineUnmatched` in
-    // `src/verify.ts`) that replicates dcql's internal classification logic
-    // against the decoded credential so callers see specific
-    // `UnmatchedReason` values. This workaround can be removed once
-    // @openeudi/dcql surfaces specific reasons at the outer API.
-
     it('reports format_mismatch (SD-JWT vs mso_mdoc query)', async () => {
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, mdlMdocQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
@@ -139,10 +128,37 @@ describe('verifyPresentation — mismatch paths (valid: false)', () => {
         });
     });
 
+    it('reports value_mismatch when claim present but values filter excludes', async () => {
+        // PID fixture has given_name: 'Ada'. Query demands given_name in ['BOB']
+        // → claim resolves but no value in the filter list matches.
+        const valueMismatchQuery: DcqlQuery = {
+            credentials: [
+                {
+                    id: 'pid',
+                    format: 'dc+sd-jwt',
+                    meta: { vct_values: ['urn:eu.europa.ec.eudi:pid:1'] },
+                    claims: [{ path: ['given_name'], values: ['BOB'] }],
+                },
+            ],
+        };
+
+        const result = await verifyPresentation(signedSdJwtVp.sdJwt, valueMismatchQuery, {
+            trustedCertificates: [issuerKey.certDerBytes],
+            nonce: vpNonce,
+        });
+
+        expect(result.valid).toBe(false);
+        expect(result.submission).toBeNull();
+        expect(result.match.satisfied).toBe(false);
+        expect(result.match.unmatched).toHaveLength(1);
+        expect(result.match.unmatched[0]).toMatchObject({
+            queryId: 'pid',
+            reason: 'value_mismatch',
+            detail: '/given_name',
+        });
+    });
+
     it('reports trusted_authority_mismatch', async () => {
-        // 0.4.0 limitation: DecodedCredential.trusted_authority_ids is always
-        // empty (parsers do not yet extract trusted-list identifiers), so any
-        // query with a non-empty trusted_authorities clause fails this check.
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, pidWithTrustedAuthorities, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
