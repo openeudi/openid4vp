@@ -83,3 +83,82 @@ describe('LotlTrustStore — basic resolution', () => {
         expect(anchors).toEqual([]);
     });
 });
+
+describe('LotlTrustStore — single-flight refresh', () => {
+    it('concurrent getAnchors triggers only one LOTL fetch', async () => {
+        const lotlSigner = await createLotlSigner();
+        const lotlXml = await buildSignedLotlXml(lotlSigner, {
+            issueDate: new Date('2026-04-01'),
+            nextUpdate: null,
+            pointers: [],
+        });
+        let fetchCount = 0;
+        const fetcher: Fetcher = async (url) => {
+            if (url.includes('eu-lotl')) {
+                fetchCount++;
+                // Artificial delay so all callers overlap.
+                await new Promise((r) => setTimeout(r, 30));
+                return new Response(lotlXml, { status: 200 });
+            }
+            return new Response('', { status: 404 });
+        };
+        const store = new LotlTrustStore({
+            fetcher,
+            signingAnchors: [lotlSigner.certificate],
+            lotlUrl: 'http://ec.test/eu-lotl.xml',
+        });
+        await Promise.all([
+            store.getAnchors({ issuer: 'CN=anyone' }),
+            store.getAnchors({ issuer: 'CN=anyone' }),
+            store.getAnchors({ issuer: 'CN=anyone' }),
+        ]);
+        expect(fetchCount).toBe(1);
+    });
+
+    it('subsequent calls within refreshInterval hit the cached snapshot', async () => {
+        const lotlSigner = await createLotlSigner();
+        const lotlXml = await buildSignedLotlXml(lotlSigner, {
+            issueDate: new Date('2026-04-01'),
+            nextUpdate: null,
+            pointers: [],
+        });
+        let fetchCount = 0;
+        const fetcher: Fetcher = async () => {
+            fetchCount++;
+            return new Response(lotlXml, { status: 200 });
+        };
+        const store = new LotlTrustStore({
+            fetcher,
+            signingAnchors: [lotlSigner.certificate],
+            lotlUrl: 'http://ec.test/eu-lotl.xml',
+            refreshInterval: 60_000,
+        });
+        await store.getAnchors({ issuer: 'CN=a' });
+        await store.getAnchors({ issuer: 'CN=b' });
+        expect(fetchCount).toBe(1);
+    });
+
+    it('refreshes after refreshInterval expires', async () => {
+        const lotlSigner = await createLotlSigner();
+        const lotlXml = await buildSignedLotlXml(lotlSigner, {
+            issueDate: new Date('2026-04-01'),
+            nextUpdate: null,
+            pointers: [],
+        });
+        let fetchCount = 0;
+        const fetcher: Fetcher = async () => {
+            fetchCount++;
+            return new Response(lotlXml, { status: 200 });
+        };
+        const store = new LotlTrustStore({
+            fetcher,
+            signingAnchors: [lotlSigner.certificate],
+            lotlUrl: 'http://ec.test/eu-lotl.xml',
+            refreshInterval: 1, // 1 ms → every call refreshes
+        });
+        await store.getAnchors({ issuer: 'CN=a' });
+        await new Promise((r) => setTimeout(r, 5));
+        await store.getAnchors({ issuer: 'CN=b' });
+        expect(fetchCount).toBe(2);
+    });
+});
