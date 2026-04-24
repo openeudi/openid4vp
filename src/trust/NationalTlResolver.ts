@@ -6,6 +6,7 @@ import type {
     NationalTlSnapshot,
     TspService,
 } from './lotl-types.js';
+import { base64DerToCert, firstChild, textOfDeep } from './xml-util.js';
 
 const TSL_NS = 'http://uri.etsi.org/02231/v2#';
 
@@ -45,10 +46,24 @@ export class NationalTlResolver {
 function parseNationalTl(doc: XmlDocument, country: string): NationalTlSnapshot {
     const root = doc.documentElement!;
     const scheme = firstChild(root, TSL_NS, 'SchemeInformation');
-    const issueText = scheme
-        ? firstChild(scheme, TSL_NS, 'ListIssueDateTime')?.textContent ?? null
-        : null;
-    const issueDate = issueText ? new Date(issueText) : new Date(0);
+    if (!scheme) {
+        throw new Error(
+            `national TL for ${country}: missing SchemeInformation element`
+        );
+    }
+    const issueText = firstChild(scheme, TSL_NS, 'ListIssueDateTime')
+        ?.textContent?.trim();
+    if (!issueText) {
+        throw new Error(
+            `national TL for ${country}: missing ListIssueDateTime element`
+        );
+    }
+    const issueDate = new Date(issueText);
+    if (isNaN(issueDate.getTime())) {
+        throw new Error(
+            `national TL for ${country}: invalid ListIssueDateTime "${issueText}"`
+        );
+    }
     const nextUpdate = parseNextUpdate(scheme);
     const services: TspService[] = [];
     const tspListEl = firstChild(root, TSL_NS, 'TrustServiceProviderList');
@@ -139,35 +154,3 @@ function parseNextUpdate(scheme: XmlElement | null): Date | null {
     return isNaN(d.getTime()) ? null : d;
 }
 
-function firstChild(parent: XmlElement, ns: string, name: string): XmlElement | null {
-    const list = parent.getElementsByTagNameNS(ns, name);
-    return list.length > 0 ? (list.item(0) as XmlElement | null) : null;
-}
-
-/**
- * Deep text search: returns the text content of the first matching element
- * anywhere under `parent` (not limited to immediate children).
- */
-function textOfDeep(
-    parent: XmlElement,
-    ns: string,
-    name: string
-): string | null {
-    const list = parent.getElementsByTagNameNS(ns, name);
-    return list.length > 0
-        ? list.item(0)!.textContent?.trim() ?? null
-        : null;
-}
-
-function base64DerToCert(base64: string): X509Certificate | null {
-    const cleaned = base64.replace(/\s+/g, '');
-    if (!cleaned) return null;
-    try {
-        const bin = (globalThis as { atob: (s: string) => string }).atob(cleaned);
-        const der = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) der[i] = bin.charCodeAt(i);
-        return new X509Certificate(der as Uint8Array<ArrayBuffer>);
-    } catch {
-        return null;
-    }
-}
