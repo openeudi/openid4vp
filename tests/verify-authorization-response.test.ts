@@ -20,24 +20,21 @@ import type { DcqlQuery } from '@openeudi/dcql';
 const pidQuery: DcqlQuery = buildHaipQuery({
     credentialId: 'pid',
     format: 'dc+sd-jwt',
-    vctValues: ['urn:eudi:pid:1'],
+    vctValues: ['urn:eu.europa.ec.eudi:pid:1'],
     claims: ['given_name'],
 });
-const vpNonce = 'nonce-abc';
 
 let issuerKey: TestKeyMaterial;
 let signedSdJwtVp: BuildSdJwtResult;
+let vpNonce: string;
 
 beforeAll(async () => {
     issuerKey = await generateTestKeyMaterial('ES256');
+    vpNonce = crypto.randomUUID();
     signedSdJwtVp = await buildSignedSdJwt({
         issuerKey,
-        issuer: 'https://issuer.example.com',
-        vct: 'urn:eudi:pid:1',
+        claims: { vct: 'urn:eu.europa.ec.eudi:pid:1' },
         disclosureClaims: [['given_name', 'Ada']],
-        nonce: vpNonce,
-        audience: 'https://verifier.example.com/response',
-        kb: true,
     });
 });
 

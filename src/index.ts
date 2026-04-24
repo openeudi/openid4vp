@@ -12,7 +12,7 @@ export {
 
 // Parsers / verifiers
 export { parsePresentation } from './presentation.js';
-export { verifyPresentation } from './verify.js';
+export { verifyPresentation, verifyAuthorizationResponse } from './verify.js';
 export { decryptAuthorizationResponse } from './decrypt-response.js';
 export { SdJwtParser } from './parsers/sd-jwt.parser.js';
 export { MdocParser } from './parsers/mdoc.parser.js';
