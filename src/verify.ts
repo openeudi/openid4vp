@@ -129,6 +129,16 @@ export async function verifyPresentation(
         decoded.doctype = parsed.docType;
     }
 
+    // Forward trust-evaluation authority ids into the decoded credential so
+    // DCQL's trusted_authorities filter can match them. Populated by
+    // TrustEvaluator when a trustStore is provided (Task 16/17).
+    if (
+        parsed.trust?.trustedAuthorityIds &&
+        parsed.trust.trustedAuthorityIds.length > 0
+    ) {
+        decoded.trusted_authority_ids = [...parsed.trust.trustedAuthorityIds];
+    }
+
     const rawMatch = matchQuery(query, [decoded]);
     const match = refineUnmatched(query, decoded, rawMatch);
     const submission = match.satisfied ? buildSubmission(query, match) : null;
