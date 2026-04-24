@@ -16,4 +16,11 @@ describe('EU_LOTL_SIGNING_ANCHORS', () => {
             );
         }
     });
+
+    it('first anchor has a plausible EU Commission subject', () => {
+        const anchor = EU_LOTL_SIGNING_ANCHORS[0];
+        // Guards against byte-corruption in the bundled PEM (e.g. COMMESSION vs COMMISSION).
+        expect(anchor.subject).toContain('EUROPEAN COMMISSION'); // must be spelled correctly
+        expect(anchor.subject).toContain('DIGIT'); // DIGITal services
+    });
 });
