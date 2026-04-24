@@ -116,11 +116,13 @@ if (result.valid) {
 } else {
   console.warn("mismatch reasons:", result.match.unmatched);
   // each entry: { queryId, reason, detail? }
-  // reason ∈ { format_mismatch, vct_mismatch, doctype_mismatch, missing_claims, trusted_authority_mismatch, no_credential_found }
+  // reason ∈ { format_mismatch, vct_mismatch, doctype_mismatch, missing_claims, value_mismatch, trusted_authority_mismatch, no_credential_found /* only when the candidate list is empty */ }
 }
 ```
 
 Mismatches return `valid: false` — they do not throw. Only crypto/structural failures (malformed VP tokens, invalid signatures, expired credentials) and malformed DCQL queries throw exceptions.
+
+> **Privacy — diagnostics are verifier-internal.** `match.unmatched[].reason` and `detail` (including `value_mismatch`) are intended for verifier-side logging, debugging, and admin UIs. OpenID4VP §11 warns that per-claim verification outcomes can reveal wallet contents to observers. Do NOT echo these diagnostics into the OpenID4VP wire response sent back to the wallet, into end-user-visible error messages that another party could correlate, or into public analytics/third-party logs. The protocol's own error codes are the public interface; these fields are your internal instrumentation.
 
 ### ParseOptions / VerifyOptions
 
