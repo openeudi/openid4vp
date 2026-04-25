@@ -95,10 +95,17 @@ export async function createSignedAuthorizationRequest(
     };
 
     if (responseMode === 'direct_post.jwt' && input.encryptionKey) {
+        const enc = input.encryptionKey.supportedEncValues;
+        if (enc !== undefined && enc.length === 0) {
+            throw new SignedRequestBuildError(
+                'empty_supported_enc_values',
+                'encryptionKey.supportedEncValues must not be empty (omit to use defaults [A128GCM, A256GCM])',
+            );
+        }
         const jwk = { ...input.encryptionKey.publicJwk, use: 'enc' };
         clientMetadata.jwks = { keys: [jwk] };
         clientMetadata.encrypted_response_enc_values_supported =
-            input.encryptionKey.supportedEncValues ?? [...DEFAULT_SUPPORTED_ENC_VALUES];
+            enc ?? [...DEFAULT_SUPPORTED_ENC_VALUES];
     }
 
     const payload: Record<string, unknown> = {

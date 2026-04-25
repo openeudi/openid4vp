@@ -247,6 +247,21 @@ describe('createSignedAuthorizationRequest', () => {
         expect(cm.encrypted_response_enc_values_supported).toEqual(['A256GCM']);
     });
 
+    it('rejects empty supportedEncValues array with empty_supported_enc_values', async () => {
+        const { publicJwk } = await createEncryptionKeypair();
+        await expect(
+            createSignedAuthorizationRequest(
+                await baseInput({
+                    encryptionKey: { publicJwk, supportedEncValues: [] },
+                }),
+                pidQuery
+            )
+        ).rejects.toMatchObject({
+            name: 'SignedRequestBuildError',
+            code: 'empty_supported_enc_values',
+        });
+    });
+
     it('exposes error as instanceof SignedRequestBuildError', async () => {
         await expect(
             createSignedAuthorizationRequest(
