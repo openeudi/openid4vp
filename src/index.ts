@@ -1,4 +1,4 @@
-export const VERSION = '0.5.0';
+export const VERSION = '0.7.0';
 
 // Builders
 export { createAuthorizationRequest } from './authorization.js';
