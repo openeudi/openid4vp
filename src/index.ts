@@ -44,7 +44,10 @@ export type {
     AuthorizationRequest,
     SignedAuthorizationRequestInput,
     SignedAuthorizationRequest,
+    AuthorizationResponse,
+    EncryptedResponse,
     VerifyOptions,
+    VerifyAuthorizationResponseOptions,
     VerifyResult,
     HaipQueryInput,
 } from './types/index.js';
