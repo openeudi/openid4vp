@@ -155,38 +155,55 @@ The caller hosts `req.requestObject` at `requestUri` (the library does not host 
 
 ## Authorization responses (direct_post and direct_post.jwt)
 
-Wallets POST the Authorization Response to your `responseUri`. Pass the envelope (encrypted or unencrypted) to `verifyAuthorizationResponse`:
+Wallets POST the Authorization Response to your `responseUri`. The library is stateless — you MUST compare the envelope's `state` against the value you issued before treating the response as trustworthy. The recommended pattern differs slightly between the unencrypted and encrypted modes.
+
+### Unencrypted (`direct_post`)
+
+The envelope arrives as form-encoded JSON; parse it, check `state`, then verify:
 
 ```ts
 import { verifyAuthorizationResponse } from "@openeudi/openid4vp";
 
-// Unencrypted direct_post — caller parsed the form-encoded body:
-const result = await verifyAuthorizationResponse(
-  { vp_token: parsedVpTokenObject, state: submittedState },
-  dcqlQuery,
-  {
-    trustedCertificates: [issuerCertDer],
-    nonce,
-  },
-);
+const envelope = parsedVpTokenObject; // { vp_token, state, ... }
 
-// Encrypted direct_post.jwt — caller has the `response` JWE string:
-const result = await verifyAuthorizationResponse(
-  { response: form.get("response") },
-  dcqlQuery,
-  {
-    trustedCertificates: [issuerCertDer],
-    nonce,
-    decryptionKey: verifierEncryptionPrivateKey,
-  },
-);
+if (envelope.state !== submittedState) {
+  throw new Error("state mismatch — possible CSRF / replay");
+}
+
+const result = await verifyAuthorizationResponse(envelope, dcqlQuery, {
+  trustedCertificates: [issuerCertDer],
+  nonce,
+});
 ```
 
+### Encrypted (`direct_post.jwt`)
+
+The wallet wraps the envelope in a JWE. Decrypt explicitly so you can check `state` against the decrypted envelope **before** verification runs:
+
+```ts
+import {
+  decryptAuthorizationResponse,
+  verifyAuthorizationResponse,
+} from "@openeudi/openid4vp";
+
+const decrypted = await decryptAuthorizationResponse(
+  form.get("response"), // the JWE string
+  verifierEncryptionPrivateKey,
+);
+
+if (decrypted.state !== submittedState) {
+  throw new Error("state mismatch — possible CSRF / replay");
+}
+
+const result = await verifyAuthorizationResponse(decrypted, dcqlQuery, {
+  trustedCertificates: [issuerCertDer],
+  nonce,
+});
+```
+
+`verifyAuthorizationResponse` also accepts the JWE directly via `{ response: jwe }` together with `options.decryptionKey` — but that path makes the `state` check easy to skip, since the caller never holds the decrypted envelope. Prefer the explicit two-step pattern above.
+
 `verifyAuthorizationResponse` accepts the OpenID4VP 1.0 §8.1 envelope shape: `vp_token` is always an object keyed by DCQL credential query id, with arrays of presentations. This release supports **single-credential single-presentation only** — multi-credential queries or multi-presentation arrays throw `MultipleCredentialsNotSupportedError`.
-
-### State binding is the caller's responsibility
-
-The library is stateless. Verifiers MUST track the `state` values they issued and compare them against the decrypted envelope's `state` before trusting the response.
 
 ### Supported JWE algorithms
 
