@@ -135,12 +135,24 @@ describe('verifyAuthorizationResponse', () => {
         ).rejects.toThrow();
     });
 
-    it('empty vp_token object → valid:false, does not throw', async () => {
-        const result = await verifyAuthorizationResponse({ vp_token: {} }, pidQuery, {
-            trustedCertificates: [issuerKey.certDerBytes],
-            nonce: vpNonce,
-        });
-        expect(result.valid).toBe(false);
-        expect(result.match.satisfied).toBe(false);
+    it('throws when vp_token entries are not arrays (structural error)', async () => {
+        const malformed = { vp_token: { pid: signedSdJwtVp.sdJwt } } as unknown as {
+            vp_token: Record<string, string[]>;
+        };
+        await expect(
+            verifyAuthorizationResponse(malformed, pidQuery, {
+                trustedCertificates: [issuerKey.certDerBytes],
+                nonce: vpNonce,
+            }),
+        ).rejects.toThrow(/must be an array/i);
+    });
+
+    it('throws on empty vp_token object (structural error)', async () => {
+        await expect(
+            verifyAuthorizationResponse({ vp_token: {} }, pidQuery, {
+                trustedCertificates: [issuerKey.certDerBytes],
+                nonce: vpNonce,
+            }),
+        ).rejects.toThrow(/empty|no presentations/i);
     });
 });

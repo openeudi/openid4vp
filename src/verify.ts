@@ -146,16 +146,19 @@ export async function verifyAuthorizationResponse(
     const queryIds = Object.keys(vpToken);
 
     if (queryIds.length === 0) {
-        return {
-            parsed: { valid: false, error: 'No presentations in vp_token' } as unknown as VerifyResult['parsed'],
-            match: { satisfied: false, matches: [], unmatched: [] },
-            submission: null,
-            valid: false,
-        };
+        throw new TypeError('vp_token cannot be empty per OpenID4VP 1.0 §8.1');
+    }
+
+    for (const id of queryIds) {
+        if (!Array.isArray(vpToken[id])) {
+            throw new TypeError(
+                `vp_token entry "${id}" must be an array of presentations per OpenID4VP 1.0 §8.1`,
+            );
+        }
     }
 
     const presentationCount = queryIds.reduce(
-        (sum, id) => sum + (vpToken[id]?.length ?? 0),
+        (sum, id) => sum + vpToken[id].length,
         0,
     );
     if (queryIds.length > 1 || presentationCount > 1) {
