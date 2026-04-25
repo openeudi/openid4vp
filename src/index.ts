@@ -1,7 +1,8 @@
-export const VERSION = '0.5.0';
+export const VERSION = '0.7.0';
 
 // Builders
 export { createAuthorizationRequest } from './authorization.js';
+export { createSignedAuthorizationRequest } from './signed-authorization.js';
 export {
     buildHaipQuery,
     validateHaipQuery,
@@ -11,7 +12,8 @@ export {
 
 // Parsers / verifiers
 export { parsePresentation } from './presentation.js';
-export { verifyPresentation } from './verify.js';
+export { verifyPresentation, verifyAuthorizationResponse } from './verify.js';
+export { decryptAuthorizationResponse } from './decrypt-response.js';
 export { SdJwtParser } from './parsers/sd-jwt.parser.js';
 export { MdocParser } from './parsers/mdoc.parser.js';
 export type { ICredentialParser, ParseOptions } from './parsers/parser.interface.js';
@@ -40,7 +42,12 @@ export type {
     IssuerInfo,
     AuthorizationRequestInput,
     AuthorizationRequest,
+    SignedAuthorizationRequestInput,
+    SignedAuthorizationRequest,
+    AuthorizationResponse,
+    EncryptedResponse,
     VerifyOptions,
+    VerifyAuthorizationResponseOptions,
     VerifyResult,
     HaipQueryInput,
 } from './types/index.js';
@@ -72,5 +79,11 @@ export {
     RevocationCheckFailedError,
     LotlFetchError,
     LotlSignatureError,
+    SignedRequestBuildError,
+    UnsupportedJweError,
+    DecryptionFailedError,
+    MissingDecryptionKeyError,
+    MultipleCredentialsNotSupportedError,
     type ChainErrorReason,
+    type SignedRequestBuildErrorCode,
 } from './errors.js';

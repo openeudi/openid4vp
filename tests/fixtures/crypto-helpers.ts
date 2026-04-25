@@ -212,3 +212,84 @@ async function sha256(input: string): Promise<Uint8Array> {
     const hash = await crypto.subtle.digest('SHA-256', data);
     return new Uint8Array(hash);
 }
+
+// -----------------------------------------------------------------------------
+// Helpers for workstream B-remaining (OIDF verifier test features).
+// -----------------------------------------------------------------------------
+
+import * as x509 from '@peculiar/x509';
+import { CompactEncrypt } from 'jose';
+
+export interface VerifierKeyMaterial {
+    signer: CryptoKeyPair;
+    certificateChain: Uint8Array[];
+    hostname: string;
+}
+
+export async function createVerifierKeypairAndCert(hostname: string): Promise<VerifierKeyMaterial> {
+    const signer = (await crypto.subtle.generateKey(
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        true,
+        ['sign', 'verify']
+    )) as CryptoKeyPair;
+
+    const cert = await x509.X509CertificateGenerator.createSelfSigned({
+        serialNumber: '01',
+        name: `CN=${hostname}`,
+        notBefore: new Date(Date.now() - 60_000),
+        notAfter: new Date(Date.now() + 3600_000),
+        signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+        keys: signer,
+        extensions: [
+            new x509.SubjectAlternativeNameExtension([{ type: 'dns', value: hostname }]),
+        ],
+    });
+
+    const certDer = new Uint8Array(cert.rawData);
+    return { signer, certificateChain: [certDer], hostname };
+}
+
+export interface EncryptionKeypair {
+    publicJwk: JsonWebKey;
+    privateKey: CryptoKey;
+}
+
+export async function createEncryptionKeypair(
+    alg: 'ECDH-ES' = 'ECDH-ES'
+): Promise<EncryptionKeypair> {
+    const keyPair = (await crypto.subtle.generateKey(
+        { name: 'ECDH', namedCurve: 'P-256' },
+        true,
+        ['deriveBits', 'deriveKey']
+    )) as CryptoKeyPair;
+    const publicJwk = (await crypto.subtle.exportKey('jwk', keyPair.publicKey)) as JsonWebKey;
+    publicJwk.alg = alg;
+    publicJwk.use = 'enc';
+    return { publicJwk, privateKey: keyPair.privateKey };
+}
+
+export function createVpFormatsSupported(): Record<string, unknown> {
+    return {
+        'dc+sd-jwt': {
+            'sd-jwt_alg_values': ['ES256'],
+        },
+    };
+}
+
+export async function encryptAuthorizationResponseJwe(
+    payload: Record<string, unknown>,
+    recipientPublicJwk: JsonWebKey,
+    enc: 'A128GCM' | 'A256GCM' = 'A256GCM'
+): Promise<string> {
+    const alg = (recipientPublicJwk.alg as 'ECDH-ES') ?? 'ECDH-ES';
+    const recipientKey = await crypto.subtle.importKey(
+        'jwk',
+        recipientPublicJwk,
+        { name: 'ECDH', namedCurve: 'P-256' },
+        false,
+        []
+    );
+    return new CompactEncrypt(new TextEncoder().encode(JSON.stringify(payload)))
+        .setProtectedHeader({ alg, enc })
+        .encrypt(recipientKey);
+}

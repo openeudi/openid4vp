@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] — 2026-04-24
+
+### Added
+
+- `createSignedAuthorizationRequest` builds OpenID4VP signed request objects (JAR per RFC 9101 / OpenID4VP 1.0 §5.10) with `x5c` cert chain, `client_id_scheme: x509_san_dns` binding via `client_id` prefix, and validates that the signing key's public SPKI matches the leaf certificate.
+- `verifyAuthorizationResponse` consumes OpenID4VP 1.0 §8.1 Authorization Response envelopes (object-keyed `vp_token`), unwraps `direct_post.jwt` JWE-encrypted responses, and delegates presentation verification to the existing `verifyPresentation`.
+- `decryptAuthorizationResponse` unwraps `direct_post.jwt` JWE envelopes. Supported JWE: `alg: ECDH-ES` + `enc: A128GCM|A256GCM` per HAIP.
+- `AuthorizationResponse`, `EncryptedResponse`, `VerifyAuthorizationResponseOptions`, `SignedAuthorizationRequestInput`, `SignedAuthorizationRequest` types.
+- `SignedRequestBuildError`, `UnsupportedJweError`, `DecryptionFailedError`, `MissingDecryptionKeyError`, `MultipleCredentialsNotSupportedError` error classes.
+
+### Changed
+
+- No breaking changes to existing public API. `verifyPresentation`'s signature is unchanged (still accepts `unknown`).
+
+### Known limitations
+
+- Multi-credential DCQL presentations (multiple query ids, or multiple presentations per query id) are rejected with `MultipleCredentialsNotSupportedError`. Single-credential single-presentation works end-to-end.
+- Client Identifier Prefix `x509_hash` (HAIP 1.0 final's mandated scheme) is not yet supported — only `x509_san_dns` (the OIDF test profile).
+- Self-signed certs are accepted for the verifier's own identity; full HAIP 1.0 final constraints (non-self-signed, anchor excluded from `x5c`) are not enforced.
+
 ## [0.6.0] — 2026-04-24
 
 ### Added
@@ -142,6 +162,7 @@ Note: `ParseOptions` in this package accepts `{ nonce, trustedCertificates, audi
 
 If you imported types from `@sphereon/pex` or `@sphereon/ssi-types` transitively via this package, install those packages directly — they are no longer transitive.
 
+[0.7.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.7.0
 [0.6.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.6.0
 [0.5.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.5.0
 [0.4.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.4.0
