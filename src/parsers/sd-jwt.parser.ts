@@ -196,20 +196,48 @@ export class SdJwtParser implements ICredentialParser {
             return invalidResult(`Unsupported algorithm: ${alg}`);
         }
 
-        // Step 4: Extract public key from x5c certificate
+        // Step 4: Extract public key — either from x5c certificate or, when x5c is absent
+        // and the caller has provided trustedIssuerJwks, from the matched JWK directly.
         const x5cArray = header.x5c;
-        if (!Array.isArray(x5cArray) || x5cArray.length === 0 || typeof x5cArray[0] !== 'string') {
-            throw new MalformedCredentialError('Missing or invalid x5c in JWT header');
-        }
+        const hasX5c = Array.isArray(x5cArray) && x5cArray.length > 0 && typeof x5cArray[0] === 'string';
 
-        let issuerKey: Awaited<ReturnType<typeof importX509>>;
-        let issuerCertBytes: Uint8Array;
-        try {
-            issuerKey = await importX509(derToPem(x5cArray[0]), alg);
-            issuerCertBytes = base64ToBytes(x5cArray[0]);
-        } catch (err) {
-            if (err instanceof MalformedCredentialError) throw err;
-            throw new MalformedCredentialError('Failed to import issuer certificate');
+        let issuerKey: Awaited<ReturnType<typeof importX509>> | Awaited<ReturnType<typeof importJWK>>;
+        // issuerCertBytes is undefined when the JWK path is used — cert trust check is skipped.
+        let issuerCertBytes: Uint8Array | undefined;
+
+        if (hasX5c) {
+            // Primary path: import issuer key from x5c leaf certificate.
+            try {
+                issuerKey = await importX509(derToPem(x5cArray[0]), alg);
+                issuerCertBytes = base64ToBytes(x5cArray[0]);
+            } catch (err) {
+                if (err instanceof MalformedCredentialError) throw err;
+                throw new MalformedCredentialError('Failed to import issuer certificate');
+            }
+        } else if (options.trustedIssuerJwks && options.trustedIssuerJwks.length > 0) {
+            // Alternate trust path: no x5c — caller supplies trusted JWKs out-of-band.
+            // Look up by kid when present; otherwise pick the first key with matching kty/crv.
+            const headerKid = (header as Record<string, unknown>)['kid'];
+            const jwks = options.trustedIssuerJwks;
+            const matched =
+                typeof headerKid === 'string'
+                    ? jwks.find((k) => (k as Record<string, unknown>)['kid'] === headerKid)
+                    : jwks.find((k) => k.kty === 'EC' && k.crv === 'P-256') ?? jwks[0];
+
+            if (!matched) {
+                return invalidResult(
+                    `No matching JWK found in trustedIssuerJwks for kid=${String(headerKid)}`
+                );
+            }
+            try {
+                issuerKey = await importJWK(matched, alg);
+            } catch {
+                return invalidResult('Failed to import issuer key from trustedIssuerJwks');
+            }
+            // issuerCertBytes remains undefined — trust anchor is the JWK itself.
+        } else {
+            // No x5c and no trustedIssuerJwks — preserve existing strict behaviour.
+            throw new MalformedCredentialError('Missing or invalid x5c in JWT header');
         }
 
         // Step 5: Verify issuer JWT signature (also validates exp, iat via jose)
@@ -222,16 +250,20 @@ export class SdJwtParser implements ICredentialParser {
         }
 
         // Step 6: Trust check — certificate must be in the trusted set
-        // unless the caller explicitly opts out via skipTrustCheck.
+        // unless the caller explicitly opts out via skipTrustCheck, or the JWK path is used.
         const issuerString = typeof payload['iss'] === 'string' ? payload['iss'] : '';
         const issuerInfo: IssuerInfo = {
-            certificate: issuerCertBytes,
+            certificate: issuerCertBytes ?? new Uint8Array(),
             country: extractCountryHint(issuerString),
         };
 
         let trustResult: TrustEvaluationResult | undefined;
 
-        if (options.trustStore) {
+        if (issuerCertBytes === undefined) {
+            // JWK-based trust path: the caller has explicitly opted in by supplying
+            // trustedIssuerJwks — cert-chain evaluation is intentionally skipped.
+            // No further trust check is performed here.
+        } else if (options.trustStore) {
             // 0.5.0 path: RFC 5280 chain validation via TrustEvaluator.
             // Dynamic import keeps the evaluator out of 0.4.0-style callers' bundles.
             const { TrustEvaluator } = await import('../trust/TrustEvaluator.js');
@@ -254,7 +286,9 @@ export class SdJwtParser implements ICredentialParser {
                     );
                 }
             } else {
-                const isTrusted = options.trustedCertificates.some((trusted) => bytesEqual(trusted, issuerCertBytes));
+                const isTrusted = options.trustedCertificates.some((trusted) =>
+                    bytesEqual(trusted, issuerCertBytes!)
+                );
                 if (!isTrusted) {
                     return invalidResult('Issuer certificate is not trusted');
                 }

@@ -11,10 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - `createSignedAuthorizationRequest` now also emits `authorization_encrypted_response_alg` and `authorization_encrypted_response_enc` in `client_metadata` alongside the OpenID4VP 1.0 Final `encrypted_response_enc_values_supported` plural array. This is an additive ID3-compatibility bridge for verifiers (e.g. the OIDF conformance suite's `EncryptVPResponse` condition) that read the older singular fields directly. Existing 1.0 Final consumers are unaffected.
 
+- `verifyAuthorizationResponse` / `verifyPresentation` accept an optional `trustedIssuerJwks: JsonWebKey[]` parameter on `ParseOptions`. When the SD-JWT VC's issuer JWT lacks an `x5c` header, the parser looks up the issuer key by `kid` against the supplied JWK set (or by `kty`/`crv` when no `kid` is present); the matched JWK is the trust anchor and cert-chain evaluation is skipped. Default behaviour unchanged — `x5c` is still required when this option is absent. Use case: harness setups (e.g. OIDF conformance suite) where the wallet signs without `x5c` and the verifier knows the signing key out-of-band. Not recommended for production verifiers; cert-chain trust evaluation via `trustStore` is the recommended path.
+
 ### CI / Infrastructure
 
 - Added automated OIDF verifier-conformance testing in CI (`@openeudi/openid4vp` workstream D).
-  - PR happy-flow gate via `oidf-pr.yml` (paths-filter; ~5 min). Strong end-to-end gate: requires the suite to reach `/response`, the orchestrator to verify the encrypted authorization response (decrypt + state match + SD-JWT VC signature against the supplied issuer JWK), and zero verifier-side exceptions. Allow-listed suite failures alone cannot turn the gate green.
+  - PR happy-flow gate via `oidf-pr.yml` (paths-filter; ~5 min). Strong end-to-end gate: requires the suite to reach `/response`, the orchestrator to route the conformance response through the library's full `verifyAuthorizationResponse` pipeline (decrypt + state match + SD-JWT VC disclosure / hash integrity / KB-JWT / DCQL matching), and zero verifier-side exceptions. Allow-listed suite failures alone cannot turn the gate green.
   - Tag-push full-plan release artefact via `oidf-release.yml`.
   - Self-hosted conformance suite via `docker/oidf-conformance-suite/` (GHCR-prebuilt image at a pinned upstream git ref).
   - Allow-list at `scripts/oidf-ci/allowlist.json` ships with two `harness`-category entries (`EnsureRequestUriIsHttps`, `EnsureValidResponseUriForAuthorizationEndpointRequest`) — the local verifier-server runs plain HTTP for simplicity; production CI clears these once an nginx sidecar terminates TLS in front of the verifier.

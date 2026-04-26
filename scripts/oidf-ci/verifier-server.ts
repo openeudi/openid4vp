@@ -1,8 +1,7 @@
 import "reflect-metadata";
 import http from "node:http";
 import { URL } from "node:url";
-import { importJWK, jwtVerify } from "jose";
-import { createSignedAuthorizationRequest, decryptAuthorizationResponse } from "../../src/index.js";
+import { createSignedAuthorizationRequest, decryptAuthorizationResponse, verifyAuthorizationResponse } from "../../src/index.js";
 import type { Fixtures } from "./fixtures";
 
 export interface StartVerifierServerInput {
@@ -85,27 +84,22 @@ export async function startVerifierServer(input: StartVerifierServerInput): Prom
           const reshapedVpToken = Object.fromEntries(
             Object.entries(decrypted.vp_token ?? {}).map(([k, v]) => [k, Array.isArray(v) ? v : [v]]),
           );
-          // The OIDF mock wallet signs SD-JWT VCs using the signing_jwk we supplied
-          // in the test plan but does NOT emit x5c headers — the library's SD-JWT
-          // parser strictly requires x5c. Verify directly against the JWK we own.
-          // This keeps the gate strict (signature must validate, structure must
-          // parse, dcql claim must be addressable) without expanding the library API
-          // for an OIDF-specific harness shape.
-          const issuerPubKey = await importJWK(fx.issuerSigningJwkPublic, "ES256");
-          const verifiedClaims: Record<string, Array<Record<string, unknown>>> = {};
-          for (const [queryId, presentations] of Object.entries(reshapedVpToken)) {
-            verifiedClaims[queryId] = [];
-            for (const sdJwt of presentations as string[]) {
-              const issuerJwt = sdJwt.split("~", 1)[0];
-              const verified = await jwtVerify(issuerJwt, issuerPubKey, { algorithms: ["ES256"] });
-              const payload = verified.payload as Record<string, unknown>;
-              if (payload["nonce"] !== undefined && payload["nonce"] !== nonce) {
-                throw new Error(`nonce mismatch in SD-JWT VC for ${queryId}`);
-              }
-              verifiedClaims[queryId].push(payload);
-            }
-          }
-          const result = { vp_token: verifiedClaims, state: decrypted.state };
+          // Route the conformance response through the library's full verify pipeline
+          // (disclosures, hash integrity, KB-JWT, DCQL matching). The OIDF mock wallet
+          // signs SD-JWT VCs using the signing_jwk from the test plan without x5c headers;
+          // we supply it via `trustedIssuerJwks` so the library can use it as the trust
+          // anchor instead of a certificate chain. This exercises the public verify surface
+          // end-to-end and catches regressions that a jose-only signature check would miss.
+          const result = await verifyAuthorizationResponse(
+            { ...decrypted, vp_token: reshapedVpToken },
+            fx.dcqlQuery,
+            {
+              nonce,
+              trustedCertificates: [],
+              trustedIssuerJwks: [fx.issuerSigningJwkPublic],
+              // No trustedCertificates needed — the JWK is the trust anchor for the OIDF harness.
+            },
+          );
           responses.push({ receivedAtMs: Date.now(), ok: true, result });
           res.writeHead(200, { "content-type": "application/json" });
           res.end("{}");
