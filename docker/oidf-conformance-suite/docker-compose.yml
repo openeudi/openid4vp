@@ -16,12 +16,14 @@ services:
         condition: service_healthy
     environment:
       - MONGODB_HOST=mongodb
-      - JAVA_EXTRA_ARGS=-Xmx2g
+      - JAVA_EXTRA_ARGS=-Xmx2g -Dfintechlabs.devmode=true
       - BASE_URL=https://localhost:8443
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     healthcheck:
-      test: ['CMD-SHELL', "curl -fsS http://localhost:8080/api/runner/available || exit 1"]
+      test:
+        - "CMD-SHELL"
+        - "curl -fsS -H 'X-Forwarded-Proto: https' -H 'X-Forwarded-Host: localhost' http://localhost:8080/api/runner/available || exit 1"
       interval: 5s
       timeout: 5s
       retries: 24
