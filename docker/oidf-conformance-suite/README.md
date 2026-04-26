@@ -45,6 +45,41 @@ The suite UI is at `https://localhost:8443/` (self-signed TLS). Stop with `docke
 3. Run `gh workflow run oidf-suite-image.yml -f ref=<new-ref>` to build + push the new image.
 4. Open a PR with the compose change. The PR's own `oidf-pr.yml` run validates against the new image. If new check IDs surface, classify them (library bug → fix; spec-drift → add to `scripts/oidf-ci/allowlist.json` with justification + reference).
 
+## HTTPS verifier (verifier-nginx) and the JKS truststore
+
+The OIDF profile requires `request_uri` and `response_uri` in the auth request to be HTTPS (`EnsureRequestUriIsHttps`, `EnsureValidResponseUriForAuthorizationEndpointRequest`). The orchestrator's in-process Node verifier-server binds plain HTTP on `host:8080` for ease of debugging, so we front it with a TLS-terminating nginx sidecar:
+
+| Service | Role |
+|---------|------|
+| `verifier-nginx` | listens on `host.docker.internal:8444` (TLS, self-signed), reverse-proxies to `host.docker.internal:8080` via the host gateway |
+| `truststore-init` | one-shot service that builds a JKS containing the suite-image JDK's system CAs PLUS the verifier-nginx self-signed leaf |
+
+The orchestrator's `externalBaseUrl` (in `scripts/oidf-ci/orchestrator.ts`) publishes `https://host.docker.internal:8444` in the auth request, and the suite's Java HTTP client trusts that URL via `-Djavax.net.ssl.trustStore=/truststore/openeudi-truststore.jks` — passed into the `server` container through `JAVA_EXTRA_ARGS`.
+
+### Lifecycle
+
+```
+verifier-nginx (entrypoint) ─► writes /etc/ssl/certs/verifier-selfsigned.crt to verifier-nginx-certs volume
+                              │
+                              ▼ healthcheck: cert present
+truststore-init ─► reads cert from verifier-nginx-certs (mounted ro), seeds truststore from $JAVA_HOME/lib/security/cacerts, imports cert via keytool, writes /truststore/openeudi-truststore.jks
+                              │
+                              ▼ depends_on: service_completed_successfully
+server  ──────────► JAVA_EXTRA_ARGS picks up the truststore on boot
+```
+
+Both `verifier-nginx-certs` and `truststore` are named docker volumes; on subsequent `up` invocations the cert and truststore already exist and are reused. **If you blow away `verifier-nginx-certs` you must also blow away `truststore`** — otherwise the truststore still pins the OLD cert and outbound HTTPS from the suite to the verifier will fail with a trust-anchor error. Use `docker compose down -v` to wipe both together when iterating on the cert.
+
+### Why not Let's Encrypt?
+
+ACME requires a publicly-resolvable hostname plus reachability on port 80 (HTTP-01) or 443 (TLS-ALPN-01) for the challenge handler. None of that fits this harness:
+
+- **`host.docker.internal` is not a public DNS name.** ACME clients can only issue certs for hostnames the CA can resolve and reach. Even if we exposed the verifier publicly under some real DNS, the Java HTTP client inside the `server` container would still resolve `host.docker.internal` to the docker host gateway — not the public name.
+- **CI runners are ephemeral.** GitHub Actions runners come up, run `docker compose up`, and tear down within minutes. Persisting an ACME account + certificate cache across runs is fragile, and rate-limit pressure (5 certs / week / hostname) makes this a liability for a high-volume PR gate.
+- **Self-signed CA + JVM truststore is the right fit.** Ephemeral self-signed leaf + an explicit allow-list of trust anchors mirrors how production verifier deployments handle their own internal-PKI signers, with no external dependency on Let's Encrypt's availability.
+
+The library itself emits whatever `request_uri` / `response_uri` it is told to publish, and the orchestrator publishes the HTTPS-fronted URL. Nothing here is an OpenID4VP-spec quirk — it's a CI-harness packaging choice.
+
 ## Upstream layout notes
 
 The upstream conformance-suite repository uses a **three-service** architecture that differs from the two-service layout in the original task plan:

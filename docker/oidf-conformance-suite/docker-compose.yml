@@ -14,9 +14,15 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
+      truststore-init:
+        condition: service_completed_successfully
     environment:
       - MONGODB_HOST=mongodb
-      - JAVA_EXTRA_ARGS=-Xmx2g -Dfintechlabs.devmode=true
+      # Truststore: system CAs PLUS the verifier-nginx self-signed leaf so the
+      # Java HTTP client trusts https://host.docker.internal:8444 when fetching
+      # request_uri / posting to response_uri. Built once by truststore-init
+      # against the same JDK as this image.
+      - JAVA_EXTRA_ARGS=-Xmx2g -Dfintechlabs.devmode=true -Djavax.net.ssl.trustStore=/truststore/openeudi-truststore.jks -Djavax.net.ssl.trustStorePassword=changeit
       - BASE_URL=https://localhost:8443
       # Spring requires non-empty client_id values even when devmode bypasses OAuth.
       # The image's entrypoint substitutes these into spring.security.oauth2.client.registration.<provider>.client-id.
@@ -26,6 +32,8 @@ services:
       - OIDC_GITLAB_SECRET=devmode-placeholder
     extra_hosts:
       - 'host.docker.internal:host-gateway'
+    volumes:
+      - truststore:/truststore:ro
     healthcheck:
       test:
         - "CMD-SHELL"
@@ -33,6 +41,43 @@ services:
       interval: 5s
       timeout: 5s
       retries: 24
+
+  # Builds the suite-container JKS truststore that includes (a) the system CAs
+  # baked into the suite image's JDK and (b) the verifier-nginx self-signed
+  # leaf. Runs once per fresh `truststore` volume; subsequent `up` invocations
+  # find the JKS already present and exit immediately. Uses the same image as
+  # the `server` service so the truststore is built against the JDK that will
+  # actually consume it (avoids JKS-format / cacerts-version skew).
+  truststore-init:
+    image: ghcr.io/openeudi/oidf-conformance-suite:release-v5.1.42
+    depends_on:
+      verifier-nginx:
+        condition: service_healthy
+    volumes:
+      - verifier-nginx-certs:/verifier-cert:ro
+      - truststore:/truststore
+    user: root
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -eu
+        TRUSTSTORE=/truststore/openeudi-truststore.jks
+        if [ -f "$$TRUSTSTORE" ]; then
+          echo "[truststore-init] $$TRUSTSTORE already exists; skipping rebuild"
+          exit 0
+        fi
+        echo "[truststore-init] seeding truststore from $$JAVA_HOME/lib/security/cacerts"
+        cp "$$JAVA_HOME/lib/security/cacerts" "$$TRUSTSTORE"
+        chmod 600 "$$TRUSTSTORE"
+        echo "[truststore-init] importing verifier-nginx self-signed leaf as trust anchor"
+        keytool -importcert -trustcacerts -noprompt \
+          -alias openeudi-verifier-self-signed \
+          -file /verifier-cert/certs/verifier-selfsigned.crt \
+          -keystore "$$TRUSTSTORE" \
+          -storepass changeit
+        echo "[truststore-init] done; entries:"
+        keytool -list -keystore "$$TRUSTSTORE" -storepass changeit | grep -c 'trustedCertEntry,' || true
+    restart: 'no'
 
   nginx:
     image: nginx:1.27.3
@@ -60,20 +105,14 @@ services:
   # TLS termination for the in-process Node verifier-server. The orchestrator's
   # verifier still binds locally on host.docker.internal:8080 (plain HTTP, easy
   # to test and debug), but the auth-request published in request_uri /
-  # response_uri now uses https://host.docker.internal:8444 — clearing the two
-  # standing `harness`-category allow-list entries (EnsureRequestUriIsHttps and
+  # response_uri uses https://host.docker.internal:8444 — clearing the two
+  # `harness`-category allow-list entries (EnsureRequestUriIsHttps and
   # EnsureValidResponseUriForAuthorizationEndpointRequest).
   #
-  # NOTE — pending integration work:
-  #   1. The suite's Java HTTP client must trust this self-signed leaf.
-  #      Mount the cert into the `server` container and pass:
-  #        -Djavax.net.ssl.trustStore=/etc/ssl/openeudi-truststore.jks
-  #        -Djavax.net.ssl.trustStorePassword=changeit
-  #      via JAVA_EXTRA_ARGS, with the truststore prebuilt to include the
-  #      system CAs PLUS this leaf. (See README in this directory.)
-  #   2. Orchestrator must update verifier-server's externalBaseUrl to
-  #      https://host.docker.internal:8444.
-  #   3. Then drop both `harness` entries from scripts/oidf-ci/allowlist.json.
+  # The Java HTTP client in the `server` container trusts the self-signed leaf
+  # via the JKS truststore built by `truststore-init`. See README §"HTTPS
+  # verifier (verifier-nginx) and the JKS truststore" for the rationale on why
+  # Let's Encrypt is not viable here.
   verifier-nginx:
     image: nginx:1.27.3
     restart: unless-stopped
@@ -96,7 +135,15 @@ services:
             -addext "subjectAltName=DNS:host.docker.internal,DNS:localhost,IP:127.0.0.1"
         fi
         nginx -g 'daemon off;'
+    # Marks ready as soon as the self-signed leaf has been written to the
+    # shared volume — that is what `truststore-init` reads from.
+    healthcheck:
+      test: ['CMD-SHELL', 'test -f /etc/ssl/certs/verifier-selfsigned.crt || exit 1']
+      interval: 2s
+      timeout: 2s
+      retries: 30
 
 volumes:
   nginx-certs:
   verifier-nginx-certs:
+  truststore:
