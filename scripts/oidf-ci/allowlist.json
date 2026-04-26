@@ -1,5 +1,18 @@
 {
-  "$schema": "Empty allow-list. Add entries only with justification + reference fields. See spec §5.5.",
+  "$schema": "Allow-list. Add entries only with justification + reference fields. See spec §5.5.",
   "version": 1,
-  "checks": []
+  "checks": [
+    {
+      "id": "EnsureRequestUriIsHttps",
+      "category": "harness",
+      "justification": "Local verifier-server runs plain HTTP for simplicity. The library emits the request_uri scheme it is asked to publish; nothing prevents HTTPS publication. Production CI should terminate TLS in front of the verifier (nginx sidecar) — tracked as a follow-up. Not a library defect.",
+      "reference": "docs/superpowers/specs/2026-04-25-openid4vp-d-oidf-conformance-ci-design.md §5.5"
+    },
+    {
+      "id": "EnsureValidResponseUriForAuthorizationEndpointRequest",
+      "category": "harness",
+      "justification": "Same as EnsureRequestUriIsHttps — response_uri inherits the verifier-server's HTTP scheme. Library accepts any HTTPS URL; harness limitation only.",
+      "reference": "docs/superpowers/specs/2026-04-25-openid4vp-d-oidf-conformance-ci-design.md §5.5"
+    }
+  ]
 }

@@ -1,6 +1,6 @@
 services:
   mongodb:
-    image: mongo:8.2.7
+    image: mongo:6.0.13
     restart: unless-stopped
     healthcheck:
       test: ['CMD', 'mongosh', '--quiet', '--eval', "db.runCommand({ping:1}).ok"]
@@ -18,6 +18,12 @@ services:
       - MONGODB_HOST=mongodb
       - JAVA_EXTRA_ARGS=-Xmx2g -Dfintechlabs.devmode=true
       - BASE_URL=https://localhost:8443
+      # Spring requires non-empty client_id values even when devmode bypasses OAuth.
+      # The image's entrypoint substitutes these into spring.security.oauth2.client.registration.<provider>.client-id.
+      - OIDC_GOOGLE_CLIENTID=devmode-placeholder
+      - OIDC_GOOGLE_SECRET=devmode-placeholder
+      - OIDC_GITLAB_CLIENTID=devmode-placeholder
+      - OIDC_GITLAB_SECRET=devmode-placeholder
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     healthcheck:

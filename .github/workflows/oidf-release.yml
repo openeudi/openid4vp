@@ -1,0 +1,69 @@
+name: OIDF Conformance (release full-plan)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Log in to GHCR (read)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Bring up suite
+        working-directory: docker/oidf-conformance-suite
+        run: docker compose up -d
+
+      - name: Wait for suite health
+        run: |
+          for i in $(seq 1 18); do
+            if curl -fsSk https://localhost:8443/api/runner/available > /dev/null; then exit 0; fi
+            sleep 5
+          done
+          docker compose -f docker/oidf-conformance-suite/docker-compose.yml logs
+          exit 1
+
+      - name: Run orchestrator (full plan)
+        run: npm run oidf:ci -- --profile=full --suite-base=https://localhost:8443 --output-dir=./oidf-result
+
+      - name: Upload result artefact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oidf-result-full-plan-${{ github.ref_name }}
+          path: ./oidf-result/
+
+      - name: Append summary to step summary
+        if: always()
+        run: |
+          if [ -f ./oidf-result/summary.md ]; then
+            cat ./oidf-result/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Attach to GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.4.0
+        with:
+          files: ./oidf-result/*
+          fail_on_unmatched_files: false
+
+      - name: Tear down suite
+        if: always()
+        working-directory: docker/oidf-conformance-suite
+        run: docker compose down --volumes

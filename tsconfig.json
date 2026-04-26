@@ -13,9 +13,8 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "outDir": "dist",
-    "rootDir": "src"
+    "outDir": "dist"
   },
-  "include": ["src"],
+  "include": ["src", "scripts/oidf-ci/**/*.ts"],
   "exclude": ["node_modules", "dist", "tests"]
 }

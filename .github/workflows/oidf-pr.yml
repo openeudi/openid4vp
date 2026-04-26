@@ -1,0 +1,75 @@
+name: OIDF Conformance (PR happy-flow)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "scripts/oidf-ci/**"
+      - "scripts/oidf-ci-run.mjs"
+      - "scripts/manual-oidf-run.ts"
+      - "scripts/manual-oidf-run.mjs"
+      - "docker/oidf-conformance-suite/**"
+      - ".github/workflows/oidf-*.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Log in to GHCR (read)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Bring up suite
+        working-directory: docker/oidf-conformance-suite
+        run: docker compose up -d
+
+      - name: Wait for suite health
+        run: |
+          for i in $(seq 1 18); do
+            if curl -fsSk https://localhost:8443/api/runner/available > /dev/null; then exit 0; fi
+            sleep 5
+          done
+          docker compose -f docker/oidf-conformance-suite/docker-compose.yml logs
+          exit 1
+
+      - name: Run orchestrator (happy-flow)
+        run: npm run oidf:ci -- --profile=happy-flow --suite-base=https://localhost:8443 --output-dir=./oidf-result
+
+      - name: Upload result artefact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oidf-result-happy-flow
+          path: ./oidf-result/
+
+      - name: Append summary to step summary
+        if: always()
+        run: |
+          if [ -f ./oidf-result/summary.md ]; then
+            cat ./oidf-result/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Tear down suite
+        if: always()
+        working-directory: docker/oidf-conformance-suite
+        run: docker compose down --volumes

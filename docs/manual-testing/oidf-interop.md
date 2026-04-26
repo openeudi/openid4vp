@@ -25,7 +25,7 @@ Our implementation targets **OpenID4VP 1.0 Final**. The OIDF suite's most mature
 ### 1. Build and start the helper server
 
 ```bash
-npm run build
+# (Internally tsx-runs scripts/manual-oidf-run.ts)
 PUBLIC_BASE=https://<your-tunnel-hostname> node scripts/manual-oidf-run.mjs
 ```
 
@@ -131,6 +131,10 @@ A warning of `CheckForUnexpectedParametersInVpClientMetadata` is the expected 1.
 - **`tsyringe requires a reflect polyfill`** when starting the script: the `reflect-metadata` import must be the first statement. Already fixed in the script; if you see this, confirm nothing re-ordered the imports.
 - **Tunnel hostname changed mid-run**: ngrok free tier rotates hostnames when the tunnel restarts. The cert in the script binds to the hostname captured at startup, so any mismatch breaks the `x509_san_dns` check. Restart the script whenever the tunnel restarts.
 - **OIDF fetches `/request.jwt` but nothing happens on `/response`**: the wallet side rejected the JAR (expired, untrusted, or malformed). Check the OIDF test log — it shows exactly which validator failed.
+
+## See also: CI conformance run
+
+`scripts/oidf-ci/` automates this flow against a self-hosted suite (`docker/oidf-conformance-suite/`). Use that for regression testing on PR + tag-push (`npm run oidf:ci -- --profile=...`). This manual script is for ad-hoc runs against the hosted `demo.certification.openid.net` for OIDF certification submissions.
 
 ## References
 

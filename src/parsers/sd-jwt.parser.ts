@@ -196,42 +196,104 @@ export class SdJwtParser implements ICredentialParser {
             return invalidResult(`Unsupported algorithm: ${alg}`);
         }
 
-        // Step 4: Extract public key from x5c certificate
+        // Step 4: Extract public key — either from x5c certificate or, when x5c is absent
+        // and the caller has provided trustedIssuerJwks, from the matched JWK directly.
         const x5cArray = header.x5c;
-        if (!Array.isArray(x5cArray) || x5cArray.length === 0 || typeof x5cArray[0] !== 'string') {
+        const hasX5c = Array.isArray(x5cArray) && x5cArray.length > 0 && typeof x5cArray[0] === 'string';
+
+        let issuerKey: Awaited<ReturnType<typeof importX509>> | Awaited<ReturnType<typeof importJWK>> | undefined;
+        // issuerCertBytes is undefined when the JWK path is used — cert trust check is skipped.
+        let issuerCertBytes: Uint8Array | undefined;
+
+        if (hasX5c) {
+            // Primary path: import issuer key from x5c leaf certificate.
+            try {
+                issuerKey = await importX509(derToPem(x5cArray[0]), alg);
+                issuerCertBytes = base64ToBytes(x5cArray[0]);
+            } catch (err) {
+                if (err instanceof MalformedCredentialError) throw err;
+                throw new MalformedCredentialError('Failed to import issuer certificate');
+            }
+        } else if (options.trustedIssuerJwks && options.trustedIssuerJwks.length > 0) {
+            // Alternate trust path: no x5c — caller supplies trusted JWKs out-of-band.
+            // The actual signing key is selected in step 5 (signature verify) so that
+            // a kid-less header with multiple candidate JWKs picks the one that
+            // actually verifies, not just the first kty/crv match.
+            issuerKey = undefined;
+        } else {
+            // No x5c and no trustedIssuerJwks — preserve existing strict behaviour.
             throw new MalformedCredentialError('Missing or invalid x5c in JWT header');
         }
 
-        let issuerKey: Awaited<ReturnType<typeof importX509>>;
-        let issuerCertBytes: Uint8Array;
-        try {
-            issuerKey = await importX509(derToPem(x5cArray[0]), alg);
-            issuerCertBytes = base64ToBytes(x5cArray[0]);
-        } catch (err) {
-            if (err instanceof MalformedCredentialError) throw err;
-            throw new MalformedCredentialError('Failed to import issuer certificate');
-        }
-
-        // Step 5: Verify issuer JWT signature (also validates exp, iat via jose)
+        // Step 5: Verify issuer JWT signature (also validates exp, iat via jose).
+        // The x5c path has a single key fixed at step 4. The trustedIssuerJwks path
+        // narrows by `kid` when present, otherwise tries every candidate until one
+        // verifies — required because RFC 7517 does not mandate `kid` and a caller
+        // may pass multiple trusted issuer keys.
         let payload: Record<string, unknown>;
-        try {
-            const result = await jwtVerify(parts.jwt, issuerKey, { algorithms: allowedAlgorithms });
-            payload = result.payload as unknown as Record<string, unknown>;
-        } catch {
-            return invalidResult('Issuer JWT signature verification failed');
+        if (issuerKey) {
+            try {
+                const result = await jwtVerify(parts.jwt, issuerKey, { algorithms: allowedAlgorithms });
+                payload = result.payload as unknown as Record<string, unknown>;
+            } catch {
+                return invalidResult('Issuer JWT signature verification failed');
+            }
+        } else {
+            // trustedIssuerJwks branch: select candidates and try each.
+            const jwks = options.trustedIssuerJwks!;
+            const headerKid = (header as Record<string, unknown>)['kid'];
+            let candidates: JsonWebKey[];
+            if (typeof headerKid === 'string') {
+                const matched = jwks.find((k) => (k as Record<string, unknown>)['kid'] === headerKid);
+                if (!matched) {
+                    return invalidResult(
+                        `No matching JWK found in trustedIssuerJwks for kid=${headerKid}`
+                    );
+                }
+                candidates = [matched];
+            } else {
+                candidates = jwks;
+            }
+            let verifiedPayload: Record<string, unknown> | undefined;
+            for (const jwk of candidates) {
+                let candidateKey: Awaited<ReturnType<typeof importJWK>>;
+                try {
+                    candidateKey = await importJWK(jwk, alg);
+                } catch {
+                    // Incompatible JWK for the requested alg — skip rather than fail.
+                    continue;
+                }
+                try {
+                    const result = await jwtVerify(parts.jwt, candidateKey, {
+                        algorithms: allowedAlgorithms,
+                    });
+                    verifiedPayload = result.payload as unknown as Record<string, unknown>;
+                    break;
+                } catch {
+                    // Wrong candidate — try the next one.
+                }
+            }
+            if (!verifiedPayload) {
+                return invalidResult('Issuer JWT signature verification failed');
+            }
+            payload = verifiedPayload;
         }
 
         // Step 6: Trust check — certificate must be in the trusted set
-        // unless the caller explicitly opts out via skipTrustCheck.
+        // unless the caller explicitly opts out via skipTrustCheck, or the JWK path is used.
         const issuerString = typeof payload['iss'] === 'string' ? payload['iss'] : '';
         const issuerInfo: IssuerInfo = {
-            certificate: issuerCertBytes,
+            certificate: issuerCertBytes ?? new Uint8Array(),
             country: extractCountryHint(issuerString),
         };
 
         let trustResult: TrustEvaluationResult | undefined;
 
-        if (options.trustStore) {
+        if (issuerCertBytes === undefined) {
+            // JWK-based trust path: the caller has explicitly opted in by supplying
+            // trustedIssuerJwks — cert-chain evaluation is intentionally skipped.
+            // No further trust check is performed here.
+        } else if (options.trustStore) {
             // 0.5.0 path: RFC 5280 chain validation via TrustEvaluator.
             // Dynamic import keeps the evaluator out of 0.4.0-style callers' bundles.
             const { TrustEvaluator } = await import('../trust/TrustEvaluator.js');
@@ -254,25 +316,80 @@ export class SdJwtParser implements ICredentialParser {
                     );
                 }
             } else {
-                const isTrusted = options.trustedCertificates.some((trusted) => bytesEqual(trusted, issuerCertBytes));
+                const isTrusted = options.trustedCertificates.some((trusted) =>
+                    bytesEqual(trusted, issuerCertBytes!)
+                );
                 if (!isTrusted) {
                     return invalidResult('Issuer certificate is not trusted');
                 }
             }
         }
 
-        // Step 7: Verify disclosure hashes against _sd array
-        const sdArray = payload['_sd'];
+        // Step 7: Verify disclosure hashes. Per SD-JWT spec §5.2.1:
+        //   - 3-element `[salt, name, value]` (object-property) → hash MUST be in some `_sd`
+        //   - 2-element `[salt, value]` (array-element)         → hash MUST be referenced
+        //     by some `{"...": "<hash>"}` placeholder
+        // Both can nest: a disclosed value may itself contain `_sd` or placeholders
+        // for further disclosures (e.g. PID's `place_of_birth.country`,
+        // `nationalities`). The check is therefore transitive — once a disclosure is
+        // anchored, any anchor hashes found inside its disclosed value become valid
+        // anchors for OTHER disclosures.
         if (parts.disclosures.length > 0) {
-            if (!Array.isArray(sdArray) || sdArray.length === 0) {
-                return invalidResult('Disclosures present but no _sd array in issuer JWT');
-            }
+            // Pre-decode disclosures so we can do the transitive closure.
+            type DecodedDisclosure = {
+                raw: string;
+                hash: string;
+                length: 2 | 3;
+                value: unknown;
+            };
+            const decodedDisclosures: DecodedDisclosure[] = [];
             for (const disclosure of parts.disclosures) {
-                const hashBytes = await sha256Hasher(disclosure, 'sha-256');
-                const hashB64url = bytesToBase64url(hashBytes);
-                if (!sdArray.includes(hashB64url)) {
-                    return invalidResult('Disclosure hash mismatch');
+                let parsed: unknown;
+                try {
+                    parsed = JSON.parse(new TextDecoder().decode(base64ToBytes(disclosure)));
+                } catch {
+                    return invalidResult('Disclosure is not valid base64url-encoded JSON');
                 }
+                if (!Array.isArray(parsed) || (parsed.length !== 2 && parsed.length !== 3)) {
+                    return invalidResult('Disclosure must be a 2- or 3-element array');
+                }
+                const hashBytes = await sha256Hasher(disclosure, 'sha-256');
+                decodedDisclosures.push({
+                    raw: disclosure,
+                    hash: bytesToBase64url(hashBytes),
+                    length: parsed.length as 2 | 3,
+                    value: parsed.length === 3 ? parsed[2] : parsed[1],
+                });
+            }
+
+            // Seed the anchor sets from the issuer JWT payload itself.
+            const seed = collectAnchorHashes(payload);
+            const kvHashes = seed.kvHashes;
+            const arrayElemHashes = seed.arrayElemHashes;
+
+            // Transitive expansion: each pass tries to anchor every still-pending
+            // disclosure; when one anchors, its disclosed VALUE feeds new anchor
+            // hashes back into the sets, potentially unlocking later disclosures.
+            const remaining = [...decodedDisclosures];
+            for (;;) {
+                const anchored: DecodedDisclosure[] = [];
+                for (const d of remaining) {
+                    const valid =
+                        d.length === 3 ? kvHashes.has(d.hash) : arrayElemHashes.has(d.hash);
+                    if (valid) anchored.push(d);
+                }
+                if (anchored.length === 0) break;
+                for (const a of anchored) {
+                    const sub = collectAnchorHashes(a.value);
+                    for (const h of sub.kvHashes) kvHashes.add(h);
+                    for (const h of sub.arrayElemHashes) arrayElemHashes.add(h);
+                    const idx = remaining.indexOf(a);
+                    if (idx >= 0) remaining.splice(idx, 1);
+                }
+            }
+
+            if (remaining.length > 0) {
+                return invalidResult('Disclosure hash mismatch');
             }
         }
 
@@ -349,4 +466,43 @@ export class SdJwtParser implements ICredentialParser {
         if (trustResult) result.trust = trustResult;
         return result;
     }
+}
+
+/**
+ * Walks a value and collects every `_sd` array entry plus every
+ * `{"...": "<hash>"}` array-element placeholder hash reachable from it. SD-JWT
+ * disclosures can nest — a disclosed object may itself carry a fresh `_sd`
+ * array, and a disclosed array may contain `{"...": "<hash>"}` placeholders
+ * for further (2-element) disclosures. The hand-rolled hash check must resolve
+ * the full transitive set, otherwise nested disclosures (e.g. PID's
+ * `place_of_birth.country`, `nationalities` array) false-reject.
+ */
+function collectAnchorHashes(node: unknown): { kvHashes: Set<string>; arrayElemHashes: Set<string> } {
+    const kvHashes = new Set<string>();
+    const arrayElemHashes = new Set<string>();
+    const visit = (value: unknown): void => {
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                if (item && typeof item === 'object' && !Array.isArray(item)) {
+                    const obj = item as Record<string, unknown>;
+                    const keys = Object.keys(obj);
+                    if (keys.length === 1 && keys[0] === '...' && typeof obj['...'] === 'string') {
+                        arrayElemHashes.add(obj['...']);
+                        continue;
+                    }
+                }
+                visit(item);
+            }
+        } else if (value && typeof value === 'object') {
+            for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+                if (k === '_sd' && Array.isArray(v)) {
+                    for (const h of v) if (typeof h === 'string') kvHashes.add(h);
+                    continue;
+                }
+                visit(v);
+            }
+        }
+    };
+    visit(node);
+    return { kvHashes, arrayElemHashes };
 }
