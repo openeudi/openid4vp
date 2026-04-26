@@ -1,17 +1,11 @@
 import "reflect-metadata";
 import * as x509 from "@peculiar/x509";
+import type { DcqlQuery } from "../../dist/index.js";
+
+export type { DcqlQuery };
 
 export interface GenerateFixturesInput {
   hostname: string;
-}
-
-export interface DcqlQuery {
-  credentials: Array<{
-    id: string;
-    format: "dc+sd-jwt";
-    meta: { vct_values: string[] };
-    claims: Array<{ path: string[] }>;
-  }>;
 }
 
 /** JsonWebKey extended with the `kid` field (missing from lib.dom.d.ts). */

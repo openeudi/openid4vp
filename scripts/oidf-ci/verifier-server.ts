@@ -1,7 +1,11 @@
 import "reflect-metadata";
 import http from "node:http";
 import { URL } from "node:url";
-import { createSignedAuthorizationRequest } from "../../dist/index.js";
+import {
+  createSignedAuthorizationRequest,
+  decryptAuthorizationResponse,
+  verifyAuthorizationResponse,
+} from "../../dist/index.js";
 import type { Fixtures } from "./fixtures";
 
 export interface StartVerifierServerInput {
@@ -37,15 +41,15 @@ export async function startVerifierServer(input: StartVerifierServerInput): Prom
         const authzReq = await createSignedAuthorizationRequest(
           {
             hostname: fx.hostname,
-            requestUri: `${baseUrl()}/request.jwt`,
-            responseUri: `${baseUrl()}/response`,
+            requestUri: `${url}/request.jwt`,
+            responseUri: `${url}/response`,
             nonce,
             signer: fx.leafKeypair,
             certificateChain: [fx.leafCertDer, fx.caCertDer],
             encryptionKey: { publicJwk: fx.encryptionPublicJwk },
             vpFormatsSupported: { "dc+sd-jwt": { "sd-jwt_alg_values": ["ES256"] } },
           },
-          fx.dcqlQuery as never
+          fx.dcqlQuery
         );
         res.writeHead(200, { "content-type": "application/oauth-authz-req+jwt" });
         res.end(authzReq.requestObject);
@@ -60,10 +64,9 @@ export async function startVerifierServer(input: StartVerifierServerInput): Prom
         const jwe = params.get("response");
         try {
           if (!jwe) throw new Error("Expected form-encoded `response=<JWE>`");
-          const { decryptAuthorizationResponse, verifyAuthorizationResponse } = await import("../../dist/index.js");
           const decrypted = await decryptAuthorizationResponse(jwe, fx.encryptionKeypair.privateKey);
           if (decrypted.state !== undefined) throw new Error("state mismatch (none expected)");
-          const result = await verifyAuthorizationResponse({ response: jwe }, fx.dcqlQuery as never, {
+          const result = await verifyAuthorizationResponse({ response: jwe }, fx.dcqlQuery, {
             trustedCertificates: [fx.issuerCertDer],
             nonce,
             decryptionKey: fx.encryptionKeypair.privateKey,
@@ -104,10 +107,6 @@ export async function startVerifierServer(input: StartVerifierServerInput): Prom
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("Server failed to bind");
   const url = `http://127.0.0.1:${addr.port}`;
-
-  function baseUrl() {
-    return url;
-  }
 
   return {
     url,
