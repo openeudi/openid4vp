@@ -338,6 +338,10 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 
 EUDI Architecture Reference Framework (ARF) alignment: tracks OpenID4VP 1.0 final. Full ARF 1.4+ profile compliance will be added before a stable 1.0.
 
+## OIDF Conformance Testing
+
+Verifier-side conformance is automated against a self-hosted OpenID Foundation conformance suite. See `docs/manual-testing/oidf-interop.md` for both the CI orchestrator (`npm run oidf:ci -- --profile=happy-flow|full`) and the manual hosted-demo escape hatch.
+
 ## Related packages
 
 - **[@openeudi/core](https://www.npmjs.com/package/@openeudi/core)** -- Framework-agnostic EUDI Wallet verification protocol engine with session management and QR code generation.

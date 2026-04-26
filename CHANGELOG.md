@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### CI / Infrastructure
+
+- Added automated OIDF verifier-conformance testing in CI (`@openeudi/openid4vp` workstream D).
+  - PR happy-flow gate via `oidf-pr.yml` (paths-filter; ~3–5 min).
+  - Tag-push full-plan release artefact via `oidf-release.yml`.
+  - Self-hosted conformance suite via `docker/oidf-conformance-suite/` (GHCR-prebuilt image at a pinned upstream git ref).
+  - Spec-drift allow-list at `scripts/oidf-ci/allowlist.json` (initially seeded with three known harness/upstream-bug entries discovered during local e2e validation).
+  - Manual hosted-demo escape hatch retained as `scripts/manual-oidf-run.{ts,mjs}`.
+- No library API changes.
+
 ## [0.7.0] — 2026-04-24
 
 ### Added
