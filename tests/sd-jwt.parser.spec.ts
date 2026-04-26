@@ -622,6 +622,43 @@ describe('SdJwtParser', () => {
             expect(result.error).toContain('No matching JWK');
         });
 
+        it('verifies a kid-less SD-JWT when the matching JWK is NOT first in trustedIssuerJwks', async () => {
+            // Regression for code-review P2: when the JWT carries no `kid`, the
+            // parser used to pick the first kty/crv-matching JWK and try only that
+            // one. A multi-key trusted set with the actual signing key in any
+            // position other than first would false-reject. The fix must try each
+            // candidate until signature verification succeeds.
+            const kp = (await crypto.subtle.generateKey(
+                { name: 'ECDSA', namedCurve: 'P-256' },
+                true,
+                ['sign', 'verify']
+            )) as CryptoKeyPair;
+            const nonce = crypto.randomUUID();
+            const { sdJwt, publicJwk } = await buildSdJwtWithoutX5c({
+                privateKey: kp.privateKey,
+                publicKey: kp.publicKey,
+                nonce,
+                disclosureClaims: [['resident_country', 'NL']],
+            });
+
+            // Deliberate WRONG-key as the first candidate.
+            const wrongKp = (await crypto.subtle.generateKey(
+                { name: 'ECDSA', namedCurve: 'P-256' },
+                true,
+                ['sign', 'verify']
+            )) as CryptoKeyPair;
+            const wrongJwk = (await crypto.subtle.exportKey('jwk', wrongKp.publicKey)) as JsonWebKey;
+
+            const result = await parser.parse(sdJwt, {
+                trustedCertificates: [],
+                nonce,
+                trustedIssuerJwks: [wrongJwk, publicJwk],
+            });
+
+            expect(result.valid).toBe(true);
+            expect(result.claims.resident_country).toBe('NL');
+        });
+
         it('throws MalformedCredentialError when x5c is absent and trustedIssuerJwks is not provided', async () => {
             const kp = (await crypto.subtle.generateKey(
                 { name: 'ECDSA', namedCurve: 'P-256' },

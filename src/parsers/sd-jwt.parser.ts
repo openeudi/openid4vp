@@ -201,7 +201,7 @@ export class SdJwtParser implements ICredentialParser {
         const x5cArray = header.x5c;
         const hasX5c = Array.isArray(x5cArray) && x5cArray.length > 0 && typeof x5cArray[0] === 'string';
 
-        let issuerKey: Awaited<ReturnType<typeof importX509>> | Awaited<ReturnType<typeof importJWK>>;
+        let issuerKey: Awaited<ReturnType<typeof importX509>> | Awaited<ReturnType<typeof importJWK>> | undefined;
         // issuerCertBytes is undefined when the JWK path is used — cert trust check is skipped.
         let issuerCertBytes: Uint8Array | undefined;
 
@@ -216,37 +216,67 @@ export class SdJwtParser implements ICredentialParser {
             }
         } else if (options.trustedIssuerJwks && options.trustedIssuerJwks.length > 0) {
             // Alternate trust path: no x5c — caller supplies trusted JWKs out-of-band.
-            // Look up by kid when present; otherwise pick the first key with matching kty/crv.
-            const headerKid = (header as Record<string, unknown>)['kid'];
-            const jwks = options.trustedIssuerJwks;
-            const matched =
-                typeof headerKid === 'string'
-                    ? jwks.find((k) => (k as Record<string, unknown>)['kid'] === headerKid)
-                    : jwks.find((k) => k.kty === 'EC' && k.crv === 'P-256') ?? jwks[0];
-
-            if (!matched) {
-                return invalidResult(
-                    `No matching JWK found in trustedIssuerJwks for kid=${String(headerKid)}`
-                );
-            }
-            try {
-                issuerKey = await importJWK(matched, alg);
-            } catch {
-                return invalidResult('Failed to import issuer key from trustedIssuerJwks');
-            }
-            // issuerCertBytes remains undefined — trust anchor is the JWK itself.
+            // The actual signing key is selected in step 5 (signature verify) so that
+            // a kid-less header with multiple candidate JWKs picks the one that
+            // actually verifies, not just the first kty/crv match.
+            issuerKey = undefined;
         } else {
             // No x5c and no trustedIssuerJwks — preserve existing strict behaviour.
             throw new MalformedCredentialError('Missing or invalid x5c in JWT header');
         }
 
-        // Step 5: Verify issuer JWT signature (also validates exp, iat via jose)
+        // Step 5: Verify issuer JWT signature (also validates exp, iat via jose).
+        // The x5c path has a single key fixed at step 4. The trustedIssuerJwks path
+        // narrows by `kid` when present, otherwise tries every candidate until one
+        // verifies — required because RFC 7517 does not mandate `kid` and a caller
+        // may pass multiple trusted issuer keys.
         let payload: Record<string, unknown>;
-        try {
-            const result = await jwtVerify(parts.jwt, issuerKey, { algorithms: allowedAlgorithms });
-            payload = result.payload as unknown as Record<string, unknown>;
-        } catch {
-            return invalidResult('Issuer JWT signature verification failed');
+        if (issuerKey) {
+            try {
+                const result = await jwtVerify(parts.jwt, issuerKey, { algorithms: allowedAlgorithms });
+                payload = result.payload as unknown as Record<string, unknown>;
+            } catch {
+                return invalidResult('Issuer JWT signature verification failed');
+            }
+        } else {
+            // trustedIssuerJwks branch: select candidates and try each.
+            const jwks = options.trustedIssuerJwks!;
+            const headerKid = (header as Record<string, unknown>)['kid'];
+            let candidates: JsonWebKey[];
+            if (typeof headerKid === 'string') {
+                const matched = jwks.find((k) => (k as Record<string, unknown>)['kid'] === headerKid);
+                if (!matched) {
+                    return invalidResult(
+                        `No matching JWK found in trustedIssuerJwks for kid=${headerKid}`
+                    );
+                }
+                candidates = [matched];
+            } else {
+                candidates = jwks;
+            }
+            let verifiedPayload: Record<string, unknown> | undefined;
+            for (const jwk of candidates) {
+                let candidateKey: Awaited<ReturnType<typeof importJWK>>;
+                try {
+                    candidateKey = await importJWK(jwk, alg);
+                } catch {
+                    // Incompatible JWK for the requested alg — skip rather than fail.
+                    continue;
+                }
+                try {
+                    const result = await jwtVerify(parts.jwt, candidateKey, {
+                        algorithms: allowedAlgorithms,
+                    });
+                    verifiedPayload = result.payload as unknown as Record<string, unknown>;
+                    break;
+                } catch {
+                    // Wrong candidate — try the next one.
+                }
+            }
+            if (!verifiedPayload) {
+                return invalidResult('Issuer JWT signature verification failed');
+            }
+            payload = verifiedPayload;
         }
 
         // Step 6: Trust check — certificate must be in the trusted set
