@@ -56,7 +56,11 @@ export async function runProfile(input: RunInput): Promise<{ exitCode: 0 | 1 | 2
 
   const suiteClient = createSuiteClient({ baseUrl: input.suiteBaseUrl });
   const fixtures = await generateFixtures({ hostname });
-  const verifier = await startVerifierServer({ fixtures, port: 8080 });
+  const verifier = await startVerifierServer({
+    fixtures,
+    port: 8080,
+    externalBaseUrl: `http://${hostname}:8080`,
+  });
 
   let planId = "";
   let testId = "";
@@ -120,11 +124,13 @@ export async function runProfile(input: RunInput): Promise<{ exitCode: 0 | 1 | 2
 }
 
 function profileClientId(p: ReturnType<typeof buildHappyFlowProfile>): string {
-  // Pulls the chosen-placement client_id back out for the wallet trigger URL.
+  // Wallet-trigger URL needs the FULL prefixed client_id that matches the auth request.
+  // Profile stores the bare hostname under config.client.client_id; suite prepends the
+  // x509_san_dns: scheme at runtime. We mirror that prefix here for the trigger URL.
   const cfg = p.config as Record<string, unknown>;
-  if (typeof cfg.client_id === "string") return cfg.client_id;
   const nested = cfg.client as { client_id?: string } | undefined;
   if (nested?.client_id) return `x509_san_dns:${nested.client_id}`;
+  if (typeof cfg.client_id === "string") return cfg.client_id;
   throw new Error("profile config has no resolvable client_id");
 }
 
@@ -154,13 +160,12 @@ async function pollUntilFinished(
   timeoutMs: number,
   intervalMs: number
 ): Promise<void> {
+  // FINISHED = ran to completion; INTERRUPTED = stopped at a callAndStopOnFailure
+  // failure but the log is complete enough to categorise (allow-list applies).
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const status = await client.getTestStatus(testId);
-    if (status.status === "FINISHED") return;
-    if (status.status === "INTERRUPTED") {
-      throw new OrchestrationTimeoutError("finished (interrupted)", Date.now() - start);
-    }
+    if (status.status === "FINISHED" || status.status === "INTERRUPTED") return;
     await sleep(intervalMs);
   }
   throw new OrchestrationTimeoutError("finished", Date.now() - start);

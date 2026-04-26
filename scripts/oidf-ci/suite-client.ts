@@ -9,7 +9,7 @@ export interface SuiteTestStatusResponse {
   exposed: Record<string, string>;
 }
 
-export type SuiteLogResult = "SUCCESS" | "FAILURE" | "WARNING" | "REVIEW" | "INFO";
+export type SuiteLogResult = "SUCCESS" | "FAILURE" | "WARNING" | "REVIEW" | "INFO" | "INTERRUPTED";
 
 export interface SuiteLogEntry {
   result: SuiteLogResult;
@@ -70,7 +70,16 @@ export function createSuiteClient(opts: SuiteClientOptions): SuiteClient {
     },
 
     async getTestStatus(testId) {
-      return await jsonFetch<SuiteTestStatusResponse>(`${base}/api/info/${encodeURIComponent(testId)}`);
+      // Suite splits the data we need across two endpoints:
+      //   /api/info/<id>   has `status`        (no `exposed`)
+      //   /api/runner/<id> has `exposed`       (no `status`)
+      // Fetch both in parallel and merge.
+      const enc = encodeURIComponent(testId);
+      const [info, runner] = await Promise.all([
+        jsonFetch<{ status: SuiteTestStatus }>(`${base}/api/info/${enc}`),
+        jsonFetch<{ exposed?: Record<string, string> }>(`${base}/api/runner/${enc}`),
+      ]);
+      return { status: info.status, exposed: runner.exposed ?? {} };
     },
 
     async getTestLog(testId) {

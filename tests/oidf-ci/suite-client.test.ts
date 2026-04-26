@@ -40,17 +40,23 @@ describe("suite-client", () => {
     expect(String(url)).toContain("plan=plan-id-1");
   });
 
-  it("getTestStatus GETs /api/info/<testId>", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ status: "WAITING", exposed: { authorization_endpoint: "http://x" } }), {
-        status: 200,
-      })
-    );
+  it("getTestStatus merges /api/info (status) + /api/runner (exposed)", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.includes("/api/info/")) {
+        return new Response(JSON.stringify({ status: "WAITING" }), { status: 200 });
+      }
+      if (u.includes("/api/runner/")) {
+        return new Response(JSON.stringify({ exposed: { authorization_endpoint: "http://x" } }), { status: 200 });
+      }
+      throw new Error(`Unexpected URL: ${u}`);
+    });
     const client = createSuiteClient({ baseUrl: "http://suite:8443" });
 
     const res = await client.getTestStatus("test-id-7");
     expect(res.status).toBe("WAITING");
     expect(res.exposed.authorization_endpoint).toBe("http://x");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it("getTestLog GETs /api/log/<testId> and returns the entries array", async () => {

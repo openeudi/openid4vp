@@ -16,7 +16,11 @@ export function buildFullPlanProfile(fx: Fixtures): ProfileBuildOutput {
       alias: "oidf-ci-full-plan",
       description: "Automated full-plan run from CI",
       publish: "no",
-      client_id: `x509_san_dns:${fx.hostname}`,
+      client: {
+        // Bare hostname; suite's OID4VPSetClientIdToIncludeClientIdScheme prepends
+        // the `x509_san_dns:` scheme prefix at runtime to match the auth request.
+        client_id: fx.hostname,
+      },
       credential: {
         signing_jwk: fx.issuerSigningJwkPrivate,
       },

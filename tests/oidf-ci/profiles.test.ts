@@ -5,14 +5,15 @@ import { buildHappyFlowProfile } from "../../scripts/oidf-ci/profiles/happy-flow
 import { buildFullPlanProfile } from "../../scripts/oidf-ci/profiles/full-plan";
 
 describe("profiles", () => {
-  it("happy-flow profile carries the validated top-level client_id with x509_san_dns: prefix", async () => {
+  it("happy-flow profile carries the validated nested client.client_id with x509_san_dns: prefix", async () => {
     const fx = await generateFixtures({ hostname: "host.docker.internal" });
     const p = buildHappyFlowProfile(fx);
 
     expect(p.planName).toBe("oid4vp-id3-verifier-test-plan");
     expect(p.moduleName).toBe("oid4vp-id3-verifier-happy-flow");
     expect(p.variant.credential_format).toBe("sd_jwt_vc");
-    expect((p.config as Record<string, unknown>).client_id).toBe("x509_san_dns:host.docker.internal");
+    // Bare hostname; suite prepends x509_san_dns: scheme at runtime.
+    expect((p.config as { client: { client_id: string } }).client.client_id).toBe("host.docker.internal");
   });
 
   it("full-plan profile uses the full-plan moduleName", async () => {

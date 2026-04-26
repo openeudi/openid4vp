@@ -22,7 +22,11 @@ export function buildHappyFlowProfile(fx: Fixtures): ProfileBuildOutput {
       alias: "oidf-ci-happy-flow",
       description: "Automated happy-flow run from CI",
       publish: "no",
-      client_id: `x509_san_dns:${fx.hostname}`,
+      client: {
+        // Bare hostname; suite's OID4VPSetClientIdToIncludeClientIdScheme prepends
+        // the `x509_san_dns:` scheme prefix at runtime to match the auth request.
+        client_id: fx.hostname,
+      },
       credential: {
         signing_jwk: fx.issuerSigningJwkPrivate,
       },

@@ -12,6 +12,14 @@ export interface StartVerifierServerInput {
   fixtures: Fixtures;
   port?: number;
   nonce?: string;
+  /**
+   * URL the suite (or any external client) will use to reach this server.
+   * When set, the server binds to 0.0.0.0 (so dockerized clients can reach
+   * it via host.docker.internal) and publishes this URL in the auth-request's
+   * request_uri / response_uri. When unset, the server binds to 127.0.0.1
+   * and publishes http://127.0.0.1:<port>.
+   */
+  externalBaseUrl?: string;
 }
 
 export interface VerifierResponseRecord {
@@ -45,7 +53,10 @@ export async function startVerifierServer(input: StartVerifierServerInput): Prom
             responseUri: `${url}/response`,
             nonce,
             signer: fx.leafKeypair,
-            certificateChain: [fx.leafCertDer, fx.caCertDer],
+            // x5c carries the leaf only. Trust anchors (root CA) must NOT be in
+            // the chain — RP supplies them out-of-band; OIDF rejects self-signed
+            // roots embedded in x5c (ValidateRequestObjectSignatureAgainstX5cHeader).
+            certificateChain: [fx.leafCertDer],
             encryptionKey: { publicJwk: fx.encryptionPublicJwk },
             vpFormatsSupported: { "dc+sd-jwt": { "sd-jwt_alg_values": ["ES256"] } },
           },
@@ -103,10 +114,11 @@ export async function startVerifierServer(input: StartVerifierServerInput): Prom
     }
   });
 
-  await new Promise<void>((resolve) => server.listen(input.port ?? 0, "127.0.0.1", resolve));
+  const bindHost = input.externalBaseUrl ? "0.0.0.0" : "127.0.0.1";
+  await new Promise<void>((resolve) => server.listen(input.port ?? 0, bindHost, resolve));
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("Server failed to bind");
-  const url = `http://127.0.0.1:${addr.port}`;
+  const url = input.externalBaseUrl ?? `http://127.0.0.1:${addr.port}`;
 
   return {
     url,

@@ -8,7 +8,7 @@ describe("categorise", () => {
   it("empty log → pass true, all tallies zero", () => {
     const r = categorise([], emptyAllowlist);
     expect(r.pass).toBe(true);
-    expect(r.tally).toEqual({ success: 0, failure: 0, warning: 0, review: 0, info: 0 });
+    expect(r.tally).toEqual({ success: 0, failure: 0, warning: 0, review: 0, info: 0, interrupted: 0 });
     expect(r.blocking).toEqual([]);
     expect(r.allowlisted).toEqual([]);
   });
@@ -102,8 +102,16 @@ describe("categorise", () => {
     expect(r.blocking).toEqual([]);
   });
 
-  it("malformed log entry (missing result field) → throws MalformedSuiteLogError", () => {
-    const badLog = [{ src: "A" } as unknown as SuiteLogEntry];
+  it("informational log entries without result field → skipped, not throw", () => {
+    // Suite emits these for block markers, server-config dumps, etc.
+    const log = [{ src: "InfoOnly", msg: "block start" } as unknown as SuiteLogEntry];
+    const r = categorise(log, emptyAllowlist);
+    expect(r.pass).toBe(true);
+    expect(r.tally).toEqual({ success: 0, failure: 0, warning: 0, review: 0, info: 0, interrupted: 0 });
+  });
+
+  it("log entry with INVALID result value (not in known set) → throws MalformedSuiteLogError", () => {
+    const badLog = [{ result: "BOGUS", src: "A" } as unknown as SuiteLogEntry];
     expect(() => categorise(badLog, emptyAllowlist)).toThrow(MalformedSuiteLogError);
   });
 
