@@ -36,3 +36,33 @@ describe("generateFixtures — CA + leaf chain", () => {
     expect(signature.byteLength).toBeGreaterThan(0);
   });
 });
+
+describe("generateFixtures — issuer signing keypair + cert", () => {
+  it("produces a private JWK for the suite to sign SD-JWT VCs with (with d field)", async () => {
+    const fx = await generateFixtures({ hostname: "verifier.test.local" });
+
+    expect(fx.issuerSigningJwkPrivate.kty).toBe("EC");
+    expect(fx.issuerSigningJwkPrivate.crv).toBe("P-256");
+    expect(typeof fx.issuerSigningJwkPrivate.d).toBe("string");
+    expect(typeof fx.issuerSigningJwkPrivate.x).toBe("string");
+    expect(typeof fx.issuerSigningJwkPrivate.y).toBe("string");
+  });
+
+  it("produces a self-signed issuer cert DER whose public key matches the issuer JWK", async () => {
+    const fx = await generateFixtures({ hostname: "verifier.test.local" });
+    const cert = new x509.X509Certificate(fx.issuerCertDer);
+
+    expect(fx.issuerCertDer).toBeInstanceOf(Uint8Array);
+    expect(await cert.verify({ publicKey: cert.publicKey })).toBe(true);
+  });
+});
+
+describe("generateFixtures — dcql query", () => {
+  it("produces a one-credential dc+sd-jwt query with given_name claim", async () => {
+    const fx = await generateFixtures({ hostname: "verifier.test.local" });
+
+    expect(fx.dcqlQuery.credentials).toHaveLength(1);
+    expect(fx.dcqlQuery.credentials[0].format).toBe("dc+sd-jwt");
+    expect(fx.dcqlQuery.credentials[0].claims).toEqual([{ path: ["given_name"] }]);
+  });
+});
