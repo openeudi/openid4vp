@@ -1,0 +1,5 @@
+{
+  "$schema": "Empty allow-list. Add entries only with justification + reference fields. See spec §5.5.",
+  "version": 1,
+  "checks": []
+}
