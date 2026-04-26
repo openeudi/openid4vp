@@ -13,12 +13,6 @@
       "category": "harness",
       "justification": "Same as EnsureRequestUriIsHttps — response_uri inherits the verifier-server's HTTP scheme. Library accepts any HTTPS URL; harness limitation only.",
       "reference": "docs/superpowers/specs/2026-04-25-openid4vp-d-oidf-conformance-ci-design.md §5.5"
-    },
-    {
-      "id": "EncryptVPResponse",
-      "category": "upstream-bug",
-      "justification": "Suite's EncryptVPResponse condition reads client_metadata.authorization_encrypted_response_alg without skipIfElementMissing — the condition itself logs 'This is a bug in the test module. skipIfElementMissing should be used'. Library emits OpenID4VP 1.0 Final shape (encrypted_response_enc_values_supported plural array); suite expects ID3 shape (singular). Categorised as spec-drift in CHANGELOG; suite defect prevents progression.",
-      "reference": "docs/superpowers/specs/2026-04-25-openid4vp-d-oidf-conformance-ci-design.md §5.5; OIDF conformance-suite release-v5.1.42 EncryptVPResponse.java"
     }
   ]
 }

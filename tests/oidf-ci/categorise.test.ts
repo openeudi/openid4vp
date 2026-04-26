@@ -8,7 +8,7 @@ describe("categorise", () => {
   it("empty log → pass true, all tallies zero", () => {
     const r = categorise([], emptyAllowlist);
     expect(r.pass).toBe(true);
-    expect(r.tally).toEqual({ success: 0, failure: 0, warning: 0, review: 0, info: 0, interrupted: 0 });
+    expect(r.tally).toEqual({ success: 0, failure: 0, warning: 0, review: 0, info: 0, interrupted: 0, finished: 0 });
     expect(r.blocking).toEqual([]);
     expect(r.allowlisted).toEqual([]);
   });
@@ -120,7 +120,7 @@ describe("categorise", () => {
     const log = [{ src: "InfoOnly", msg: "block start" } as unknown as SuiteLogEntry];
     const r = categorise(log, emptyAllowlist);
     expect(r.pass).toBe(true);
-    expect(r.tally).toEqual({ success: 0, failure: 0, warning: 0, review: 0, info: 0, interrupted: 0 });
+    expect(r.tally).toEqual({ success: 0, failure: 0, warning: 0, review: 0, info: 0, interrupted: 0, finished: 0 });
   });
 
   it("log entry with INVALID result value (not in known set) → throws MalformedSuiteLogError", () => {

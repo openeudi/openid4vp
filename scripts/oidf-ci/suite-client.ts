@@ -9,7 +9,14 @@ export interface SuiteTestStatusResponse {
   exposed: Record<string, string>;
 }
 
-export type SuiteLogResult = "SUCCESS" | "FAILURE" | "WARNING" | "REVIEW" | "INFO" | "INTERRUPTED";
+export type SuiteLogResult =
+  | "SUCCESS"
+  | "FAILURE"
+  | "WARNING"
+  | "REVIEW"
+  | "INFO"
+  | "INTERRUPTED"
+  | "FINISHED";
 
 export interface SuiteLogEntry {
   result: SuiteLogResult;

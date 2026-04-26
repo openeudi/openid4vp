@@ -1,10 +1,17 @@
 import type { CategorisedResult } from "./categorise";
 
+export interface VerifierExceptionRecord {
+  name: string;
+  message: string;
+}
+
 export interface RenderInput {
   profile: "happy-flow" | "full";
   planId: string;
   testId: string;
   suiteRef?: string;
+  verifierSuccesses?: number;
+  verifierExceptions?: VerifierExceptionRecord[];
 }
 
 export interface RenderOutput {
@@ -21,6 +28,10 @@ export function renderResult(result: CategorisedResult, input: RenderInput): Ren
       suiteRef: input.suiteRef,
       pass: result.pass,
       tally: result.tally,
+      verifier: {
+        successes: input.verifierSuccesses ?? 0,
+        exceptions: input.verifierExceptions ?? [],
+      },
       blocking: result.blocking.map((f) => ({ src: f.src, msg: f.msg })),
       allowlisted: result.allowlisted.map((f) => ({
         src: f.src,
@@ -49,6 +60,17 @@ export function renderResult(result: CategorisedResult, input: RenderInput): Ren
   lines.push(`| WARNING | ${result.tally.warning} |`);
   lines.push(`| REVIEW | ${result.tally.review} |`);
   lines.push(`| INFO | ${result.tally.info} |`);
+
+  if (input.verifierSuccesses !== undefined || input.verifierExceptions !== undefined) {
+    lines.push("");
+    lines.push(
+      `Verifier responses accepted: ${input.verifierSuccesses ?? 0} | ` +
+        `exceptions: ${input.verifierExceptions?.length ?? 0}`,
+    );
+    if (input.verifierExceptions?.length) {
+      for (const e of input.verifierExceptions) lines.push(`  - **${e.name}** — ${e.message}`);
+    }
+  }
 
   if (result.blocking.length) {
     lines.push("");

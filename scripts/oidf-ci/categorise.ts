@@ -38,6 +38,7 @@ export interface CategorisedResult {
     review: number;
     info: number;
     interrupted: number;
+    finished: number;
   };
   blocking: CategorisedFailure[];
   allowlisted: CategorisedFailure[];
@@ -55,13 +56,14 @@ const KNOWN_RESULTS: Set<SuiteLogResult> = new Set([
   "REVIEW",
   "INFO",
   "INTERRUPTED",
+  "FINISHED",
 ]);
 
 export function categorise(log: SuiteLogEntry[], allowlist: Allowlist): CategorisedResult {
   validateAllowlist(allowlist);
   const allowlistById = new Map(allowlist.checks.map((c) => [c.id, c] as const));
 
-  const tally = { success: 0, failure: 0, warning: 0, review: 0, info: 0, interrupted: 0 };
+  const tally = { success: 0, failure: 0, warning: 0, review: 0, info: 0, interrupted: 0, finished: 0 };
   const blocking: CategorisedFailure[] = [];
   const allowlisted: CategorisedFailure[] = [];
 
@@ -96,6 +98,11 @@ export function categorise(log: SuiteLogEntry[], allowlist: Allowlist): Categori
         // failure. Doesn't itself indicate a check failure; the actual FAILURE
         // entry that caused it is handled separately.
         tally.interrupted++;
+        break;
+      case "FINISHED":
+        // Test-runner-level marker emitted on normal completion. Tracked for
+        // visibility; doesn't affect pass/fail.
+        tally.finished++;
         break;
       case "FAILURE": {
         tally.failure++;

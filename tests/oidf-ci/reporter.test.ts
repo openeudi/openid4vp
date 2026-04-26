@@ -3,14 +3,14 @@ import { renderResult } from "../../scripts/oidf-ci/reporter";
 import type { CategorisedResult } from "../../scripts/oidf-ci/categorise";
 
 const passingResult: CategorisedResult = {
-  tally: { success: 3, failure: 0, warning: 1, review: 0, info: 5, interrupted: 0 },
+  tally: { success: 3, failure: 0, warning: 1, review: 0, info: 5, interrupted: 0, finished: 0 },
   blocking: [],
   allowlisted: [],
   pass: true,
 };
 
 const failingResult: CategorisedResult = {
-  tally: { success: 1, failure: 2, warning: 0, review: 0, info: 0, interrupted: 0 },
+  tally: { success: 1, failure: 2, warning: 0, review: 0, info: 0, interrupted: 0, finished: 0 },
   blocking: [{ src: "CheckBlocker", msg: "wire format wrong", raw: { result: "FAILURE", src: "CheckBlocker" } }],
   allowlisted: [
     {

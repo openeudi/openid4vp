@@ -9,8 +9,12 @@ on:
       - "scripts/oidf-ci/**"
       - "scripts/oidf-ci-run.mjs"
       - "scripts/manual-oidf-run.ts"
+      - "scripts/manual-oidf-run.mjs"
       - "docker/oidf-conformance-suite/**"
       - ".github/workflows/oidf-*.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
 
 permissions:
   contents: read

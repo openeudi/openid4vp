@@ -85,18 +85,43 @@ export async function runProfile(input: RunInput): Promise<{ exitCode: 0 | 1 | 2
 
     const log = await suiteClient.getTestLog(testId);
     const result = categorise(log, allowlist);
-    const rendered = renderResult(result, { profile: input.profile, planId, testId });
+
+    // End-to-end gate: a green run must include at least one library-verified
+    // authorization response and zero verifier-side exceptions. Without this,
+    // an allow-listed interruption (e.g. EncryptVPResponse) would let the run
+    // pass before /response was ever exercised, weakening the gate.
+    const verifierResponses = verifier.drainResponses();
+    const verifierExceptions = verifierResponses.filter((r) => !r.ok);
+    const verifierSuccesses = verifierResponses.filter((r) => r.ok);
+    const verifierEvidenceOk = verifierSuccesses.length >= 1 && verifierExceptions.length === 0;
+
+    if (verifierExceptions.length) {
+      console.error("[orchestrator] verifier-side exceptions captured (BLOCKING):");
+      for (const e of verifierExceptions) console.error(" ", e.error?.name, e.error?.message);
+    }
+    if (verifierSuccesses.length === 0) {
+      console.error("[orchestrator] verifier never accepted a response — suite did not reach /response");
+    }
+
+    const finalPass = result.pass && verifierEvidenceOk;
+    const rendered = renderResult(
+      { ...result, pass: finalPass },
+      {
+        profile: input.profile,
+        planId,
+        testId,
+        verifierSuccesses: verifierSuccesses.length,
+        verifierExceptions: verifierExceptions.map((r) => ({
+          name: r.error?.name ?? "Error",
+          message: r.error?.message ?? "",
+        })),
+      },
+    );
 
     writeFileSync(join(input.outputDir, "oidf-result.json"), rendered.json);
     writeFileSync(join(input.outputDir, "summary.md"), rendered.summary);
 
-    const verifierExceptions = verifier.drainResponses().filter((r) => !r.ok);
-    if (verifierExceptions.length) {
-      console.error("[orchestrator] verifier-side exceptions captured (informational):");
-      for (const e of verifierExceptions) console.error(" ", e.error?.name, e.error?.message);
-    }
-
-    return { exitCode: result.pass ? 0 : 1 };
+    return { exitCode: finalPass ? 0 : 1 };
   } catch (err) {
     const errorRecord =
       err instanceof SuiteApiError

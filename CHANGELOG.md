@@ -7,15 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (library)
+
+- `createSignedAuthorizationRequest` now also emits `authorization_encrypted_response_alg` and `authorization_encrypted_response_enc` in `client_metadata` alongside the OpenID4VP 1.0 Final `encrypted_response_enc_values_supported` plural array. This is an additive ID3-compatibility bridge for verifiers (e.g. the OIDF conformance suite's `EncryptVPResponse` condition) that read the older singular fields directly. Existing 1.0 Final consumers are unaffected.
+
 ### CI / Infrastructure
 
 - Added automated OIDF verifier-conformance testing in CI (`@openeudi/openid4vp` workstream D).
-  - PR happy-flow gate via `oidf-pr.yml` (paths-filter; ~3–5 min).
+  - PR happy-flow gate via `oidf-pr.yml` (paths-filter; ~5 min). Strong end-to-end gate: requires the suite to reach `/response`, the orchestrator to verify the encrypted authorization response (decrypt + state match + SD-JWT VC signature against the supplied issuer JWK), and zero verifier-side exceptions. Allow-listed suite failures alone cannot turn the gate green.
   - Tag-push full-plan release artefact via `oidf-release.yml`.
   - Self-hosted conformance suite via `docker/oidf-conformance-suite/` (GHCR-prebuilt image at a pinned upstream git ref).
-  - Spec-drift allow-list at `scripts/oidf-ci/allowlist.json` (initially seeded with three known harness/upstream-bug entries discovered during local e2e validation).
+  - Allow-list at `scripts/oidf-ci/allowlist.json` ships with two `harness`-category entries (`EnsureRequestUriIsHttps`, `EnsureValidResponseUriForAuthorizationEndpointRequest`) — the local verifier-server runs plain HTTP for simplicity; production CI clears these once an nginx sidecar terminates TLS in front of the verifier.
   - Manual hosted-demo escape hatch retained as `scripts/manual-oidf-run.{ts,mjs}`.
-- No library API changes.
 
 ## [0.7.0] — 2026-04-24
 
