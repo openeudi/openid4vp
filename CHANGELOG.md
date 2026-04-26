@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-04-26
+
 ### Added (library)
 
 - `createSignedAuthorizationRequest` now also emits `authorization_encrypted_response_alg` and `authorization_encrypted_response_enc` in `client_metadata` alongside the OpenID4VP 1.0 Final `encrypted_response_enc_values_supported` plural array. This is an additive ID3-compatibility bridge for verifiers (e.g. the OIDF conformance suite's `EncryptVPResponse` condition) that read the older singular fields directly. Existing 1.0 Final consumers are unaffected.
@@ -183,6 +185,7 @@ Note: `ParseOptions` in this package accepts `{ nonce, trustedCertificates, audi
 
 If you imported types from `@sphereon/pex` or `@sphereon/ssi-types` transitively via this package, install those packages directly — they are no longer transitive.
 
+[0.8.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.8.0
 [0.7.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.7.0
 [0.6.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.6.0
 [0.5.0]: https://github.com/openeudi/openid4vp/releases/tag/v0.5.0
