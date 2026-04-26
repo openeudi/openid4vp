@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - `verifyAuthorizationResponse` / `verifyPresentation` accept an optional `trustedIssuerJwks: JsonWebKey[]` parameter on `ParseOptions`. When the SD-JWT VC's issuer JWT lacks an `x5c` header, the parser looks up the issuer key by `kid` against the supplied JWK set (or by `kty`/`crv` when no `kid` is present); the matched JWK is the trust anchor and cert-chain evaluation is skipped. Default behaviour unchanged — `x5c` is still required when this option is absent. Use case: harness setups (e.g. OIDF conformance suite) where the wallet signs without `x5c` and the verifier knows the signing key out-of-band. Not recommended for production verifiers; cert-chain trust evaluation via `trustStore` is the recommended path.
 
+### Fixed (library)
+
+- SD-JWT disclosure-hash verification now correctly handles 2-element array-element disclosures (`[salt, value]` per SD-JWT spec §5.2.1) and transitively-nested disclosures. The previous strict check required every disclosure's hash to be in the top-level `_sd` array, which false-rejected SD-JWT VCs that use array placeholders (`{"...": "<hash>"}`) for arrays — e.g. the EU PID `nationalities` claim — or that nest `_sd` inside disclosed object values — e.g. `place_of_birth.country`. The fixed check seeds anchor sets from the issuer JWT and expands them transitively as each disclosure anchors, accepting the credential only when every disclosure anchors against some `_sd` entry (3-element) or `{"...": "<hash>"}` placeholder (2-element). Tampered or extraneous disclosures are still rejected.
+
 ### CI / Infrastructure
 
 - Added automated OIDF verifier-conformance testing in CI (`@openeudi/openid4vp` workstream D).

@@ -365,7 +365,45 @@ describe('SdJwtParser', () => {
             const injectedSdJwt = noSdResult.issuerJwt + '~' + fakeDisclosure + '~';
             const result = await parser.parse(injectedSdJwt, buildOptions());
             expect(result.valid).toBe(false);
-            expect(result.error).toContain('no _sd array');
+            // Object-property disclosures whose hash isn't in `_sd` (or `_sd` is
+            // absent) yield the same uniform error after the array-element
+            // placeholder support landed.
+            expect(result.error).toContain('Disclosure hash mismatch');
+        });
+
+        it('accepts 2-element array-element disclosures referenced by an `{"...": "<hash>"}` placeholder', async () => {
+            // SD-JWT spec §5.2.1: array-element disclosures are 2-element
+            // `[salt, value]` arrays whose hash appears in an in-array placeholder
+            // marker, NOT in `_sd`. The previous strict check was rejecting them.
+            const { createHash } = await import('node:crypto');
+            const salt = crypto.randomUUID();
+            const arrayDisclosure = Buffer.from(JSON.stringify([salt, 'FR'])).toString('base64url');
+            const hashBytes = createHash('sha256').update(arrayDisclosure).digest();
+            const hashB64url = hashBytes.toString('base64url');
+
+            // Build issuer JWT carrying a `nationalities` array with the placeholder.
+            const built = await buildSignedSdJwt({
+                issuerKey,
+                claims: {
+                    vct: 'urn:eu.europa.ec.eudi:pid:1',
+                    nationalities: [{ '...': hashB64url }],
+                },
+            });
+            const sdJwt = built.issuerJwt + '~' + arrayDisclosure + '~';
+            const result = await parser.parse(sdJwt, buildOptions());
+            expect(result.valid).toBe(true);
+        });
+
+        it('rejects 2-element disclosure when no matching `{"...": "<hash>"}` placeholder exists', async () => {
+            const arrayDisclosure = Buffer.from(JSON.stringify([crypto.randomUUID(), 'GB'])).toString('base64url');
+            const built = await buildSignedSdJwt({
+                issuerKey,
+                claims: { vct: 'urn:eu.europa.ec.eudi:pid:1' },
+            });
+            const sdJwt = built.issuerJwt + '~' + arrayDisclosure + '~';
+            const result = await parser.parse(sdJwt, buildOptions());
+            expect(result.valid).toBe(false);
+            expect(result.error).toContain('Disclosure hash mismatch');
         });
     });
 

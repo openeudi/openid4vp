@@ -100,6 +100,22 @@ export async function startVerifierServer(input: StartVerifierServerInput): Prom
               // No trustedCertificates needed — the JWK is the trust anchor for the OIDF harness.
             },
           );
+          // Library failures (signature, disclosure/hash, KB-JWT, DCQL mismatch) are
+          // surfaced as result.valid === false rather than thrown exceptions. Treat
+          // a falsy result.valid as a blocking verifier failure so the gate reflects
+          // actual library acceptance, not just absence of throws.
+          if (!result.valid) {
+            const parts: string[] = [];
+            if (result.parsed && result.parsed.valid === false && result.parsed.error) {
+              parts.push(`parse: ${result.parsed.error}`);
+            }
+            if (result.match && result.match.satisfied === false) {
+              parts.push(`dcql: not satisfied (${JSON.stringify(result.match).slice(0, 200)})`);
+            }
+            throw new Error(
+              `library rejected presentation (result.valid=false): ${parts.join(" | ") || "no detail"}`,
+            );
+          }
           responses.push({ receivedAtMs: Date.now(), ok: true, result });
           res.writeHead(200, { "content-type": "application/json" });
           res.end("{}");

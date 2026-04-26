@@ -295,18 +295,71 @@ export class SdJwtParser implements ICredentialParser {
             }
         }
 
-        // Step 7: Verify disclosure hashes against _sd array
-        const sdArray = payload['_sd'];
+        // Step 7: Verify disclosure hashes. Per SD-JWT spec §5.2.1:
+        //   - 3-element `[salt, name, value]` (object-property) → hash MUST be in some `_sd`
+        //   - 2-element `[salt, value]` (array-element)         → hash MUST be referenced
+        //     by some `{"...": "<hash>"}` placeholder
+        // Both can nest: a disclosed value may itself contain `_sd` or placeholders
+        // for further disclosures (e.g. PID's `place_of_birth.country`,
+        // `nationalities`). The check is therefore transitive — once a disclosure is
+        // anchored, any anchor hashes found inside its disclosed value become valid
+        // anchors for OTHER disclosures.
         if (parts.disclosures.length > 0) {
-            if (!Array.isArray(sdArray) || sdArray.length === 0) {
-                return invalidResult('Disclosures present but no _sd array in issuer JWT');
-            }
+            // Pre-decode disclosures so we can do the transitive closure.
+            type DecodedDisclosure = {
+                raw: string;
+                hash: string;
+                length: 2 | 3;
+                value: unknown;
+            };
+            const decodedDisclosures: DecodedDisclosure[] = [];
             for (const disclosure of parts.disclosures) {
-                const hashBytes = await sha256Hasher(disclosure, 'sha-256');
-                const hashB64url = bytesToBase64url(hashBytes);
-                if (!sdArray.includes(hashB64url)) {
-                    return invalidResult('Disclosure hash mismatch');
+                let parsed: unknown;
+                try {
+                    parsed = JSON.parse(new TextDecoder().decode(base64ToBytes(disclosure)));
+                } catch {
+                    return invalidResult('Disclosure is not valid base64url-encoded JSON');
                 }
+                if (!Array.isArray(parsed) || (parsed.length !== 2 && parsed.length !== 3)) {
+                    return invalidResult('Disclosure must be a 2- or 3-element array');
+                }
+                const hashBytes = await sha256Hasher(disclosure, 'sha-256');
+                decodedDisclosures.push({
+                    raw: disclosure,
+                    hash: bytesToBase64url(hashBytes),
+                    length: parsed.length as 2 | 3,
+                    value: parsed.length === 3 ? parsed[2] : parsed[1],
+                });
+            }
+
+            // Seed the anchor sets from the issuer JWT payload itself.
+            const seed = collectAnchorHashes(payload);
+            const kvHashes = seed.kvHashes;
+            const arrayElemHashes = seed.arrayElemHashes;
+
+            // Transitive expansion: each pass tries to anchor every still-pending
+            // disclosure; when one anchors, its disclosed VALUE feeds new anchor
+            // hashes back into the sets, potentially unlocking later disclosures.
+            const remaining = [...decodedDisclosures];
+            for (;;) {
+                const anchored: DecodedDisclosure[] = [];
+                for (const d of remaining) {
+                    const valid =
+                        d.length === 3 ? kvHashes.has(d.hash) : arrayElemHashes.has(d.hash);
+                    if (valid) anchored.push(d);
+                }
+                if (anchored.length === 0) break;
+                for (const a of anchored) {
+                    const sub = collectAnchorHashes(a.value);
+                    for (const h of sub.kvHashes) kvHashes.add(h);
+                    for (const h of sub.arrayElemHashes) arrayElemHashes.add(h);
+                    const idx = remaining.indexOf(a);
+                    if (idx >= 0) remaining.splice(idx, 1);
+                }
+            }
+
+            if (remaining.length > 0) {
+                return invalidResult('Disclosure hash mismatch');
             }
         }
 
@@ -383,4 +436,43 @@ export class SdJwtParser implements ICredentialParser {
         if (trustResult) result.trust = trustResult;
         return result;
     }
+}
+
+/**
+ * Walks a value and collects every `_sd` array entry plus every
+ * `{"...": "<hash>"}` array-element placeholder hash reachable from it. SD-JWT
+ * disclosures can nest — a disclosed object may itself carry a fresh `_sd`
+ * array, and a disclosed array may contain `{"...": "<hash>"}` placeholders
+ * for further (2-element) disclosures. The hand-rolled hash check must resolve
+ * the full transitive set, otherwise nested disclosures (e.g. PID's
+ * `place_of_birth.country`, `nationalities` array) false-reject.
+ */
+function collectAnchorHashes(node: unknown): { kvHashes: Set<string>; arrayElemHashes: Set<string> } {
+    const kvHashes = new Set<string>();
+    const arrayElemHashes = new Set<string>();
+    const visit = (value: unknown): void => {
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                if (item && typeof item === 'object' && !Array.isArray(item)) {
+                    const obj = item as Record<string, unknown>;
+                    const keys = Object.keys(obj);
+                    if (keys.length === 1 && keys[0] === '...' && typeof obj['...'] === 'string') {
+                        arrayElemHashes.add(obj['...']);
+                        continue;
+                    }
+                }
+                visit(item);
+            }
+        } else if (value && typeof value === 'object') {
+            for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+                if (k === '_sd' && Array.isArray(v)) {
+                    for (const h of v) if (typeof h === 'string') kvHashes.add(h);
+                    continue;
+                }
+                visit(v);
+            }
+        }
+    };
+    visit(node);
+    return { kvHashes, arrayElemHashes };
 }
