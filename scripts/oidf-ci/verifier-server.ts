@@ -5,7 +5,7 @@ import {
   createSignedAuthorizationRequest,
   decryptAuthorizationResponse,
   verifyAuthorizationResponse,
-} from "../../dist/index.js";
+} from "../../src/index.js";
 import type { Fixtures } from "./fixtures";
 
 export interface StartVerifierServerInput {

@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import * as x509 from "@peculiar/x509";
-import type { DcqlQuery } from "../../dist/index.js";
+import type { DcqlQuery } from "../../src/index.js";
 
 export type { DcqlQuery };
 
