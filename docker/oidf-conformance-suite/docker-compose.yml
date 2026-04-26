@@ -1,6 +1,6 @@
 services:
   mongodb:
-    image: mongo:8
+    image: mongo:8.2.7
     restart: unless-stopped
     healthcheck:
       test: ['CMD', 'mongosh', '--quiet', '--eval', "db.runCommand({ping:1}).ok"]
@@ -18,7 +18,6 @@ services:
       - MONGODB_HOST=mongodb
       - JAVA_EXTRA_ARGS=-Xmx2g
       - BASE_URL=https://localhost:8443
-      - BASE_MTLS_URL=https://localhost:8444
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     healthcheck:
@@ -43,7 +42,6 @@ services:
       - -c
       - |
         if [ ! -f /etc/ssl/certs/nginx-selfsigned.crt ]; then
-          apt-get update -qq && apt-get install -y -qq openssl
           openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
             -keyout /etc/ssl/private/nginx-selfsigned.key \
             -out /etc/ssl/certs/nginx-selfsigned.crt \

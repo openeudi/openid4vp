@@ -29,15 +29,14 @@ docker push ghcr.io/openeudi/oidf-conformance-suite:release-v5.1.42
 cd docker/oidf-conformance-suite
 docker compose up
 # wait for all three containers to be healthy (~60-120s on first cold start)
-curl -fsS http://localhost:8080/api/runner/available   # direct to Java server
-curl -fsSk https://localhost:8443/api/runner/available # via nginx TLS proxy
+curl -fsSk https://localhost:8443/api/runner/available # via nginx TLS proxy (-k skips self-signed cert check)
 ```
 
 The suite UI is at `https://localhost:8443/` (self-signed TLS). Stop with `docker compose down`.
 
 ## CI usage
 
-`oidf-pr.yml` and `oidf-release.yml` run `docker compose -f docker/oidf-conformance-suite/docker-compose.yml up -d` then drive the suite via the REST API at `https://localhost:8443/api/...` (or `http://localhost:8080/api/...` when skipping TLS inside CI).
+`oidf-pr.yml` and `oidf-release.yml` run `docker compose -f docker/oidf-conformance-suite/docker-compose.yml up -d` then drive the suite via the REST API at `https://localhost:8443/api/...`.
 
 ## Bumping the suite version
 
@@ -52,7 +51,7 @@ The upstream conformance-suite repository uses a **three-service** architecture 
 
 | Service | Image | Role |
 |---------|-------|------|
-| `mongodb` | `mongo:8` | Database |
+| `mongodb` | `mongo:8.2.7` | Database |
 | `server` | `ghcr.io/openeudi/oidf-conformance-suite:release-v5.1.42` | Java Spring Boot app (port 8080 internal) |
 | `nginx` | `nginx:1.27.3` | TLS terminator + reverse proxy (port 8443 → server:8080) |
 
