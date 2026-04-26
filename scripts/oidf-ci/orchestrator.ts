@@ -59,7 +59,14 @@ export async function runProfile(input: RunInput): Promise<{ exitCode: 0 | 1 | 2
   const verifier = await startVerifierServer({
     fixtures,
     port: 8080,
-    externalBaseUrl: `http://${hostname}:8080`,
+    // The verifier-server itself binds plain HTTP on host:8080 for ease of
+    // debugging, but the URLs it publishes (request_uri, response_uri) are the
+    // HTTPS-fronted side from the verifier-nginx sidecar at :8444. The suite
+    // container reaches us via host.docker.internal; verifier-nginx terminates
+    // TLS and reverse-proxies back to host:8080 over the host gateway. This is
+    // what clears the two harness-category allow-list entries (HTTPS
+    // request_uri / response_uri) that the spec requires.
+    externalBaseUrl: `https://${hostname}:8444`,
   });
 
   let planId = "";
