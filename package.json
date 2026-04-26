@@ -29,7 +29,8 @@
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "oidf:ci": "node scripts/oidf-ci-run.mjs"
   },
   "dependencies": {
     "@openeudi/dcql": "^0.2.0",
@@ -52,6 +53,7 @@
     "reflect-metadata": "^0.2.2",
     "tsup": "^8.5.1",
     "typescript": "^5.8.3",
+    "tsx": "^4.21.0",
     "vitest": "^4.0.18"
   },
   "repository": {
