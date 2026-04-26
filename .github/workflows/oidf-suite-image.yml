@@ -1,0 +1,57 @@
+name: OIDF Suite Image (build + push to GHCR)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Upstream conformance-suite git ref (tag or commit SHA)'
+        required: true
+        type: string
+        default: 'release-v5.1.42'
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/oidf-conformance-suite
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout upstream conformance-suite
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: openid/conformance-suite
+          ref: ${{ inputs.ref }}
+          path: conformance-suite
+
+      - name: Set up Java 17
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build the suite JAR
+        working-directory: conformance-suite
+        run: mvn -B clean package -DskipTests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: conformance-suite
+          file: conformance-suite/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ inputs.ref }}

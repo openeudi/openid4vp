@@ -1,0 +1,55 @@
+services:
+  mongodb:
+    image: mongo:8.2.7
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.runCommand({ping:1}).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  server:
+    image: ghcr.io/openeudi/oidf-conformance-suite:release-v5.1.42
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      - MONGODB_HOST=mongodb
+      - JAVA_EXTRA_ARGS=-Xmx2g -Dfintechlabs.devmode=true
+      - BASE_URL=https://localhost:8443
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "curl -fsS -H 'X-Forwarded-Proto: https' -H 'X-Forwarded-Host: localhost' http://localhost:8080/api/runner/available || exit 1"
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  nginx:
+    image: nginx:1.27.3
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    ports:
+      - '8443:8443'
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx-certs:/etc/ssl
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ ! -f /etc/ssl/certs/nginx-selfsigned.crt ]; then
+          openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+            -keyout /etc/ssl/private/nginx-selfsigned.key \
+            -out /etc/ssl/certs/nginx-selfsigned.crt \
+            -subj "/CN=localhost"
+        fi
+        nginx -g 'daemon off;'
+
+volumes:
+  nginx-certs:
