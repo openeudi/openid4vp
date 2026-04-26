@@ -153,6 +153,13 @@ const req = await createSignedAuthorizationRequest({
 
 The caller hosts `req.requestObject` at `requestUri` (the library does not host HTTP). The library verifies that the signing key's public SPKI matches the leaf certificate's public key — an attempt to sign with a mismatched key fails with `SignedRequestBuildError: signing_key_cert_mismatch`.
 
+The emitted `client_metadata` carries both shapes for compatibility:
+
+- 1.0 Final plural — `encrypted_response_enc_values_supported: ["A128GCM", ...]`
+- ID3 singular — `authorization_encrypted_response_alg: "ECDH-ES"`, `authorization_encrypted_response_enc: "A128GCM"`
+
+Verifiers reading either shape (e.g. the OIDF conformance suite reads ID3 directly) work without bespoke configuration.
+
 ## Authorization responses (direct_post and direct_post.jwt)
 
 Wallets POST the Authorization Response to your `responseUri`. The library is stateless — you MUST compare the envelope's `state` against the value you issued before treating the response as trustworthy. The recommended pattern differs slightly between the unencrypted and encrypted modes.
@@ -219,11 +226,17 @@ Other algorithms throw `UnsupportedJweError`.
 Both `parsePresentation` and `verifyPresentation` accept:
 
 - `nonce` (required) — the nonce bound into the VP token at creation time.
-- `trustedCertificates` (required) — the set of trusted issuer certificates for crypto verification.
-- `audience?` — expected audience.
-- `allowedAlgorithms?` — restrict signature algorithms.
-- `skipTrustCheck?` — skip trust-list checks (dev/test only).
-- `expectedDocType?` — for mDOC verification.
+- `trustedCertificates` (required when `trustStore` is unset) — DER-encoded issuer leaf certificates for the 0.4.x byte-equality trust check. Deprecated since 0.5.0 — pass an empty array and supply `trustStore` for production deployments.
+- `trustStore?` — `TrustStore` instance for full RFC 5280 chain validation (e.g. `LotlTrustStore`, `StaticTrustStore`, or `CompositeTrustStore`). When set, takes precedence over `trustedCertificates`.
+- `revocationPolicy?` — `'skip'` (default) | `'prefer'` | `'require'`. Controls whether the chain validator consults OCSP / CRL.
+- `fetcher?` — HTTP transport for CRL/OCSP/LOTL fetches. Defaults to `globalThis.fetch`.
+- `cache?` — cache for CRL/OCSP/LOTL artefacts. Defaults to `new InMemoryCache()`.
+- `clockSkewTolerance?` — seconds of slack applied to certificate validity checks. Default 60.
+- `trustedIssuerJwks?` — opt-in alternate trust path for SD-JWT VCs whose issuer JWT lacks an `x5c` header. The library matches by `kid` (or iterates the array when no `kid` is present) and skips chain validation entirely. Intended for harness setups (e.g. OIDF conformance suite) where the wallet signs without `x5c` and the verifier knows the signing key out-of-band. **Not recommended for production verifiers** — `trustStore` is the secure path.
+- `audience?` — expected audience for key binding JWT verification.
+- `allowedAlgorithms?` — restrict signature algorithms. Defaults to `['ES256','ES384','ES512']`.
+- `skipTrustCheck?` — skip trust checks entirely (dev/test only).
+- `expectedDocType?` — for mDOC verification, lock the credential `docType` (or SD-JWT `vct`).
 
 ## Supported formats
 
@@ -313,28 +326,26 @@ try {
 
 This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDOC credentials.
 
-**What is implemented (v0.4.x):**
+**What is implemented:**
 
-- SD-JWT VC: full cryptographic verification (issuer JWT signature via x5c, disclosure hashes, key binding JWT signature + sd_hash, nonce check)
-- mDOC / ISO 18013-5 *mso_mdoc* format: CBOR decoding and claim extraction
-- mDOC / COSE_Sign1 cryptographic signature verification
-- mDOC MobileSecurityObject validity enforcement (strict ISO 18013-5)
-- mDOC IssuerSignedItem digest verification
-- `expectedDocType` ParseOptions to lock the credential type
-- Algorithm allowlist (ES256/384/512 — ECDSA only per EUDI policy)
-- Authorization request builder with DCQL query
-- DCQL query matching via [@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql)
-- HAIP query build/validate helpers
-- `verifyPresentation` — combined crypto + DCQL match in one call
-- Certificate trust check via byte-equality against a caller-supplied trusted set
+- **SD-JWT VC** — full cryptographic verification (issuer JWT signature via `x5c`, transitive disclosure-hash check, key binding JWT signature + `sd_hash`, nonce check). Optional `trustedIssuerJwks` alternate trust path for VCs without `x5c`.
+- **mDOC / ISO 18013-5** `mso_mdoc` format — CBOR decoding, claim extraction, COSE_Sign1 signature verification, MobileSecurityObject validity enforcement, IssuerSignedItem digest verification.
+- **DCQL** — authorization request builder with DCQL query, matching via [@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql), `verifyPresentation` for combined crypto + match.
+- **HAIP** — `buildHaipQuery` / `validateHaipQuery` helpers for the High Assurance Interoperability Profile.
+- **Signed authorization requests (JAR)** — `createSignedAuthorizationRequest` per RFC 9101 / OpenID4VP 1.0 §5.10 with `x509_san_dns` client-id binding. Emits both 1.0 Final and ID3 `client_metadata` shapes for verifier interop.
+- **Encrypted responses** — `decryptAuthorizationResponse` for `direct_post.jwt` (ECDH-ES + A128GCM/A256GCM), `verifyAuthorizationResponse` for the 1.0 §8.1 object-keyed `vp_token` envelope.
+- **X.509 chain validation** — RFC 5280 chain building including `nameConstraints`, `StaticTrustStore`, `CompositeTrustStore`.
+- **Revocation checking** — OCSP-first with CRL fallback (`revocationPolicy: 'skip' | 'prefer' | 'require'`).
+- **EU List of Trusted Lists** — `LotlTrustStore` resolves national trust lists via signed XML fetch + XAdES verification; populates `provenance` (LoA, qualified status, country, service name) on verified presentations.
+- **OIDF conformance** — automated against the OpenID Foundation conformance suite in CI (`oidf-pr.yml` happy-flow gate, `oidf-release.yml` full plan).
+- **Algorithm allowlist** — ES256/384/512 (ECDSA only per EUDI policy); configurable via `allowedAlgorithms`.
 
-**What is NOT yet implemented** (planned for follow-up releases — do not assume compliance in production until present):
+**What is NOT yet implemented** (planned for follow-up releases):
 
-- X.509 certificate chain building and validation beyond leaf-byte-equality
-- EU List of Trusted Lists (LOTL) / ETSI TL resolution
-- Certificate revocation (CRL, OCSP)
-- OpenID Foundation conformance test suite integration
-- SIOPv2 (Self-Issued OpenID Provider) identity flows
+- Multi-credential DCQL queries (multiple query ids) and multi-presentation arrays per query id — currently rejected with `MultipleCredentialsNotSupportedError`.
+- `client_id_scheme: x509_hash` (HAIP 1.0 final's mandated scheme) — only `x509_san_dns` is supported today.
+- Self-signed-leaf rejection per HAIP 1.0 final's strict constraint (current behaviour accepts self-signed leaves for the verifier's own identity).
+- SIOPv2 (Self-Issued OpenID Provider) identity flows.
 
 EUDI Architecture Reference Framework (ARF) alignment: tracks OpenID4VP 1.0 final. Full ARF 1.4+ profile compliance will be added before a stable 1.0.
 
@@ -348,9 +359,15 @@ Verifier-side conformance is automated against a self-hosted OpenID Foundation c
 - **[@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql)** -- DCQL query matching engine used internally by `verifyPresentation`.
 - **[eIDAS Pro](https://eidas-pro.eu)** -- Managed verification service with admin dashboard, webhook integrations, and plugin support for WooCommerce and Shopify.
 
-## Migration from 0.3.x
+## Migration
 
-See [CHANGELOG.md](./CHANGELOG.md) for the full 0.4.0 migration guide (breaking changes and new APIs).
+See [CHANGELOG.md](./CHANGELOG.md) for per-release changes. Key migration moments:
+
+- **0.4.0** — `presentationDefinition` (PEX) replaced by DCQL queries; `verifyPresentation` introduced.
+- **0.5.0** — `trustStore` option added for RFC 5280 chain validation; `trustedCertificates` deprecated.
+- **0.6.0** — DCQL surfaces specific `UnmatchedReason` values via `@openeudi/dcql@0.2.0` (BREAKING for callers reading `match.unmatched[].reason`).
+- **0.7.0** — `createSignedAuthorizationRequest`, `decryptAuthorizationResponse`, `verifyAuthorizationResponse` for HAIP / 1.0 §8.1 envelopes.
+- **0.8.0** — additive: ID3 `client_metadata` bridge, `trustedIssuerJwks` opt-in, transitive SD-JWT disclosure check.
 
 ## License
 
