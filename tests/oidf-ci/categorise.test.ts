@@ -78,6 +78,19 @@ describe("categorise", () => {
     expect(r.tally.info).toBe(1);
   });
 
+  it("INTERRUPTED test-runner markers tally separately and never fail on their own", () => {
+    // Test-runner emits an INTERRUPTED entry when a callAndStopOnFailure stops
+    // execution. The actual cause is a separate FAILURE entry; the marker itself
+    // doesn't block.
+    const log: SuiteLogEntry[] = [
+      { result: "INTERRUPTED", src: "oid4vp-id3-verifier-happy-flow", msg: "Test was interrupted" },
+    ];
+    const r = categorise(log, emptyAllowlist);
+    expect(r.pass).toBe(true);
+    expect(r.tally.interrupted).toBe(1);
+    expect(r.blocking).toEqual([]);
+  });
+
   it("allow-list entry referencing a check not in log → not an error", () => {
     const allowlist: Allowlist = {
       version: 1,
