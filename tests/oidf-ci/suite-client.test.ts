@@ -72,4 +72,14 @@ describe("suite-client", () => {
       status: 502,
     });
   });
+
+  it("throws SuiteApiError on non-2xx for POST methods (createPlan)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("plan rejected", { status: 400 }));
+    const client = createSuiteClient({ baseUrl: "http://suite:8443" });
+
+    await expect(client.createPlan("plan-x", {}, {})).rejects.toMatchObject({
+      name: "SuiteApiError",
+      status: 400,
+    });
+  });
 });
