@@ -38,7 +38,7 @@ export interface ChainBuilderOptions {
   now?: () => Date;
 }
 
-const DEFAULT_ALGORITHMS = ["ES256", "ES384", "EdDSA", "RS256", "PS256"];
+const DEFAULT_ALGORITHMS = ["ES256", "ES384", "ES512", "EdDSA", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "RSASSA-PKCS1-v1_5-SHA-384", "RSASSA-PKCS1-v1_5-SHA-512"];
 
 /**
  * Pragmatic RFC 5280 chain validator. Private — consumed only by
@@ -289,8 +289,11 @@ function mapX509AlgoToJwaName(cert: X509Certificate): string {
   if (name === "ECDSA" && hash === "SHA-512") return "ES512";
   if (name === "Ed25519" || name === "EdDSA") return "EdDSA";
   if (name === "RSASSA-PKCS1-v1_5" && hash === "SHA-256") return "RS256";
+  if (name === "RSASSA-PKCS1-v1_5" && hash === "SHA-384") return "RS384";
+  if (name === "RSASSA-PKCS1-v1_5" && hash === "SHA-512") return "RS512";
   if (name === "RSA-PSS" && hash === "SHA-256") return "PS256";
   if (name === "RSA-PSS" && hash === "SHA-384") return "PS384";
+  if (name === "RSA-PSS" && hash === "SHA-512") return "PS512";
   return `${name}-${hash}`;
 }
 
