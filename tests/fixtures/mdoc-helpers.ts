@@ -172,7 +172,7 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
     const unprotectedHeader = new Map<number, unknown>([[33, issuerKey.certDerBytes]]);
 
     // Sig_structure1 = ["Signature1", protected_bytes, external_aad (empty), payload]
-    const sigStructure1 = ['Signature1', protectedBytes, new Uint8Array(0), msoTag24];
+    const sigStructure1 = ['Signature1', protectedBytes, Buffer.alloc(0), msoTag24];
     const sigInput = cbor.encode(sigStructure1);
 
     const rawSig = await crypto.subtle.sign({ name: 'ECDSA', hash: hashAlg }, issuerKey.privateKey, sigInput);

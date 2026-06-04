@@ -130,7 +130,7 @@ export async function verifyCoseSign1(
     // Sig_structure1 = ["Signature1", protected_header_bytes, external_aad (empty bstr), payload]
     // coseSign1.payload is the raw bstr from the COSE array — it already contains the tag-24
     // encoded MSO bytes as stored by the signer, so we use it directly without re-wrapping.
-    const sigStructure = ['Signature1', coseSign1.protectedHeaderBytes, new Uint8Array(0), coseSign1.payload];
+    const sigStructure = ['Signature1', coseSign1.protectedHeaderBytes, Buffer.alloc(0), coseSign1.payload];
     // cbor-x's encode() returns a Buffer<ArrayBufferLike>; copy into a Uint8Array<ArrayBuffer>
     // so the strict BufferSource shape (post-@types/node) is satisfied.
     const sigInput = new Uint8Array(decoder.encode(sigStructure)) as Uint8Array<ArrayBuffer>;
