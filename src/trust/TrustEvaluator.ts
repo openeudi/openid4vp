@@ -10,7 +10,7 @@ import { RevocationChecker } from './RevocationChecker.js';
 import type { TrustAnchor } from './TrustAnchor.js';
 import type { TrustStore } from './TrustStore.js';
 import type { NationalTlSnapshot } from './lotl-types.js';
-import { getSkiHex } from './x509-utils.js';
+import { certificatesEqual, getSkiHex } from './x509-utils.js';
 
 export type RevocationPolicy = 'skip' | 'prefer' | 'require';
 
@@ -98,10 +98,19 @@ export class TrustEvaluator {
             context.intermediates ?? []
         );
         const terminusCert = chain[chain.length - 1];
-        const anchor =
-            anchors.find(
-                (a) => a.certificate.serialNumber === terminusCert.serialNumber
-            ) ?? anchors[0];
+        // Select the anchor the chain actually closed at by DER byte-identity —
+        // NOT by serialNumber (collidable across CAs) and NOT by a silent
+        // fallback to anchors[0], which would attribute a chain to an anchor it
+        // did not terminate at. `ChainBuilder` guarantees the terminus is one of
+        // `anchorCerts`, so a miss here is a broken invariant, not a valid input.
+        const anchor = anchors.find((a) =>
+            certificatesEqual(a.certificate, terminusCert)
+        );
+        if (!anchor) {
+            throw new TrustAnchorNotFoundError(
+                `chain terminus ${terminusCert.subject} does not match any trust anchor certificate`
+            );
+        }
 
         // Revocation check — runs against the leaf (chain[0]) with the
         // leaf's direct issuer (chain[1]) as the signing CA.

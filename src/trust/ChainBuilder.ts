@@ -17,6 +17,7 @@ import {
   X509Certificates,
 } from "@peculiar/x509";
 import { CertificateChainError } from "../errors.js";
+import { certificatesEqual } from "./x509-utils.js";
 
 const NAME_CONSTRAINTS_OID = "2.5.29.30";
 
@@ -296,21 +297,6 @@ export class ChainBuilder {
       );
     }
   }
-}
-
-/**
- * Byte-identity check on two certificates' DER encodings. Used to confirm a
- * chain actually terminates at the trust anchor rather than at a certificate
- * that merely reuses the anchor's Subject DN string.
- */
-function certificatesEqual(a: X509Certificate, b: X509Certificate): boolean {
-  const ab = new Uint8Array(a.rawData);
-  const bb = new Uint8Array(b.rawData);
-  if (ab.length !== bb.length) return false;
-  for (let i = 0; i < ab.length; i++) {
-    if (ab[i] !== bb[i]) return false;
-  }
-  return true;
 }
 
 function mapX509AlgoToJwaName(cert: X509Certificate): string {
