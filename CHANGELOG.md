@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security (library)
 
-- Fixed a critical trust-chain validation flaw (GHSA-TBD): X.509 chain building
+- Fixed a critical trust-chain validation flaw ([GHSA-4c2f-96cf-f5fc](https://github.com/openeudi/openid4vp/security/advisories/GHSA-4c2f-96cf-f5fc)): X.509 chain building
   terminated on Subject Distinguished Name **string equality** rather than on
   cryptographic closure to a trust anchor. A self-signed certificate that reused
   a trusted anchor's Subject DN string was accepted as the chain terminus with
