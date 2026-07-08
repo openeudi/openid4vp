@@ -128,6 +128,18 @@ export class ChainBuilder {
       current = issuer;
       nonLeafDepth += 1;
     }
+    // The loop terminated because `current.subject === anchor.subject`. That is
+    // a valid chain closure ONLY if `current` IS the anchor (byte-identical) —
+    // a certificate that merely reuses the anchor's Subject DN string was never
+    // signed by the anchor's key and must not be trusted. Subject-DN equality is
+    // not cryptographic closure. (The signature-verified closure path is the
+    // `!issuer` branch above, which calls `verifySignature(current, anchor)`.)
+    if (!certificatesEqual(current, anchor)) {
+      throw new CertificateChainError(
+        `certificate ${current.subject} shares the trust anchor's Subject DN but is not the anchor (no signature closure)`,
+        { reason: "signature" }
+      );
+    }
     this.checkNameConstraints(leaf, chain.slice(1));
     return chain;
   }
@@ -284,6 +296,21 @@ export class ChainBuilder {
       );
     }
   }
+}
+
+/**
+ * Byte-identity check on two certificates' DER encodings. Used to confirm a
+ * chain actually terminates at the trust anchor rather than at a certificate
+ * that merely reuses the anchor's Subject DN string.
+ */
+function certificatesEqual(a: X509Certificate, b: X509Certificate): boolean {
+  const ab = new Uint8Array(a.rawData);
+  const bb = new Uint8Array(b.rawData);
+  if (ab.length !== bb.length) return false;
+  for (let i = 0; i < ab.length; i++) {
+    if (ab[i] !== bb[i]) return false;
+  }
+  return true;
 }
 
 function mapX509AlgoToJwaName(cert: X509Certificate): string {

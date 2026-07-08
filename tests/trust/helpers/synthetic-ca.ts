@@ -231,6 +231,44 @@ export async function createCa(opts: CreateCaOpts = {}): Promise<GeneratedCa> {
     return { certificate: cert, keys };
 }
 
+export interface CreateSelfSignedOpts {
+    name: string;
+    keyUsage?: x509.KeyUsageFlags;
+    isCa?: boolean;
+    notBefore?: Date;
+    notAfter?: Date;
+}
+
+/**
+ * Mint a self-signed certificate with a caller-chosen Subject DN and key
+ * usage. Used to model an attacker who reuses a trusted anchor's Subject DN
+ * string on a certificate signed with their own key.
+ */
+export async function createSelfSigned(
+    opts: CreateSelfSignedOpts
+): Promise<GeneratedCa> {
+    const keys = await generateEcKeys();
+    const now = new Date();
+    const cert = await x509.X509CertificateGenerator.createSelfSigned({
+        serialNumber: randomSerial(),
+        name: opts.name,
+        notBefore: opts.notBefore ?? new Date(now.getTime() - 1000),
+        notAfter:
+            opts.notAfter ?? new Date(now.getTime() + 365 * 24 * 3600 * 1000),
+        signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+        keys,
+        extensions: [
+            new x509.BasicConstraintsExtension(opts.isCa ?? false, undefined, true),
+            new x509.KeyUsagesExtension(
+                opts.keyUsage ?? x509.KeyUsageFlags.digitalSignature,
+                true
+            ),
+            await x509.SubjectKeyIdentifierExtension.create(keys.publicKey),
+        ],
+    });
+    return { certificate: cert, keys };
+}
+
 export async function createIntermediate(
     parent: GeneratedCa,
     opts: CreateIntermediateOpts = {}
