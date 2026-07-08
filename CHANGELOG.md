@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-07-08
+
+### Security (library)
+
+- Fixed a critical trust-chain validation flaw (GHSA-TBD): X.509 chain building
+  terminated on Subject Distinguished Name **string equality** rather than on
+  cryptographic closure to a trust anchor. A self-signed certificate that reused
+  a trusted anchor's Subject DN string was accepted as the chain terminus with
+  no signature verification, so a credential signed with the attacker's key was
+  trusted as issued under a trusted authority. Chain closure now requires the
+  terminating certificate to be byte-identical to the trust anchor (the
+  signature-verified closure path is unchanged). As defense-in-depth,
+  `TrustEvaluator` now selects the terminating anchor by DER byte-identity and
+  throws instead of silently falling back to the first candidate anchor.
+  Reported responsibly by @devdotbo. All users should upgrade.
+
 ## [0.8.0] — 2026-04-26
 
 ### Added (library)
