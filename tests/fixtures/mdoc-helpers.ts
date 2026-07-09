@@ -94,7 +94,7 @@ addExtension({
     },
 });
 
-const cbor = new CborEncoder({ mapsAsObjects: false, useRecords: false });
+const cbor = new CborEncoder({ mapsAsObjects: false, useRecords: false, tagUint8Array: false });
 
 // ----------------------------------------------------------------
 // Main builder

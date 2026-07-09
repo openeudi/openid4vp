@@ -100,6 +100,21 @@ describe('decodeCoseSign1 — structural errors', () => {
     });
 });
 
+describe('COSE Sig_structure encoding (RFC 9052 interop)', () => {
+    it('encodes an empty external_aad as a plain CBOR byte string (0x40), not a typed-array tag', () => {
+        // The COSE Sig_structure's empty external_aad MUST be a plain bstr
+        // (major type 2, length 0 = 0x40) per RFC 9052 §4.4. cbor-x's default
+        // encodes a Uint8Array with typed-array tag 64 (0xd8 0x40 …), which
+        // makes our recomputed Sig_input diverge from what conformant issuers
+        // sign — the interop bug this guards. `tagUint8Array: false` fixes it.
+        const standard = new CborEncoder({ mapsAsObjects: false, useRecords: false, tagUint8Array: false });
+        const tagged = new CborEncoder({ mapsAsObjects: false, useRecords: false });
+        expect(Array.from(standard.encode(new Uint8Array(0)))).toEqual([0x40]);
+        // Guard the premise that the default (tagged) encoding is non-standard:
+        expect(Array.from(tagged.encode(new Uint8Array(0)))).not.toEqual([0x40]);
+    });
+});
+
 describe('verifyCoseSign1', () => {
     it('verifies a signature produced by our signer', async () => {
         const key = await generateTestKeyMaterial();

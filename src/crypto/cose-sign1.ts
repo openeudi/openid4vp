@@ -2,8 +2,15 @@ import { Encoder as CborEncoder, Tag } from 'cbor-x';
 
 import { MalformedCredentialError } from '../errors.js';
 
-// Decoder that preserves CBOR maps as JS Maps (cbor-x default converts them to objects).
-const decoder = new CborEncoder({ mapsAsObjects: false, useRecords: false });
+// Decoder that preserves CBOR maps as JS Maps (cbor-x default converts them to
+// objects). `tagUint8Array: false` is REQUIRED for COSE correctness: cbor-x
+// otherwise encodes a plain `Uint8Array` with the typed-array tag 64 (0xd8 0x40)
+// instead of a plain CBOR byte string (major type 2). The COSE `Sig_structure`'s
+// empty `external_aad` must be a plain bstr per RFC 9052 §4.4 — with the default
+// tagging our recomputed Sig_input did not match what conformant issuers sign,
+// so real-world mdocs failed verification. Only affects encoding; decoding of
+// already-plain byte strings is unchanged.
+const decoder = new CborEncoder({ mapsAsObjects: false, useRecords: false, tagUint8Array: false });
 
 /**
  * COSE label for the `alg` header parameter.
