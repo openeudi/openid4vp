@@ -16,10 +16,13 @@ describe("profiles", () => {
     expect((p.config as { client: { client_id: string } }).client.client_id).toBe("host.docker.internal");
   });
 
-  it("full-plan profile uses the full-plan moduleName", async () => {
+  it("release profile targets a real runnable module, not the plan name", async () => {
     const fx = await generateFixtures({ hostname: "host.docker.internal" });
     const p = buildFullPlanProfile(fx);
-    expect(p.moduleName).toBe("oid4vp-id3-verifier-test-plan");
+    // Must be an actual test module the suite can run — the previous value was
+    // the plan name, which 404'd on POST /api/runner (see full-plan.ts).
+    expect(p.moduleName).toBe("oid4vp-id3-verifier-happy-flow");
+    expect(p.moduleName).not.toBe(p.planName);
   });
 
   it("both profiles inject issuer signing JWK private half + verifier-trusted cert match", async () => {
