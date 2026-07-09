@@ -48,7 +48,14 @@ describe('RevocationChecker — OCSP first, CRL fallback', () => {
             throw new Error('CRL should not be called when OCSP succeeds');
         };
         const checker = new RevocationChecker({ policy: 'prefer', fetcher });
-        const result = await checker.check(leaf.certificate, root.certificate);
+        // Pin `now` inside the OCSP response's validity window — otherwise the
+        // default real-clock `now` makes the fixed 2026-04-23 response stale
+        // (>7d) and the check silently falls through to source='none'.
+        const result = await checker.check(
+            leaf.certificate,
+            root.certificate,
+            new Date('2026-04-24T12:00:00Z')
+        );
         expect(result.source).toBe('ocsp');
         expect(result.status).toBe('good');
     });
@@ -69,7 +76,14 @@ describe('RevocationChecker — OCSP first, CRL fallback', () => {
             return new Response(crlDer, { status: 200 });
         };
         const checker = new RevocationChecker({ policy: 'prefer', fetcher });
-        const result = await checker.check(leaf.certificate, root.certificate);
+        // Pin `now` inside the CRL's validity window (thisUpdate..nextUpdate);
+        // the default real clock is past the fixed 2026-05-01 nextUpdate, which
+        // marks the CRL stale and drops the verdict to source='none'.
+        const result = await checker.check(
+            leaf.certificate,
+            root.certificate,
+            new Date('2026-04-15T12:00:00Z')
+        );
         expect(result.source).toBe('crl');
         expect(result.status).toBe('good');
     });

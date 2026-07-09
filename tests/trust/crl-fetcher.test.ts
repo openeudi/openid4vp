@@ -21,7 +21,13 @@ describe('CrlFetcher — fetch + parse', () => {
         const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
         expect(parsed.thisUpdate.toISOString()).toBe('2026-04-01T00:00:00.000Z');
         expect(parsed.nextUpdate.toISOString()).toBe('2026-05-01T00:00:00.000Z');
-        expect(parsed.revokedSerialsHex).toContain(leaf.certificate.serialNumber.toUpperCase());
+        // `revokedSerialsHex` is stored in canonical BigInt form (no ASN.1 sign
+        // byte / leading-zero nibble), so compare against the same canonical
+        // form rather than @peculiar's byte-aligned `.serialNumber` — otherwise
+        // the assertion flakes whenever the random serial has a leading zero.
+        const canonical = (h: string) =>
+            BigInt('0x' + h.replace(/[^0-9a-fA-F]/g, '')).toString(16).toUpperCase();
+        expect(parsed.revokedSerialsHex).toContain(canonical(leaf.certificate.serialNumber));
     });
 
     it('throws on 404 with a useful cause', async () => {
