@@ -5,6 +5,7 @@ import {
   createCa,
   createIntermediate,
   createLeaf,
+  createSelfSigned,
   type RsaKeySpec,
 } from "./helpers/synthetic-ca.js";
 
@@ -71,6 +72,42 @@ describe("ChainBuilder — RSA signature algorithms", () => {
     await expect(
       builder.build(leaf.certificate, [root.certificate])
     ).rejects.toMatchObject({ code: "chain_invalid", reason: "algorithm_disallowed" });
+  });
+});
+
+describe("ChainBuilder — trust-anchor impersonation (security)", () => {
+  it("rejects a self-signed leaf whose Subject DN equals a trusted anchor's DN", async () => {
+    // A trusted anchor with a distinctive DN.
+    const anchorDn = "CN=EU Trusted Root CA,O=Member State,C=EU";
+    const realRoot = await createCa({ name: anchorDn });
+    // Attacker mints a self-signed cert reusing the anchor's Subject DN string
+    // but signed with the attacker's own key. Its signature was never produced
+    // by the trusted anchor.
+    const impostor = await createSelfSigned({ name: anchorDn });
+    const builder = new ChainBuilder();
+    // MUST NOT be accepted: DN-string equality is not cryptographic closure.
+    await expect(
+      builder.build(impostor.certificate, [realRoot.certificate])
+    ).rejects.toBeInstanceOf(CertificateChainError);
+  });
+
+  it("rejects an impostor intermediate that shares the anchor's DN", async () => {
+    const anchorDn = "CN=EU Trusted Root CA,O=Member State,C=EU";
+    const realRoot = await createCa({ name: anchorDn });
+    // Attacker builds a self-signed CA reusing the anchor's DN, then signs a
+    // leaf under it and presents both as the chain.
+    const impostorRoot = await createSelfSigned({
+      name: anchorDn,
+      isCa: true,
+      keyUsage: (await import("@peculiar/x509")).KeyUsageFlags.keyCertSign,
+    });
+    const leaf = await createLeaf(impostorRoot);
+    const builder = new ChainBuilder();
+    await expect(
+      builder.build(leaf.certificate, [realRoot.certificate], [
+        impostorRoot.certificate,
+      ])
+    ).rejects.toBeInstanceOf(CertificateChainError);
   });
 });
 

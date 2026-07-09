@@ -11,6 +11,7 @@ import {
     createCa,
     createIntermediate,
     createLeaf,
+    createSelfSigned,
     signOcspResponse,
 } from './helpers/synthetic-ca.js';
 import type { Fetcher } from '../../src/trust/Fetcher.js';
@@ -65,6 +66,33 @@ describe('TrustEvaluator', () => {
         await expect(
             evaluator.evaluate(leaf.certificate)
         ).rejects.toBeInstanceOf(CertificateChainError);
+    });
+
+    it('rejects a self-signed leaf that reuses a trusted anchor\'s Subject DN', async () => {
+        // End-to-end guard for the DN-string trust bypass: an attacker mints a
+        // self-signed certificate copying a trusted anchor's Subject DN string.
+        // evaluate() must reject it instead of returning a trusted verdict
+        // attributed to the real anchor.
+        const anchorDn = 'CN=EU Trusted Root CA,O=Member State,C=EU';
+        const realRoot = await createCa({ name: anchorDn });
+        const impostor = await createSelfSigned({ name: anchorDn });
+        const store = new StaticTrustStore([realRoot.certificate]);
+        const evaluator = new TrustEvaluator({ trustStore: store });
+        await expect(
+            evaluator.evaluate(impostor.certificate)
+        ).rejects.toBeInstanceOf(CertificateChainError);
+    });
+
+    it('reports the anchor the chain actually terminates at (byte-identity)', async () => {
+        const root = await createCa({ name: 'CN=Root' });
+        const leaf = await createLeaf(root);
+        const store = new StaticTrustStore([root.certificate]);
+        const evaluator = new TrustEvaluator({ trustStore: store });
+        const result = await evaluator.evaluate(leaf.certificate);
+        const terminus = result.chain[result.chain.length - 1];
+        expect(
+            new Uint8Array(result.anchor.certificate.rawData)
+        ).toEqual(new Uint8Array(terminus.rawData));
     });
 
     it('accepts revocationPolicy=prefer (A.2 unlocked)', async () => {

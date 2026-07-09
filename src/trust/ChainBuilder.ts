@@ -17,6 +17,7 @@ import {
   X509Certificates,
 } from "@peculiar/x509";
 import { CertificateChainError } from "../errors.js";
+import { certificatesEqual } from "./x509-utils.js";
 
 const NAME_CONSTRAINTS_OID = "2.5.29.30";
 
@@ -127,6 +128,18 @@ export class ChainBuilder {
       chain.push(issuer);
       current = issuer;
       nonLeafDepth += 1;
+    }
+    // The loop terminated because `current.subject === anchor.subject`. That is
+    // a valid chain closure ONLY if `current` IS the anchor (byte-identical) —
+    // a certificate that merely reuses the anchor's Subject DN string was never
+    // signed by the anchor's key and must not be trusted. Subject-DN equality is
+    // not cryptographic closure. (The signature-verified closure path is the
+    // `!issuer` branch above, which calls `verifySignature(current, anchor)`.)
+    if (!certificatesEqual(current, anchor)) {
+      throw new CertificateChainError(
+        `certificate ${current.subject} shares the trust anchor's Subject DN but is not the anchor (no signature closure)`,
+        { reason: "signature" }
+      );
     }
     this.checkNameConstraints(leaf, chain.slice(1));
     return chain;
