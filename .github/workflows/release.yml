@@ -17,16 +17,14 @@ jobs:
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          # Node 24: the "Upgrade npm for trusted publishing" step installs
-          # npm@latest, which now requires Node ^22.22.2 || ^24.15.0 || >=26.
-          # Node 20 fails with EBADENGINE (npm@12). Matches the node24 runtime
-          # used elsewhere in CI.
+          # Node 24 bundles a provenance-capable npm (11.x). We deliberately do
+          # NOT `npm install -g npm@latest`: that pulls npm@12, whose global
+          # install is missing the `sigstore` module and breaks
+          # `npm publish --provenance` with MODULE_NOT_FOUND. The bundled npm is
+          # sufficient for trusted publishing.
           node-version: "24"
           cache: "npm"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@latest
 
       - run: npm ci
       - run: npm run build
