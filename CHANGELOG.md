@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   signature-verified closure path is unchanged). As defense-in-depth,
   `TrustEvaluator` now selects the terminating anchor by DER byte-identity and
   throws instead of silently falling back to the first candidate anchor.
-  Reported responsibly by @devdotbo. All users should upgrade.
+  Reported by Reza Shokri — Quellkern e.U. (https://augenmass.tech), GitHub
+  @devdotbo. All users should upgrade.
 
 ## [0.8.0] — 2026-04-26
 
