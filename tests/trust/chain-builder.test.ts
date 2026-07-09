@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ChainBuilder } from "../../src/trust/ChainBuilder.js";
 import { CertificateChainError } from "../../src/errors.js";
-import { createCa, createIntermediate, createLeaf } from "./helpers/synthetic-ca.js";
+import {
+  createCa,
+  createIntermediate,
+  createLeaf,
+  type RsaKeySpec,
+} from "./helpers/synthetic-ca.js";
 
 describe("ChainBuilder — signature verification", () => {
   it("builds a valid leaf → root chain", async () => {
@@ -36,6 +41,36 @@ describe("ChainBuilder — signature verification", () => {
       reason: "aki_ski_mismatch",
     });
     await expect(builder.build(leaf.certificate, [realRoot.certificate])).rejects.toBeInstanceOf(CertificateChainError);
+  });
+});
+
+describe("ChainBuilder — RSA signature algorithms", () => {
+  const cases: Array<{ label: string; keySpec: RsaKeySpec }> = [
+    { label: "RS384", keySpec: { kind: "rsa-pkcs1", hash: "SHA-384" } },
+    { label: "RS512", keySpec: { kind: "rsa-pkcs1", hash: "SHA-512" } },
+    { label: "PS512", keySpec: { kind: "rsa-pss", hash: "SHA-512" } },
+  ];
+  it.each(cases)(
+    "validates a leaf → root chain whose links are signed with $label",
+    async ({ keySpec }) => {
+      // Many EU national-PKI CAs sign with RSA; the chain link algorithm must
+      // be in the allowlist and mapped to its JWA name.
+      const root = await createCa({ keySpec });
+      const leaf = await createLeaf(root);
+      const builder = new ChainBuilder();
+      await expect(
+        builder.build(leaf.certificate, [root.certificate])
+      ).resolves.toHaveLength(2);
+    }
+  );
+
+  it("still rejects an RSA algorithm pruned from allowedAlgorithms", async () => {
+    const root = await createCa({ keySpec: { kind: "rsa-pkcs1", hash: "SHA-384" } });
+    const leaf = await createLeaf(root);
+    const builder = new ChainBuilder({ allowedAlgorithms: ["ES256"] });
+    await expect(
+      builder.build(leaf.certificate, [root.certificate])
+    ).rejects.toMatchObject({ code: "chain_invalid", reason: "algorithm_disallowed" });
   });
 });
 
