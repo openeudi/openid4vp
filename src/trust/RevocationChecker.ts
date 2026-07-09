@@ -58,8 +58,13 @@ export class RevocationChecker {
         if (hints.ocspUrl) {
             try {
                 return await this.ocsp.checkCached(subjectCert, issuerCert, hints.ocspUrl, now);
-            } catch {
-                // fall through to CRL
+            } catch (err) {
+                // Fall through to CRL — but surface why, so a genuinely broken
+                // OCSP path (bad signature, stale response, parse failure) is
+                // diagnosable instead of silently downgrading to source='none'.
+                console.warn(
+                    `[openid4vp] OCSP check failed for ${subjectCert.subject} via ${hints.ocspUrl}, falling back to CRL: ${(err as Error).message}`
+                );
             }
         }
 
@@ -89,6 +94,9 @@ export class RevocationChecker {
                 return { status: 'good', source: 'crl', checkedAt: now };
             } catch (err) {
                 if (err instanceof RevocationCheckFailedError) throw err;
+                console.warn(
+                    `[openid4vp] CRL check failed for ${subjectCert.subject} via ${url}: ${(err as Error).message}`
+                );
                 continue;
             }
         }

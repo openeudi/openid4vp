@@ -95,8 +95,11 @@ describe('TrustEvaluator — revocation', () => {
         );
         const ocspDer = await signOcspResponse(root, reqDer, {
             status: 'good',
-            thisUpdate: new Date('2026-04-23'),
-            nextUpdate: new Date('2026-04-30'),
+            // Dynamic window relative to the real clock — `evaluate()` uses the
+            // real `now` for OCSP staleness, so fixed past dates would go stale
+            // (>7d) and the response would be silently dropped to source='none'.
+            thisUpdate: new Date(Date.now() - 60_000),
+            nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000),
         });
         const fetcher: Fetcher = async () =>
             new Response(ocspDer, { status: 200 });
@@ -127,8 +130,11 @@ describe('TrustEvaluator — revocation', () => {
         const ocspDer = await signOcspResponse(root, reqDer, {
             status: 'revoked',
             revokedAt: new Date('2026-01-01T00:00:00Z'),
-            thisUpdate: new Date('2026-04-23'),
-            nextUpdate: new Date('2026-04-30'),
+            // Dynamic window relative to the real clock — `evaluate()` uses the
+            // real `now` for OCSP staleness, so fixed past dates would go stale
+            // (>7d) and the response would be silently dropped to source='none'.
+            thisUpdate: new Date(Date.now() - 60_000),
+            nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000),
         });
         const fetcher: Fetcher = async () =>
             new Response(ocspDer, { status: 200 });
