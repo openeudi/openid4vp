@@ -56,6 +56,8 @@ export interface CreateCaOpts {
     notBefore?: Date;
     notAfter?: Date;
     pathLenConstraint?: number;
+    /** Use an RSA key (default: ECDSA P-256). Drives the cert's signatureAlgorithm. */
+    keySpec?: RsaKeySpec;
 }
 
 export interface CreateIntermediateOpts extends CreateCaOpts {
@@ -90,6 +92,53 @@ async function generateEcKeys(): Promise<CryptoKeyPair> {
         true,
         ['sign', 'verify']
     )) as CryptoKeyPair;
+}
+
+/** RSA signature scheme + hash for testing non-ECDSA chain links. */
+export type RsaKeySpec = {
+    kind: 'rsa-pkcs1' | 'rsa-pss';
+    hash: 'SHA-256' | 'SHA-384' | 'SHA-512';
+};
+
+async function generateRsaKeys(spec: RsaKeySpec): Promise<CryptoKeyPair> {
+    const name = spec.kind === 'rsa-pss' ? 'RSA-PSS' : 'RSASSA-PKCS1-v1_5';
+    return (await provider.subtle.generateKey(
+        {
+            name,
+            modulusLength: 2048,
+            publicExponent: new Uint8Array([1, 0, 1]),
+            hash: spec.hash,
+        },
+        true,
+        ['sign', 'verify']
+    )) as CryptoKeyPair;
+}
+
+async function generateKeysFor(spec?: RsaKeySpec): Promise<CryptoKeyPair> {
+    return spec ? generateRsaKeys(spec) : generateEcKeys();
+}
+
+/**
+ * Derive the WebCrypto sign params for signing a child cert with `issuerKey`.
+ * The child cert's signatureAlgorithm — which `ChainBuilder` maps to a JWA name
+ * — follows the issuer key's algorithm + hash.
+ */
+function signingAlgorithmFor(issuerKey: CryptoKey): {
+    name: string;
+    hash?: string;
+    saltLength?: number;
+} {
+    const alg = issuerKey.algorithm as { name: string; hash?: { name: string } };
+    if (alg.name === 'ECDSA') return { name: 'ECDSA', hash: 'SHA-256' };
+    if (alg.name === 'RSASSA-PKCS1-v1_5') {
+        return { name: 'RSASSA-PKCS1-v1_5', hash: alg.hash?.name ?? 'SHA-256' };
+    }
+    if (alg.name === 'RSA-PSS') {
+        const hash = alg.hash?.name ?? 'SHA-256';
+        const saltLength = hash === 'SHA-512' ? 64 : hash === 'SHA-384' ? 48 : 32;
+        return { name: 'RSA-PSS', hash, saltLength };
+    }
+    throw new Error(`unsupported issuer key algorithm: ${alg.name}`);
 }
 
 function toAsnGeneralName(subtree: SyntheticSubtree): AsnGeneralName {
@@ -160,7 +209,7 @@ function buildSanExtension(
 }
 
 export async function createCa(opts: CreateCaOpts = {}): Promise<GeneratedCa> {
-    const keys = await generateEcKeys();
+    const keys = await generateKeysFor(opts.keySpec);
     const now = new Date();
     const cert = await x509.X509CertificateGenerator.createSelfSigned({
         serialNumber: randomSerial(),
@@ -168,7 +217,7 @@ export async function createCa(opts: CreateCaOpts = {}): Promise<GeneratedCa> {
         notBefore: opts.notBefore ?? new Date(now.getTime() - 1000),
         notAfter:
             opts.notAfter ?? new Date(now.getTime() + 365 * 24 * 3600 * 1000),
-        signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+        signingAlgorithm: signingAlgorithmFor(keys.privateKey),
         keys,
         extensions: [
             new x509.BasicConstraintsExtension(true, opts.pathLenConstraint, true),
@@ -217,7 +266,7 @@ export async function createIntermediate(
             opts.notAfter ?? new Date(now.getTime() + 180 * 24 * 3600 * 1000),
         publicKey: keys.publicKey,
         signingKey: parent.keys.privateKey,
-        signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+        signingAlgorithm: signingAlgorithmFor(parent.keys.privateKey),
         extensions,
     });
     return { certificate: cert, keys };
@@ -290,7 +339,7 @@ export async function createLeaf(
             opts.notAfter ?? new Date(now.getTime() + 90 * 24 * 3600 * 1000),
         publicKey: keys.publicKey,
         signingKey: issuer.keys.privateKey,
-        signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+        signingAlgorithm: signingAlgorithmFor(issuer.keys.privateKey),
         extensions,
     });
     return { certificate: cert, keys };
