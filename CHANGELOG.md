@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security (library)
+
+- `verifyAuthorizationResponse`'s encrypted-response path now fails loudly with a
+  new `MissingVerifierEncryptionKeyError` when `sessionTranscriptProfile` is
+  `'openid4vp-1.0'` and no `verifierEncryptionJwk` is supplied, instead of
+  silently building a null-thumbprint `OpenID4VPHandover` SessionTranscript that
+  would only surface as an opaque device-authentication failure later.
+- `buildOpenID4VPHandoverSessionTranscript`'s internal JWK thumbprint
+  computation now throws if the EC JWK is missing `crv`, `x`, or `y`, instead of
+  silently interpolating `"undefined"` into the canonical JSON and producing a
+  well-formed but incorrect thumbprint.
+
 ## [0.9.0] — 2026-07-13
 
 ### Security (library)

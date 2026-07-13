@@ -73,4 +73,42 @@ describe('buildOpenID4VPHandoverSessionTranscript', () => {
         expect(Buffer.compare(Buffer.from(a), Buffer.from(diffNonce))).not.toBe(0);
         expect(Buffer.compare(Buffer.from(a), Buffer.from(noJwk))).not.toBe(0);
     });
+
+    // Regression guard: the self-consistency tests above only ever exercise ONE
+    // concrete JWK (or none at all), so a canonicalization bug that ignores the
+    // JWK's actual key bytes (e.g. hashing a constant placeholder instead of the
+    // real x/y) would pass every test above yet silently break the binding this
+    // transcript exists to provide. Two genuinely different P-256 public keys
+    // MUST produce different thumbprints/output.
+    it('produces different output for two different verifierEncryptionJwk key bytes (thumbprint truly key-dependent)', async () => {
+        const kp1 = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+        const kp2 = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+        const jwk1 = (await crypto.subtle.exportKey('jwk', kp1.publicKey)) as JsonWebKey;
+        const jwk2 = (await crypto.subtle.exportKey('jwk', kp2.publicKey)) as JsonWebKey;
+        // Sanity: the two generated keys are actually distinct, otherwise this
+        // test would pass vacuously.
+        expect(jwk1.x).not.toBe(jwk2.x);
+
+        const base = { clientId: 'c', nonce: 'n', responseUri: 'r' };
+        const a = await buildOpenID4VPHandoverSessionTranscript({ ...base, verifierEncryptionJwk: jwk1 });
+        const b = await buildOpenID4VPHandoverSessionTranscript({ ...base, verifierEncryptionJwk: jwk2 });
+        expect(Buffer.compare(Buffer.from(a), Buffer.from(b))).not.toBe(0);
+    });
+
+    it('throws when verifierEncryptionJwk is missing a required EC member (x, y, or crv)', async () => {
+        const base = { clientId: 'c', nonce: 'n', responseUri: 'r' };
+        const missingX = { kty: 'EC', crv: P256_JWK.crv, y: P256_JWK.y };
+        const missingY = { kty: 'EC', crv: P256_JWK.crv, x: P256_JWK.x };
+        const missingCrv = { kty: 'EC', x: P256_JWK.x, y: P256_JWK.y };
+
+        await expect(
+            buildOpenID4VPHandoverSessionTranscript({ ...base, verifierEncryptionJwk: missingX }),
+        ).rejects.toThrow();
+        await expect(
+            buildOpenID4VPHandoverSessionTranscript({ ...base, verifierEncryptionJwk: missingY }),
+        ).rejects.toThrow();
+        await expect(
+            buildOpenID4VPHandoverSessionTranscript({ ...base, verifierEncryptionJwk: missingCrv }),
+        ).rejects.toThrow();
+    });
 });

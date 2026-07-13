@@ -189,6 +189,15 @@ export class MissingDecryptionKeyError extends OpenID4VPError {
     }
 }
 
+export class MissingVerifierEncryptionKeyError extends OpenID4VPError {
+    readonly code = 'missing_verifier_encryption_key' as const;
+    constructor(
+        message = 'verifierEncryptionJwk is required to build the OID4VP 1.0 OpenID4VPHandover SessionTranscript for an encrypted response'
+    ) {
+        super(message);
+    }
+}
+
 export class MultipleCredentialsNotSupportedError extends OpenID4VPError {
     readonly code = 'multi_credential_unsupported' as const;
     readonly entryCount: number;

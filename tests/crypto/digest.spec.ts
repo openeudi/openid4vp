@@ -165,4 +165,37 @@ describe('verifyAllDigests', () => {
         const ns = new Map([['eu.europa.ec.eudi.pid.1', items]]);
         await expect(verifyAllDigests(ns, mso)).rejects.toThrow(MalformedCredentialError);
     });
+
+    // The test above flips byte 0 of the tag-24 wire — the 0xD8 tag byte itself —
+    // which breaks CBOR decodability and is caught by unwrapItemMap's "not
+    // decodable" guard. That pins malformed-input rejection, but NOT the
+    // security-relevant direction: an item whose INNER content (elementValue) was
+    // tampered while remaining perfectly valid, decodable CBOR must still be
+    // rejected, because its hash no longer matches the digest the issuer signed
+    // over. This regression-guards that verifyAllDigests actually recomputes and
+    // compares the digest rather than trusting a structurally-valid item.
+    it('rejects when an IssuerSignedItem\'s inner elementValue is tampered but remains valid, decodable CBOR (digest mismatch, not decode failure)', async () => {
+        const key = await generateTestKeyMaterial();
+        const { issuerAuth, itemBytesByNamespace } = await buildSignedMdoc({
+            issuerKey: key,
+            namespaces: { 'eu.europa.ec.eudi.pid.1': { family_name: 'Doe' } },
+        });
+        const mso = decodeMso(decodeCoseSign1(issuerAuth).payload);
+        const originalItemBytes = itemBytesByNamespace['eu.europa.ec.eudi.pid.1']![0]!;
+
+        // Unwrap the tag-24 item (Path B: EmbeddedCbor-like `{ value }`, since
+        // mdoc-helpers.ts registers a global tag-24 extension), decode the inner
+        // Map, tamper ONLY elementValue's content, and re-wrap — producing bytes
+        // that are still valid tag-24 CBOR decoding to a Map with the original
+        // digestID, but whose hash no longer matches the signed digest.
+        const decoded = cbor.decode(originalItemBytes) as { value: Uint8Array };
+        const innerMap = cbor.decode(decoded.value) as Map<string, unknown>;
+        expect(innerMap.get('elementValue')).toBe('Doe');
+        innerMap.set('elementValue', 'Eve');
+        const tamperedInner = cbor.encode(innerMap);
+        const tamperedItemBytes = cbor.encode(new Tag(tamperedInner, 24));
+
+        const ns = new Map<string, Uint8Array[]>([['eu.europa.ec.eudi.pid.1', [tamperedItemBytes]]]);
+        await expect(verifyAllDigests(ns, mso)).rejects.toThrow(/digest mismatch/);
+    });
 });

@@ -4,6 +4,7 @@ import { verifyAuthorizationResponse } from '../src/verify.js';
 import { buildHaipQuery } from '../src/haip.js';
 import {
     MissingDecryptionKeyError,
+    MissingVerifierEncryptionKeyError,
     MultipleCredentialsNotSupportedError,
     DecryptionFailedError,
 } from '../src/errors.js';
@@ -178,6 +179,47 @@ describe('verifyAuthorizationResponse', () => {
 
         expect(result.parsed.valid).toBe(true);
         expect(result.valid).toBe(true);
+    });
+
+    it('rejects with MissingVerifierEncryptionKeyError when sessionTranscriptProfile is "openid4vp-1.0" but verifierEncryptionJwk is missing (encrypted mso_mdoc, no caller transcript)', async () => {
+        // Verifier request config — irrelevant beyond reaching the auto-build
+        // branch, since the missing verifierEncryptionJwk must be caught BEFORE
+        // any transcript is built or device-auth is attempted.
+        const clientId = `x509_san_dns:verifier.${crypto.randomUUID()}.example`;
+        const responseUri = `https://verifier.example/${crypto.randomUUID()}/response`;
+        const nonce = crypto.randomUUID();
+
+        const { publicJwk, privateKey } = await createEncryptionKeypair();
+
+        const mdoc = await buildSignedMdoc({
+            issuerKey,
+            docType: 'eu.europa.ec.eudi.pid.1',
+            namespaces: { 'eu.europa.ec.eudi.pid.1': { age_over_18: true } },
+        });
+
+        const mdocQuery = buildHaipQuery({
+            credentialId: 'pid',
+            format: 'mso_mdoc',
+            doctypeValue: 'eu.europa.ec.eudi.pid.1',
+            claims: ['age_over_18'],
+        });
+
+        const inner = { vp_token: { pid: [bytesToBase64url(mdoc.mdocBytes)] } };
+        const jwe = await encryptAuthorizationResponseJwe(inner, publicJwk, 'A256GCM');
+
+        await expect(
+            verifyAuthorizationResponse({ response: jwe }, mdocQuery, {
+                trustedCertificates: [issuerKey.certDerBytes],
+                nonce,
+                decryptionKey: privateKey,
+                clientId,
+                responseUri,
+                sessionTranscriptProfile: 'openid4vp-1.0',
+                // NB: no verifierEncryptionJwk and no mdocSessionTranscript — must
+                // fail loud instead of silently building a null-thumbprint
+                // transcript and surfacing an opaque device-auth failure later.
+            }),
+        ).rejects.toThrow(MissingVerifierEncryptionKeyError);
     });
 
     it('rejects a malformed base64url mso_mdoc vp_token entry with a TypeError instead of silently decoding garbage', async () => {

@@ -10,6 +10,7 @@ import {
 } from './crypto/session-transcript.js';
 import {
     MissingDecryptionKeyError,
+    MissingVerifierEncryptionKeyError,
     MultipleCredentialsNotSupportedError,
 } from './errors.js';
 import type { CredentialFormat } from './types/presentation.js';
@@ -212,6 +213,15 @@ export async function verifyAuthorizationResponse(
             options.nonce !== undefined
         ) {
             if (options.sessionTranscriptProfile === 'openid4vp-1.0') {
+                // An encrypted response always implies the verifier advertised a
+                // response-encryption JWK, so a missing `verifierEncryptionJwk` here
+                // is a caller misconfiguration, not a legitimate "unencrypted"
+                // scenario — fail loud instead of silently binding a
+                // null-thumbprint transcript that would only surface later as an
+                // opaque device-auth failure.
+                if (options.verifierEncryptionJwk === undefined) {
+                    throw new MissingVerifierEncryptionKeyError();
+                }
                 nextOptions.mdocSessionTranscript = await buildOpenID4VPHandoverSessionTranscript({
                     clientId: options.clientId,
                     nonce: options.nonce,
