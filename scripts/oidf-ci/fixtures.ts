@@ -4,8 +4,13 @@ import type { DcqlQuery } from "../../src/index.js";
 
 export type { DcqlQuery };
 
+/** Credential format the DCQL query / vp_formats advertisement is built for. */
+export type CredentialFormat = "dc+sd-jwt" | "mso_mdoc";
+
 export interface GenerateFixturesInput {
   hostname: string;
+  /** Defaults to `'dc+sd-jwt'` so existing SD-JWT callers are unaffected. */
+  credentialFormat?: CredentialFormat;
 }
 
 /** JsonWebKey extended with the `kid` field (missing from lib.dom.d.ts). */
@@ -13,6 +18,13 @@ type JWK = JsonWebKey & { kid?: string };
 
 export interface Fixtures {
   hostname: string;
+  /**
+   * Credential format this fixture set was built for. Consumed by
+   * verifier-server.ts to select the format-appropriate vp_formats_supported
+   * and verification path (mso_mdoc vs dc+sd-jwt) without duplicating the
+   * format-selection logic here.
+   */
+  credentialFormat: CredentialFormat;
 
   caKeypair: CryptoKeyPair;
   caCertDer: Uint8Array;
@@ -124,7 +136,25 @@ async function generateEncryption() {
   return { encryptionKeypair, encryptionPublicJwk };
 }
 
-function buildDcqlQuery(): DcqlQuery {
+function buildDcqlQuery(format: CredentialFormat): DcqlQuery {
+  if (format === "mso_mdoc") {
+    // mdoc claim paths are [namespace, element] per @openeudi/dcql's
+    // ClaimsQuery shape. `org.iso.18013.5.1.mDL` / `org.iso.18013.5.1` are
+    // the standard ISO 18013-5 mDL doctype + namespace (confirmed against
+    // multipaz TestAppUtils; re-confirmed empirically in Task 6 against a
+    // real mdl DeviceResponse). `family_name` is a mandatory mDL element.
+    return {
+      credentials: [
+        {
+          id: "mdl",
+          format: "mso_mdoc",
+          meta: { doctype_value: "org.iso.18013.5.1.mDL" },
+          claims: [{ path: ["org.iso.18013.5.1", "family_name"] }],
+        },
+      ],
+    };
+  }
+
   return {
     credentials: [
       {
@@ -138,15 +168,17 @@ function buildDcqlQuery(): DcqlQuery {
 }
 
 export async function generateFixtures(input: GenerateFixturesInput): Promise<Fixtures> {
+  const credentialFormat = input.credentialFormat ?? "dc+sd-jwt";
   const chain = await generateChainCerts(input.hostname);
   const issuer = await generateIssuer();
   const enc = await generateEncryption();
 
   return {
     hostname: input.hostname,
+    credentialFormat,
     ...chain,
     ...issuer,
     ...enc,
-    dcqlQuery: buildDcqlQuery(),
+    dcqlQuery: buildDcqlQuery(credentialFormat),
   };
 }

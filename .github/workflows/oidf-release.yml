@@ -42,29 +42,113 @@ jobs:
           docker compose -f docker/oidf-conformance-suite/docker-compose.yml logs
           exit 1
 
-      - name: Run orchestrator (full plan)
-        run: npm run oidf:ci -- --profile=full --suite-base=https://localhost:8443 --output-dir=./oidf-result
+      - name: Run 1final profile matrix
+        id: run-profiles
+        run: |
+          set +e
+          profiles="1final-happy-mdl 1final-happy-sdjwt 1final-neg-session-transcript 1final-neg-kb-jwt-nonce 1final-neg-kb-jwt-aud 1final-neg-kb-jwt-signature 1final-neg-sd-hash 1final-neg-credential-signature 1final-neg-iat-future 1final-neg-iat-past"
+          failed=""
+          for profile in $profiles; do
+            echo "::group::Profile $profile"
+            npm run oidf:ci -- --profile="$profile" --suite-base=https://localhost:8443 --output-dir="./oidf-result-$profile"
+            status=$?
+            echo "::endgroup::"
+            echo "profile=$profile exit=$status"
+            if [ "$status" -ne 0 ]; then
+              failed="$failed $profile"
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "Gating profile(s) failed:$failed"
+            exit 1
+          fi
 
-      - name: Upload result artefact
+      - name: Upload result artefact (1final-happy-mdl)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: oidf-result-full-plan-${{ github.ref_name }}
-          path: ./oidf-result/
+          name: oidf-result-1final-happy-mdl-${{ github.ref_name }}
+          path: ./oidf-result-1final-happy-mdl/
+
+      - name: Upload result artefact (1final-happy-sdjwt)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oidf-result-1final-happy-sdjwt-${{ github.ref_name }}
+          path: ./oidf-result-1final-happy-sdjwt/
+
+      - name: Upload result artefact (1final-neg-session-transcript)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oidf-result-1final-neg-session-transcript-${{ github.ref_name }}
+          path: ./oidf-result-1final-neg-session-transcript/
+
+      - name: Upload result artefact (1final-neg-kb-jwt-nonce)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oidf-result-1final-neg-kb-jwt-nonce-${{ github.ref_name }}
+          path: ./oidf-result-1final-neg-kb-jwt-nonce/
+
+      - name: Upload result artefact (1final-neg-kb-jwt-aud)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oidf-result-1final-neg-kb-jwt-aud-${{ github.ref_name }}
+          path: ./oidf-result-1final-neg-kb-jwt-aud/
+
+      - name: Upload result artefact (1final-neg-kb-jwt-signature)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oidf-result-1final-neg-kb-jwt-signature-${{ github.ref_name }}
+          path: ./oidf-result-1final-neg-kb-jwt-signature/
+
+      - name: Upload result artefact (1final-neg-sd-hash)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oidf-result-1final-neg-sd-hash-${{ github.ref_name }}
+          path: ./oidf-result-1final-neg-sd-hash/
+
+      - name: Upload result artefact (1final-neg-credential-signature)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oidf-result-1final-neg-credential-signature-${{ github.ref_name }}
+          path: ./oidf-result-1final-neg-credential-signature/
+
+      - name: Upload result artefact (1final-neg-iat-future)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oidf-result-1final-neg-iat-future-${{ github.ref_name }}
+          path: ./oidf-result-1final-neg-iat-future/
+
+      - name: Upload result artefact (1final-neg-iat-past)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oidf-result-1final-neg-iat-past-${{ github.ref_name }}
+          path: ./oidf-result-1final-neg-iat-past/
 
       - name: Append summary to step summary
         if: always()
         run: |
-          if [ -f ./oidf-result/summary.md ]; then
-            cat ./oidf-result/summary.md >> "$GITHUB_STEP_SUMMARY"
-          fi
+          for dir in ./oidf-result-1final-*; do
+            if [ -f "$dir/summary.md" ]; then
+              echo "### $(basename "$dir")" >> "$GITHUB_STEP_SUMMARY"
+              cat "$dir/summary.md" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
 
       - name: Attach to GitHub Release
         # Only on tag pushes — manual (workflow_dispatch) runs have no release.
-        if: success() && startsWith(github.ref, 'refs/tags/')
+        if: always() && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.4.0
         with:
-          files: ./oidf-result/*
+          files: ./oidf-result-1final-*/*
           fail_on_unmatched_files: false
 
       - name: Tear down suite

@@ -212,6 +212,40 @@ const result = await verifyAuthorizationResponse(decrypted, dcqlQuery, {
 
 `verifyAuthorizationResponse` accepts the OpenID4VP 1.0 §8.1 envelope shape: `vp_token` is always an object keyed by DCQL credential query id, with arrays of presentations. This release supports **single-credential single-presentation only** — multi-credential queries or multi-presentation arrays throw `MultipleCredentialsNotSupportedError`.
 
+#### mDOC SessionTranscript on the encrypted path
+
+Verifying an mDOC credential requires the ISO 18013-5 `SessionTranscript` the device signed over (see [mDOC](#mdoc) below). For `direct_post.jwt`, `verifyAuthorizationResponse` can auto-build the `SessionTranscript` for you, in one of two profiles selected via `options.sessionTranscriptProfile`:
+
+- **`'iso-18013-7'` (default)** — the ISO 18013-7 Annex B OID4VP transcript, matching id2/id3-era wallets. Pass `options.clientId` and `options.responseUri` alongside the usual `options.nonce`, and the library derives the `mdoc-generated-nonce` from the JWE's `apu` header to construct the transcript before verification runs.
+
+  ```ts
+  const result = await verifyAuthorizationResponse(envelope, dcqlQuery, {
+    trustedCertificates: [issuerCertDer],
+    nonce,
+    decryptionKey: verifierEncryptionPrivateKey,
+    clientId: verifierClientId,
+    responseUri: verifierResponseUri,
+  });
+  ```
+
+- **`'openid4vp-1.0'`** — the OpenID4VP 1.0-Final `OpenID4VPHandover` transcript, for wallets that implement the final spec's SessionTranscript shape instead of the Annex B one. Pass `sessionTranscriptProfile: 'openid4vp-1.0'` together with `clientId`, `responseUri`, `nonce`, and — for the encrypted path — `verifierEncryptionJwk` (the verifier's response-encryption public JWK, used to derive the handover's JWK thumbprint). This profile does **not** read the JWE `apu` header.
+
+  ```ts
+  const result = await verifyAuthorizationResponse(envelope, dcqlQuery, {
+    trustedCertificates: [issuerCertDer],
+    nonce,
+    decryptionKey: verifierEncryptionPrivateKey,
+    clientId: verifierClientId,
+    responseUri: verifierResponseUri,
+    sessionTranscriptProfile: 'openid4vp-1.0',
+    verifierEncryptionJwk, // verifier's response-encryption public JWK
+  });
+  ```
+
+  The transcript is `[null, null, ["OpenID4VPHandover", SHA-256(cbor([client_id, nonce, jwk_thumbprint | null, response_uri]))]]`, where `jwk_thumbprint` is the RFC 7638 SHA-256 thumbprint of `verifierEncryptionJwk` (or `null` when the response is unencrypted). Callers who need this transcript outside `verifyAuthorizationResponse` can use the exported `buildOpenID4VPHandoverSessionTranscript({ clientId, nonce, responseUri, verifierEncryptionJwk? })`.
+
+If you already have the transcript bytes (or are verifying an mDOC outside either auto-build path, e.g. the unencrypted `direct_post` flow), pass `options.mdocSessionTranscript: Uint8Array` explicitly — it always takes precedence over either auto-built value. `buildOid4vpSessionTranscript({ clientId, responseUri, nonce, mdocGeneratedNonce })` (Annex B) and `buildOpenID4VPHandoverSessionTranscript({ clientId, nonce, responseUri, verifierEncryptionJwk? })` (1.0-Final) are both exported for callers who need to construct a transcript themselves. Without a transcript, the mDOC parser fails closed — see [mDOC](#mdoc).
+
 ### Supported JWE algorithms
 
 `direct_post.jwt` decryption supports:
@@ -226,6 +260,10 @@ Other algorithms throw `UnsupportedJweError`.
 Both `parsePresentation` and `verifyPresentation` accept:
 
 - `nonce` (required) — the nonce bound into the VP token at creation time.
+- `requireKeyBinding?` — force SD-JWT holder-binding verification even when the issuer JWT carries no `cnf` claim. When the credential **is** holder-bound (`cnf` present), a KB-JWT is **always** required regardless of this flag — fail-closed, not opt-in. This flag only extends the requirement to credentials that lack `cnf`. Default `false`. See [SD-JWT VC](#sd-jwt-vc).
+- `mdocSessionTranscript?` — CBOR bytes of the ISO 18013-5 `SessionTranscript` for the current OpenID4VP exchange. **Required** to verify mDOC device authentication; the mDOC parser fails closed without it. For `direct_post.jwt`, `verifyAuthorizationResponse` can build this for you from `clientId`/`responseUri` — see [mDOC SessionTranscript on the encrypted path](#mdoc-sessiontranscript-on-the-encrypted-path). See [mDOC](#mdoc).
+- `sessionTranscriptProfile?` — *(`VerifyAuthorizationResponseOptions` only — the `direct_post`/`direct_post.jwt` auto-build described above)* which `SessionTranscript` shape to build from `clientId`/`responseUri`/`nonce`: `'iso-18013-7'` (default) builds the Annex B, `apu`-derived transcript for id2/id3-era wallets; `'openid4vp-1.0'` builds the OpenID4VP 1.0-Final `OpenID4VPHandover` transcript instead. See [mDOC SessionTranscript on the encrypted path](#mdoc-sessiontranscript-on-the-encrypted-path).
+- `verifierEncryptionJwk?` — *(`VerifyAuthorizationResponseOptions` only)* the verifier's response-encryption public JWK. Required on the encrypted path when `sessionTranscriptProfile: 'openid4vp-1.0'` is used, to derive the handover's JWK thumbprint; ignored for the `'iso-18013-7'` profile.
 - `trustedCertificates` (required when `trustStore` is unset) — DER-encoded issuer leaf certificates for the 0.4.x byte-equality trust check. Deprecated since 0.5.0 — pass an empty array and supply `trustStore` for production deployments.
 - `trustStore?` — `TrustStore` instance for full RFC 5280 chain validation (e.g. `LotlTrustStore`, `StaticTrustStore`, or `CompositeTrustStore`). When set, takes precedence over `trustedCertificates`.
 - `revocationPolicy?` — `'skip'` (default) | `'prefer'` | `'require'`. Controls whether the chain validator consults OCSP / CRL.
@@ -247,8 +285,10 @@ Selective Disclosure JSON Web Token Verifiable Credentials. The token is a strin
 - Decodes the issuer JWT and extracts the `x5c` certificate chain
 - Verifies the issuer certificate against your trusted set
 - Checks credential expiry from the `exp` claim
-- Validates the nonce in the key binding JWT
 - Resolves selective disclosures using SHA-256
+- Enforces holder binding (key binding JWT / KB-JWT): **mandatory whenever the issuer JWT carries a `cnf` claim** — the credential is holder-bound and verification fails closed if the KB-JWT is missing. Set `requireKeyBinding: true` to extend this requirement to credentials without `cnf`. When a KB-JWT is required, the parser verifies its signature against the `cnf.jwk` holder key and validates its claims: a non-empty `nonce` (matched against `options.nonce`), `sd_hash` (over the SD-JWT + disclosures), `audience` (when `options.audience` is set), and standard JWT claims including `iat`.
+
+> **Breaking change (0.9.0):** prior releases only validated the KB-JWT's nonce when a KB-JWT happened to be present and silently accepted holder-bound credentials presented *without* one. As of 0.9.0, a holder-bound credential missing its KB-JWT is rejected outright — see [CHANGELOG](./CHANGELOG.md).
 
 ### mDOC
 
@@ -259,6 +299,10 @@ Mobile Document credentials as defined in ISO 18013-5. The token is a CBOR-encod
 - Verifies the certificate against your trusted set
 - Checks the validity period from `validityInfo`
 - Extracts claims from the `eu.europa.ec.eudi.pid.1` namespace
+- Verifies each `IssuerSignedItem`'s digest against the MSO's `valueDigests`, computed over the full tag-24 `IssuerSignedItemBytes` (`#6.24(bstr .cbor IssuerSignedItem)`) per ISO 18013-5 §9.1.2.4 — not just the inner CBOR — matching how real wallets encode mdocs. mDOC verification, including this digest check and device authentication below, is validated against the OIDF conformance suite acting as an independent ISO 18013-5 mdl wallet.
+- Performs full ISO 18013-5 §9.1.3 device authentication: verifies the `DeviceSignature` (COSE_Sign1) over `DeviceAuthentication`, which binds the `SessionTranscript`/nonce, using the EC2 device key committed in the MSO's `deviceKeyInfo`. **`DeviceMac` (COSE_Mac0) is not supported and is rejected.** The parser fails closed if `deviceSigned`, the `SessionTranscript` (`options.mdocSessionTranscript`), or the device key is missing — a captured `issuerSigned` payload alone is no longer accepted as proof of presentation.
+
+> **Breaking change (0.9.0):** prior releases verified only the issuer-signed data (`issuerSigned`), so a replayed or intercepted mDOC device response — without any proof the presenting device held the credentialed key — was accepted. As of 0.9.0, device authentication is mandatory and fails closed; see [CHANGELOG](./CHANGELOG.md).
 
 ## Custom parsers
 
@@ -328,8 +372,8 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 
 **What is implemented:**
 
-- **SD-JWT VC** — full cryptographic verification (issuer JWT signature via `x5c`, transitive disclosure-hash check, key binding JWT signature + `sd_hash`, nonce check). Optional `trustedIssuerJwks` alternate trust path for VCs without `x5c`.
-- **mDOC / ISO 18013-5** `mso_mdoc` format — CBOR decoding, claim extraction, COSE_Sign1 signature verification, MobileSecurityObject validity enforcement, IssuerSignedItem digest verification.
+- **SD-JWT VC** — full cryptographic verification (issuer JWT signature via `x5c`, transitive disclosure-hash check, key binding JWT signature + `sd_hash`, nonce check). Holder binding (KB-JWT) is **mandatory and fails closed** whenever the issuer JWT carries a `cnf` claim; `requireKeyBinding` extends the requirement to credentials without `cnf`. Optional `trustedIssuerJwks` alternate trust path for VCs without `x5c`.
+- **mDOC / ISO 18013-5** `mso_mdoc` format — CBOR decoding, claim extraction, COSE_Sign1 signature verification, MobileSecurityObject validity enforcement, IssuerSignedItem digest verification. Device authentication (ISO 18013-5 §9.1.3) is **mandatory and fails closed**: the `DeviceSignature` (COSE_Sign1) over `DeviceAuthentication`/`SessionTranscript` is verified against the MSO-committed device key. `DeviceMac` (COSE_Mac0) is **not supported and is rejected**.
 - **DCQL** — authorization request builder with DCQL query, matching via [@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql), `verifyPresentation` for combined crypto + match.
 - **HAIP** — `buildHaipQuery` / `validateHaipQuery` helpers for the High Assurance Interoperability Profile.
 - **Signed authorization requests (JAR)** — `createSignedAuthorizationRequest` per RFC 9101 / OpenID4VP 1.0 §5.10 with `x509_san_dns` client-id binding. Emits both 1.0 Final and ID3 `client_metadata` shapes for verifier interop.

@@ -1,5 +1,6 @@
 import "reflect-metadata";
 import { runProfile, type Profile } from "./orchestrator";
+import { PROFILE_REGISTRY } from "./profiles/registry";
 
 interface ParsedArgs {
   profile: Profile;
@@ -16,11 +17,13 @@ function parseArgs(argv: string[]): ParsedArgs {
   const profile = map.get("profile");
   const suiteBase = map.get("suite-base") ?? "https://localhost:8443";
   const outputDir = map.get("output-dir") ?? "./oidf-result";
-  if (profile !== "happy-flow" && profile !== "full") {
-    console.error("Usage: oidf-ci-run --profile=happy-flow|full [--suite-base=URL] [--output-dir=PATH]");
+  if (!profile || !(profile in PROFILE_REGISTRY)) {
+    const valid = Object.keys(PROFILE_REGISTRY).sort().join(", ");
+    console.error(`Usage: oidf-ci-run --profile=<name> [--suite-base=URL] [--output-dir=PATH]`);
+    console.error(`Valid profiles: ${valid}`);
     process.exit(2);
   }
-  return { profile: profile as Profile, suiteBase, outputDir };
+  return { profile, suiteBase, outputDir };
 }
 
 async function main() {

@@ -18,7 +18,9 @@
 
 import { Encoder as CborEncoder, addExtension } from 'cbor-x';
 
-import type { TestKeyMaterial } from './crypto-helpers.js';
+import { buildDeviceAuthenticationBytes, encodeDeviceSigStructure } from '../../src/crypto/device-auth.js';
+
+import { generateTestKeyMaterial, type TestKeyMaterial } from './crypto-helpers.js';
 
 // ----------------------------------------------------------------
 // Public API
@@ -41,6 +43,16 @@ export interface BuildSignedMdocOptions {
     signed?: Date;
     /** Default: 'ES256'. Also accepts 'ES384' or 'ES512'. */
     alg?: string;
+    /**
+     * Holder device key. Its public key is committed in the MSO's
+     * deviceKeyInfo.deviceKey and used to sign DeviceAuthentication. Generated
+     * automatically when omitted.
+     */
+    deviceKey?: TestKeyMaterial;
+    /** SessionTranscript bytes bound into DeviceAuthentication. Default: DEFAULT_TEST_SESSION_TRANSCRIPT. */
+    sessionTranscript?: Uint8Array;
+    /** When true, omit deviceSigned entirely (models the pre-fix vulnerable presentation). */
+    omitDeviceAuth?: boolean;
 }
 
 export interface BuildSignedMdocResult {
@@ -52,6 +64,10 @@ export interface BuildSignedMdocResult {
     mso: unknown;
     /** Tag-24 bytes of each IssuerSignedItem, indexed by namespace. */
     itemBytesByNamespace: Record<string, Uint8Array[]>;
+    /** SessionTranscript bytes the DeviceSignature was bound to (pass as ParseOptions.mdocSessionTranscript). */
+    sessionTranscript: Uint8Array;
+    /** The holder device key committed in the MSO. */
+    deviceKey: TestKeyMaterial;
 }
 
 // ----------------------------------------------------------------
@@ -96,6 +112,25 @@ addExtension({
 
 const cbor = new CborEncoder({ mapsAsObjects: false, useRecords: false, tagUint8Array: false });
 
+/** A stable, valid SessionTranscript data item for tests (shape: [DE, EReader, Handover]). */
+export const DEFAULT_TEST_SESSION_TRANSCRIPT: Uint8Array = cbor.encode([
+    null,
+    null,
+    ['openid4vp-test-handover', 'nonce-abc123'],
+]);
+
+/** Export a Web Crypto EC public key as an EC2 COSE_Key map (kty/crv/x/y). */
+async function publicKeyToCoseKey(publicKey: CryptoKey, alg: string): Promise<Map<number, unknown>> {
+    const jwk = (await crypto.subtle.exportKey('jwk', publicKey)) as JsonWebKey;
+    const crvLabel = alg === 'ES384' ? 2 : alg === 'ES512' ? 3 : 1;
+    return new Map<number, unknown>([
+        [1, 2], // kty: EC2
+        [-1, crvLabel], // crv
+        [-2, new Uint8Array(Buffer.from(jwk.x!, 'base64url'))], // x
+        [-3, new Uint8Array(Buffer.from(jwk.y!, 'base64url'))], // y
+    ]);
+}
+
 // ----------------------------------------------------------------
 // Main builder
 // ----------------------------------------------------------------
@@ -109,6 +144,9 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
         validUntil = new Date(Date.now() + 60 * 60 * 1000),
         signed = new Date(),
         alg = 'ES256',
+        deviceKey,
+        sessionTranscript = DEFAULT_TEST_SESSION_TRANSCRIPT,
+        omitDeviceAuth = false,
     } = options;
 
     const coseAlg = ALG_TO_COSE_LABEL[alg];
@@ -116,13 +154,31 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
     const hashAlg = ALG_TO_HASH[alg]!;
     const digestAlg = DIGEST_ALG_NAME[alg]!;
 
-    // 1 & 2: Build IssuerSignedItems, CBOR-encode each, wrap as tag 24
+    const effectiveDeviceKey = deviceKey ?? (await generateTestKeyMaterial(alg));
+    const deviceCoseKey = await publicKeyToCoseKey(effectiveDeviceKey.publicKey, alg);
+
+    // 1 & 2: Build IssuerSignedItems, CBOR-encode each, wrap as a SINGLE tag-24.
+    //
+    // ISO 18013-5 §9.1.2.4: the value committed in MSO.valueDigests and placed in
+    // IssuerSigned.nameSpaces is IssuerSignedItemBytes = #6.24(bstr .cbor IssuerSignedItem)
+    // — a single tag-24 wrap of the inner IssuerSignedItem CBOR. Earlier revisions of
+    // this fixture DOUBLE-wrapped (tag24(tag24(inner))), which was non-spec and masked a
+    // real interop bug: the verifier hashed the inner CBOR instead of the tag-24 bytes,
+    // so genuine single-wrapped wallet mdocs were rejected (caught by the OIDF suite).
+    //
+    //   itemCbor  = .cbor IssuerSignedItem                (inner)
+    //   itemTag24 = #6.24(bstr itemCbor) = 0xD818 ++ bstr(itemCbor)   (IssuerSignedItemBytes)
+    //
+    // valueDigests commit SHA-256(itemTag24). nameSpaces carries itemTag24 on the wire
+    // (built by wrapping the inner CBOR exactly ONCE via EmbeddedCbor(itemCbor)).
     let digestID = 0;
     const itemBytesByNamespace: Record<string, Uint8Array[]> = {};
+    const innerItemsByNamespace: Record<string, Uint8Array[]> = {};
     const valueDigestsByNamespace = new Map<string, Map<number, Uint8Array>>();
 
     for (const [ns, claims] of Object.entries(namespaces)) {
         const nsItems: Uint8Array[] = [];
+        const nsInner: Uint8Array[] = [];
         const nsDigests = new Map<number, Uint8Array>();
         for (const [elementIdentifier, elementValue] of Object.entries(claims)) {
             const random = crypto.getRandomValues(new Uint8Array(16));
@@ -135,12 +191,14 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
             const itemCbor = cbor.encode(item);
             const itemTag24 = cbor.encode(new EmbeddedCbor(itemCbor));
             nsItems.push(itemTag24);
-            // 3: Compute digest of the tag-24 bytes
+            nsInner.push(itemCbor);
+            // 3: Compute digest of the FULL tag-24 IssuerSignedItemBytes.
             const digest = await crypto.subtle.digest(hashAlg, itemTag24);
             nsDigests.set(digestID, new Uint8Array(digest));
             digestID++;
         }
         itemBytesByNamespace[ns] = nsItems;
+        innerItemsByNamespace[ns] = nsInner;
         valueDigestsByNamespace.set(ns, nsDigests);
     }
 
@@ -149,7 +207,7 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
         ['version', '1.0'],
         ['digestAlgorithm', digestAlg],
         ['valueDigests', valueDigestsByNamespace],
-        ['deviceKeyInfo', new Map([['deviceKey', new Map()]])],
+        ['deviceKeyInfo', new Map<string, unknown>([['deviceKey', deviceCoseKey]])],
         ['docType', docType],
         [
             'validityInfo',
@@ -190,10 +248,12 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
             new Map<string, unknown>([
                 [
                     'nameSpaces',
+                    // Each element is a SINGLE tag-24 wrap of the inner IssuerSignedItem CBOR,
+                    // i.e. IssuerSignedItemBytes = #6.24(bstr .cbor IssuerSignedItem), per ISO 18013-5.
                     new Map(
-                        Object.entries(itemBytesByNamespace).map(([ns, items]) => [
+                        Object.entries(innerItemsByNamespace).map(([ns, inners]) => [
                             ns,
-                            items.map((b) => new EmbeddedCbor(b)),
+                            inners.map((inner) => new EmbeddedCbor(inner)),
                         ])
                     ),
                 ],
@@ -201,6 +261,29 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
             ]),
         ],
     ]);
+
+    // Build DeviceSigned with a valid DeviceSignature over DeviceAuthentication
+    // (ISO 18013-5 §9.1.3), unless the caller wants the pre-fix vulnerable shape.
+    if (!omitDeviceAuth) {
+        const deviceNameSpacesInner = cbor.encode(new Map()); // empty DeviceNameSpaces
+        const deviceAuthBytes = buildDeviceAuthenticationBytes({ sessionTranscript, docType, deviceNameSpacesInner });
+        const devProtected = cbor.encode(new Map<number, unknown>([[1, coseAlg]]));
+        const devSigInput = encodeDeviceSigStructure(devProtected, deviceAuthBytes);
+        const devRawSig = await crypto.subtle.sign(
+            { name: 'ECDSA', hash: hashAlg },
+            effectiveDeviceKey.privateKey,
+            devSigInput,
+        );
+        const deviceSignature = [devProtected, new Map(), null, new Uint8Array(devRawSig)];
+        document.set(
+            'deviceSigned',
+            new Map<string, unknown>([
+                ['nameSpaces', new EmbeddedCbor(deviceNameSpacesInner)], // DeviceNameSpacesBytes (tag-24)
+                ['deviceAuth', new Map<string, unknown>([['deviceSignature', deviceSignature]])],
+            ]),
+        );
+    }
+
     const deviceResponse = new Map<string, unknown>([
         ['version', '1.0'],
         ['documents', [document]],
@@ -214,6 +297,8 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
         issuerAuth,
         mso: Object.fromEntries(mso),
         itemBytesByNamespace,
+        sessionTranscript,
+        deviceKey: effectiveDeviceKey,
     };
 }
 

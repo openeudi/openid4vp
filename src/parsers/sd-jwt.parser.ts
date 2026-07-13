@@ -393,12 +393,33 @@ export class SdJwtParser implements ICredentialParser {
             }
         }
 
-        // Step 8: Verify key binding JWT (if present)
+        // Step 8: Verify key binding (holder proof-of-possession).
+        //
+        // Holder binding is MANDATORY when the issuer bound the credential to a
+        // holder key via `cnf` (or the caller sets `requireKeyBinding`). Failing
+        // closed here is what stops an attacker from stripping the trailing
+        // KB-JWT to bypass proof-of-possession AND the nonce / replay check.
+        // (CWE-294 capture-replay · CWE-303 missing proof-of-possession)
+        const cnf = payload['cnf'] as Record<string, unknown> | undefined;
+        const isHolderBound = !!cnf && typeof cnf === 'object' && !!cnf['jwk'];
+        const keyBindingRequired = isHolderBound || options.requireKeyBinding === true;
+
+        if (keyBindingRequired && !parts.kbJwt) {
+            return invalidResult(
+                'Key binding JWT is required for holder-bound credentials but was not presented',
+            );
+        }
+
         if (parts.kbJwt) {
-            // Extract holder public key from cnf claim
-            const cnf = payload['cnf'] as Record<string, unknown> | undefined;
-            if (!cnf || typeof cnf !== 'object' || !cnf['jwk']) {
+            if (!isHolderBound) {
                 throw new MalformedCredentialError('Missing cnf.jwk in issuer JWT for key binding');
+            }
+
+            // A KB-JWT proves possession only if bound to THIS verifier's fresh
+            // challenge; require the caller-supplied nonce so a missing/empty
+            // nonce cannot slip through an `undefined === undefined` comparison.
+            if (typeof options.nonce !== 'string' || options.nonce.length === 0) {
+                return invalidResult('A nonce is required to verify the key binding JWT');
             }
 
             let holderKey: Awaited<ReturnType<typeof importJWK>>;
@@ -408,7 +429,7 @@ export class SdJwtParser implements ICredentialParser {
                 if (typeof kbAlg !== 'string' || !allowedAlgorithms.includes(kbAlg)) {
                     return invalidResult(`Unsupported KB-JWT algorithm: ${kbAlg}`);
                 }
-                holderKey = await importJWK(cnf['jwk'] as Record<string, unknown>, kbAlg);
+                holderKey = await importJWK(cnf!['jwk'] as Record<string, unknown>, kbAlg);
             } catch (err) {
                 if (err instanceof MalformedCredentialError) throw err;
                 throw new MalformedCredentialError('Failed to import holder key from cnf.jwk');

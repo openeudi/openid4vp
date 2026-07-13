@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-07-13
+
+### Security (library)
+
+- Fixed a critical holder-binding / device-authentication bypass ([GHSA-h548-cr7v-4v97](https://github.com/openeudi/openid4vp/security/advisories/GHSA-h548-cr7v-4v97))
+  affecting both supported credential formats:
+  - **SD-JWT VC**: the parser now fails closed when a holder-bound credential
+    (issuer JWT carries a `cnf` claim) is presented without its key binding JWT
+    (KB-JWT). Previously the KB-JWT's nonce was validated only when a KB-JWT
+    happened to be present, so an attacker who captured or intercepted a
+    holder-bound SD-JWT VC could strip the trailing KB-JWT and replay the
+    credential without proving possession of the holder key. A new
+    `requireKeyBinding` option on `ParseOptions` extends the requirement to
+    credentials that lack `cnf` entirely.
+  - **mDOC / ISO 18013-5**: the parser now performs full §9.1.3 device
+    authentication — verifying the `DeviceSignature` (COSE_Sign1) over
+    `DeviceAuthentication`, which binds the `SessionTranscript`/nonce, against
+    the EC2 device key committed in the MSO's `deviceKeyInfo`. Previously only
+    the issuer-signed data (`issuerSigned`) was verified, so a captured or
+    replayed mDOC device response was accepted with no proof the presenting
+    device held the credentialed key. `DeviceMac` (COSE_Mac0) is not supported
+    and is explicitly rejected. A new `mdocSessionTranscript` option on
+    `ParseOptions` carries the transcript bytes; `verifyAuthorizationResponse`
+    can auto-build it for `direct_post.jwt` from the new `clientId`/`responseUri`
+    options and the JWE's `mdoc-generated-nonce`, or callers may construct it
+    themselves via the newly exported `buildOid4vpSessionTranscript`.
+
+  Reported by Emir Çoban (https://github.com/EmirCobanOfficial). All users
+  should upgrade.
+
+### Added (library)
+
+- OID4VP 1.0-Final `OpenID4VPHandover` `SessionTranscript` support: a new
+  `sessionTranscriptProfile?: 'iso-18013-7' | 'openid4vp-1.0'` option on
+  `VerifyAuthorizationResponseOptions` (default `'iso-18013-7'`, the existing
+  Annex B/`apu`-derived transcript) selects the OpenID4VP 1.0-Final handover
+  shape for `verifyAuthorizationResponse`'s `direct_post`/`direct_post.jwt`
+  auto-build instead. A new `verifierEncryptionJwk?: JsonWebKey` option
+  carries the verifier's response-encryption public JWK, used to derive the
+  handover's RFC 7638 JWK thumbprint on the encrypted path. The newly exported
+  `buildOpenID4VPHandoverSessionTranscript({ clientId, nonce, responseUri,
+  verifierEncryptionJwk? })` builds the transcript
+  (`[null, null, ["OpenID4VPHandover", SHA-256(cbor([client_id, nonce,
+  jwk_thumbprint | null, response_uri]))]]`) for callers who need it outside
+  `verifyAuthorizationResponse`. Unlike the Annex B profile, this transcript
+  does not read the JWE `apu` header.
+- Both the holder-binding fix above and the new `OpenID4VPHandover` support
+  are validated against the OIDF conformance suite acting as an independent
+  ISO 18013-5 mdl wallet: the `oid4vp-1final-verifier-happy-flow` plan
+  (`iso_mdl` and `sd_jwt_vc`) is accepted, and the holder-binding negatives
+  (`invalid-session-transcript` for mdoc; `invalid-kb-jwt-nonce`,
+  `invalid-kb-jwt-aud`, `invalid-kb-jwt-signature`, `invalid-sd-hash`,
+  `invalid-credential-signature` for SD-JWT) are correctly rejected. One
+  documented divergence: KB-JWT `iat` recency is **not** enforced — replay is
+  bound by the mandatory `nonce` check instead.
+
+### Fixed (library)
+
+- mDOC `IssuerSignedItem` digest verification now hashes the full tag-24
+  `IssuerSignedItemBytes` (`#6.24(bstr .cbor IssuerSignedItem)`) per ISO
+  18013-5 §9.1.2.4, rather than the inner `IssuerSignedItem` CBOR alone.
+  The previous, narrower hash input rejected real-wallet-issued mdocs
+  (fail-closed correctness bug, not a security weakening).
+
+### Changed (library)
+
+- **BREAKING**: Holder-binding verification is now fail-closed for both
+  credential formats. Credentials that previously verified successfully
+  without proof of possession — a holder-bound SD-JWT VC missing its KB-JWT,
+  or an mDOC device response missing (or using `DeviceMac` for) device
+  authentication — are now rejected. Verifiers that relied on the permissive
+  prior behavior must supply the new options (`mdocSessionTranscript` /
+  `clientId` + `responseUri`, and optionally `requireKeyBinding`) to keep
+  verifying legitimate presentations.
+
 ## [0.8.1] — 2026-07-08
 
 ### Security (library)

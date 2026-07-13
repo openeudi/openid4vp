@@ -5,6 +5,7 @@ import { decodeCoseSign1 } from '../../src/crypto/cose-sign1.js';
 import { computeItemDigest, verifyAllDigests } from '../../src/crypto/digest.js';
 import { decodeMso } from '../../src/crypto/mso.js';
 import { MalformedCredentialError } from '../../src/errors.js';
+import { wrapIssuerSignedItemBytes } from '../../src/parsers/mdoc.parser.js';
 import { generateTestKeyMaterial } from '../fixtures/crypto-helpers.js';
 import { buildSignedMdoc } from '../fixtures/mdoc-helpers.js';
 
@@ -101,6 +102,53 @@ describe('verifyAllDigests', () => {
         const wrapped = cbor.encode(new Tag(innerBytes, 24));
         const ns = new Map<string, Uint8Array[]>([['eu.europa.ec.eudi.pid.1', [wrapped]]]);
         await expect(verifyAllDigests(ns, mso)).rejects.toThrow(MalformedCredentialError);
+    });
+
+    // Regression guard for the ISO 18013-5 §9.1.2.4 interop bug: the ValueDigests
+    // digest is computed over IssuerSignedItemBytes = #6.24(bstr .cbor IssuerSignedItem)
+    // — the FULL tag-24 encoding — NOT the inner IssuerSignedItem CBOR. Hashing the inner
+    // bytes rejected every genuine single-wrapped wallet mdoc (caught by the OIDF suite).
+    describe('IssuerSignedItemBytes tag-24 hashing (ISO 18013-5 §9.1.2.4)', () => {
+        const buildInner = (): Uint8Array =>
+            cbor.encode(
+                new Map<string, unknown>([
+                    ['digestID', 7],
+                    ['random', crypto.getRandomValues(new Uint8Array(16))],
+                    ['elementIdentifier', 'family_name'],
+                    ['elementValue', 'Doe'],
+                ])
+            );
+
+        it('wrapIssuerSignedItemBytes reproduces the exact on-wire #6.24(bstr) bytes', () => {
+            const inner = buildInner();
+            // Canonical wire form an issuer/wallet serializes: 0xD8 0x18 ++ bstr(inner).
+            // Compare via Array.from — cbor-x returns a Node Buffer and toEqual treats
+            // Buffer/Uint8Array as distinct types even when the bytes are identical.
+            const wire = cbor.encode(new Tag(inner, 24));
+            expect([wire[0], wire[1]]).toEqual([0xd8, 0x18]);
+
+            // cbor-x hands the decoder the inner bstr content verbatim (Tag(24,·) in prod,
+            // EmbeddedCbor(·) under the fixture's global tag-24 addExtension — both via .value).
+            const decoded = cbor.decode(wire) as { value: Uint8Array };
+            expect(Array.from(decoded.value)).toEqual(Array.from(inner));
+
+            // Re-wrapping that inner content must reproduce the original wire bytes exactly:
+            // only the tag+length header is prepended; inner is copied verbatim (no re-encode).
+            expect(Array.from(wrapIssuerSignedItemBytes(decoded.value))).toEqual(Array.from(wire));
+        });
+
+        it('digest is taken over the FULL tag-24 bytes, never the inner CBOR', async () => {
+            const inner = buildInner();
+            const wire = cbor.encode(new Tag(inner, 24));
+
+            const overFull = await computeItemDigest(wire, 'SHA-256');
+            const expected = new Uint8Array(await crypto.subtle.digest('SHA-256', wire));
+            expect(overFull).toEqual(expected);
+
+            // The pre-fix behaviour (hashing inner CBOR) must NOT collide with the spec digest.
+            const overInner = await computeItemDigest(inner, 'SHA-256');
+            expect(overInner).not.toEqual(expected);
+        });
     });
 
     it('rejects when an item is tampered', async () => {

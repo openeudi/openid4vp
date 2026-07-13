@@ -14,6 +14,10 @@ export {
 export { parsePresentation } from './presentation.js';
 export { verifyPresentation, verifyAuthorizationResponse } from './verify.js';
 export { decryptAuthorizationResponse } from './decrypt-response.js';
+export {
+    buildOid4vpSessionTranscript,
+    buildOpenID4VPHandoverSessionTranscript,
+} from './crypto/session-transcript.js';
 export { SdJwtParser } from './parsers/sd-jwt.parser.js';
 export { MdocParser } from './parsers/mdoc.parser.js';
 export type { ICredentialParser, ParseOptions } from './parsers/parser.interface.js';

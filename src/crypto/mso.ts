@@ -10,6 +10,13 @@ export interface MobileSecurityObject {
     digestAlgorithm: string;
     valueDigests: Map<string, Map<number, Uint8Array>>;
     docType: string;
+    /**
+     * The holder device public key committed by the issuer
+     * (`deviceKeyInfo.deviceKey`), as its raw COSE_Key map. Required to verify
+     * mdoc device authentication (ISO 18013-5 §9.1.3). Undefined only for
+     * malformed MSOs that omit it.
+     */
+    deviceKey?: Map<number, unknown>;
     validityInfo: {
         signed: Date;
         validFrom: Date;
@@ -104,6 +111,16 @@ export function decodeMso(payload: Uint8Array): MobileSecurityObject {
         valueDigests.set(ns, perNs);
     }
 
+    // deviceKeyInfo.deviceKey — the COSE_Key the holder must authenticate with.
+    let deviceKey: Map<number, unknown> | undefined;
+    const dkiRaw = m.get('deviceKeyInfo');
+    if (dkiRaw instanceof Map) {
+        const dk = (dkiRaw as Map<string, unknown>).get('deviceKey');
+        if (dk instanceof Map) {
+            deviceKey = dk as Map<number, unknown>;
+        }
+    }
+
     const viRaw = m.get('validityInfo');
     if (!(viRaw instanceof Map)) {
         throw new MalformedCredentialError('MSO.validityInfo must be a Map');
@@ -118,7 +135,7 @@ export function decodeMso(payload: Uint8Array): MobileSecurityObject {
         validityInfo.expectedUpdate = decodeDateLike(vi.get('expectedUpdate'));
     }
 
-    return { version, digestAlgorithm, valueDigests, docType, validityInfo };
+    return { version, digestAlgorithm, valueDigests, docType, deviceKey, validityInfo };
 }
 
 /**

@@ -75,6 +75,7 @@ describe('verifyPresentation — happy paths', () => {
         const result = await verifyPresentation(signedMdocVp.mdocBytes, mdlMdocQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            mdocSessionTranscript: signedMdocVp.sessionTranscript,
         });
 
         expect(result.parsed.valid).toBe(true);

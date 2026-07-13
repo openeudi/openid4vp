@@ -52,22 +52,34 @@ jobs:
           docker compose -f docker/oidf-conformance-suite/docker-compose.yml logs
           exit 1
 
-      - name: Run orchestrator (happy-flow)
-        run: npm run oidf:ci -- --profile=happy-flow --suite-base=https://localhost:8443 --output-dir=./oidf-result
+      - name: Run orchestrator (1final-happy-sdjwt)
+        run: npm run oidf:ci -- --profile=1final-happy-sdjwt --suite-base=https://localhost:8443 --output-dir=./oidf-result-1final-happy-sdjwt
 
-      - name: Upload result artefact
+      - name: Run orchestrator (1final-happy-mdl)
+        run: npm run oidf:ci -- --profile=1final-happy-mdl --suite-base=https://localhost:8443 --output-dir=./oidf-result-1final-happy-mdl
+
+      - name: Upload result artefact (1final-happy-sdjwt)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: oidf-result-happy-flow
-          path: ./oidf-result/
+          name: oidf-result-1final-happy-sdjwt
+          path: ./oidf-result-1final-happy-sdjwt/
+
+      - name: Upload result artefact (1final-happy-mdl)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oidf-result-1final-happy-mdl
+          path: ./oidf-result-1final-happy-mdl/
 
       - name: Append summary to step summary
         if: always()
         run: |
-          if [ -f ./oidf-result/summary.md ]; then
-            cat ./oidf-result/summary.md >> "$GITHUB_STEP_SUMMARY"
-          fi
+          for dir in ./oidf-result-1final-happy-sdjwt ./oidf-result-1final-happy-mdl; do
+            if [ -f "$dir/summary.md" ]; then
+              cat "$dir/summary.md" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
 
       - name: Tear down suite
         if: always()

@@ -2,6 +2,7 @@ import { Encoder as CborEncoder, Tag } from 'cbor-x';
 import { importX509 } from 'jose';
 
 import { decodeCoseSign1, verifyCoseSign1 } from '../crypto/cose-sign1.js';
+import { verifyDeviceAuth } from '../crypto/device-auth.js';
 import { verifyAllDigests } from '../crypto/digest.js';
 import { decodeMso, validateMsoValidity, validateMsoDocType } from '../crypto/mso.js';
 import { MalformedCredentialError, ExpiredCredentialError } from '../errors.js';
@@ -39,25 +40,81 @@ function extractCountryHintFromCert(_certDer: Uint8Array): string {
 }
 
 /**
- * Extracts raw tag-24 bytes from an IssuerSignedItem.
+ * Reconstructs the canonical CBOR byte-string header (major type 2) for a bstr of
+ * the given length, using the shortest (deterministic) length encoding — matching
+ * how wallets/issuers serialize IssuerSignedItemBytes. Content bytes are appended
+ * verbatim by the caller.
+ */
+function cborByteStringHeader(length: number): Uint8Array {
+    if (length < 24) return Uint8Array.of(0x40 | length);
+    if (length < 0x100) return Uint8Array.of(0x58, length);
+    if (length < 0x10000) return Uint8Array.of(0x59, (length >> 8) & 0xff, length & 0xff);
+    if (length < 0x100000000) {
+        return Uint8Array.of(
+            0x5a,
+            (length >>> 24) & 0xff,
+            (length >>> 16) & 0xff,
+            (length >>> 8) & 0xff,
+            length & 0xff
+        );
+    }
+    // 64-bit lengths (>4 GiB) never occur for a single IssuerSignedItem.
+    const hi = Math.floor(length / 0x100000000);
+    const lo = length >>> 0;
+    return Uint8Array.of(
+        0x5b,
+        (hi >>> 24) & 0xff,
+        (hi >>> 16) & 0xff,
+        (hi >>> 8) & 0xff,
+        hi & 0xff,
+        (lo >>> 24) & 0xff,
+        (lo >>> 16) & 0xff,
+        (lo >>> 8) & 0xff,
+        lo & 0xff
+    );
+}
+
+/**
+ * Wraps inner IssuerSignedItem CBOR into IssuerSignedItemBytes = #6.24(bstr .cbor IssuerSignedItem):
+ *   0xD8 0x18 ++ <bstr-header(inner.length)> ++ inner
  *
- * Each IssuerSignedItem in the DeviceResponse is stored as EmbeddedCbor(itemTag24),
- * which on the wire is tag-24 wrapping the already-tag-24-wrapped item bytes.
- * cbor-x decoding unwraps one layer, so `item.value` (or the Tag(24).value) is
- * exactly `itemTag24` — the bytes the issuer hashed. Return those directly.
+ * The inner content is copied verbatim (never re-encoded), so no map-key reordering
+ * or int/bstr re-serialization can occur — only the deterministic tag+length header
+ * is prepended. This reproduces the exact on-wire bytes the issuer hashed.
+ */
+export function wrapIssuerSignedItemBytes(inner: Uint8Array): Uint8Array {
+    const header = cborByteStringHeader(inner.length);
+    const out = new Uint8Array(2 + header.length + inner.length);
+    out[0] = 0xd8;
+    out[1] = 0x18;
+    out.set(header, 2);
+    out.set(inner, 2 + header.length);
+    return out;
+}
+
+/**
+ * Returns the full IssuerSignedItemBytes — the tag-24 encoding #6.24(bstr .cbor IssuerSignedItem)
+ * — for a decoded nameSpaces element. This is the exact byte sequence ISO 18013-5 §9.1.2.4
+ * commits in MSO.valueDigests, so it (not the inner CBOR) is what must be hashed.
  *
- * Three shapes arise depending on test vs. production paths:
- *   A) Tag(24, Uint8Array)    — production cbor-x path (no addExtension)
- *   B) EmbeddedCbor-like obj  — test-fixture path (addExtension in mdoc-helpers.ts registers a
- *                               custom class whose instances have `.value: Uint8Array`)
- *   C) Plain Uint8Array       — already encoded tag-24 bytes
+ * cbor-x decodes the single tag-24 wrapper to its inner content, so we reconstruct the
+ * tag-24 header around that inner content. Three decode shapes arise:
+ *   A) Tag(24, Uint8Array)    — production cbor-x path (no addExtension); .value = inner CBOR
+ *   B) EmbeddedCbor-like obj  — test-fixture path (mdoc-helpers.ts registers a tag-24
+ *                               addExtension globally); .value = inner CBOR
+ *   C) Plain Uint8Array       — a bare bstr. If it already starts with the tag-24 prefix
+ *                               (0xD8 0x18) it is IssuerSignedItemBytes as-is; otherwise it
+ *                               is inner CBOR to be wrapped.
  */
 function extractRawItemBytes(item: unknown): Uint8Array {
     if (item instanceof Tag && item.tag === 24 && item.value instanceof Uint8Array) {
-        return item.value;
+        return wrapIssuerSignedItemBytes(item.value);
     }
     if (item instanceof Uint8Array) {
-        return item;
+        if (item.length >= 2 && item[0] === 0xd8 && item[1] === 0x18) {
+            return item;
+        }
+        return wrapIssuerSignedItemBytes(item);
     }
     if (
         item !== null &&
@@ -67,7 +124,7 @@ function extractRawItemBytes(item: unknown): Uint8Array {
         'value' in (item as object) &&
         (item as { value: unknown }).value instanceof Uint8Array
     ) {
-        return (item as { value: Uint8Array }).value;
+        return wrapIssuerSignedItemBytes((item as { value: Uint8Array }).value);
     }
     throw new MalformedCredentialError('IssuerSignedItem must be a tag-24 byte string');
 }
@@ -317,6 +374,60 @@ export class MdocParser implements ICredentialParser {
             nameSpaces.set(ns, items.map(extractRawItemBytes));
         }
         await verifyAllDigests(nameSpaces, mso);
+
+        // Step 7.5: Device authentication (ISO 18013-5 §9.1.3) — holder proof-of-
+        // possession. Without this an attacker who captures another holder's
+        // `issuerSigned` structure can replay it, because issuerAuth alone carries
+        // no binding to the presenter or the current session/nonce. Fail closed.
+        // (CWE-294 capture-replay · CWE-345 insufficient authenticity verification)
+        const deviceSigned = document.get('deviceSigned');
+        if (!(deviceSigned instanceof Map)) {
+            return {
+                valid: false,
+                format: this.format,
+                claims: {},
+                issuer: { certificate: issuerCertBytes, country: '' },
+                error: 'Missing deviceSigned — mDOC device authentication is required',
+            };
+        }
+        if (!(options.mdocSessionTranscript instanceof Uint8Array) || options.mdocSessionTranscript.length === 0) {
+            return {
+                valid: false,
+                format: this.format,
+                claims: {},
+                issuer: { certificate: issuerCertBytes, country: '' },
+                error: 'mdocSessionTranscript is required to verify mDOC device authentication',
+            };
+        }
+        if (!mso.deviceKey) {
+            return {
+                valid: false,
+                format: this.format,
+                claims: {},
+                issuer: { certificate: issuerCertBytes, country: '' },
+                error: 'MSO is missing deviceKeyInfo.deviceKey; cannot verify device authentication',
+            };
+        }
+        try {
+            await verifyDeviceAuth({
+                deviceSigned: deviceSigned as Map<unknown, unknown>,
+                deviceKeyCose: mso.deviceKey,
+                docType: mso.docType,
+                sessionTranscript: options.mdocSessionTranscript,
+                allowedAlgorithms,
+            });
+        } catch (err) {
+            if (err instanceof MalformedCredentialError) {
+                return {
+                    valid: false,
+                    format: this.format,
+                    claims: {},
+                    issuer: { certificate: issuerCertBytes, country: '' },
+                    error: err.message,
+                };
+            }
+            throw err;
+        }
 
         // Step 8: Map to claims
         const { flat: claims, namespaced: namespacedClaims } = mapRawToClaims(nameSpaces);

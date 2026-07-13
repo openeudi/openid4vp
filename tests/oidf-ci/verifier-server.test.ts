@@ -49,10 +49,12 @@ describe("verifier-server", () => {
     expect(res.status).toBe(404);
   });
 
-  it("records ok:false when the library returns result.valid:false (wrong issuer signature)", async () => {
+  it("records ok:false and returns 400 when the library returns result.valid:false (wrong issuer signature)", async () => {
     // Regression test: verifyAuthorizationResponse signals signature failures via
     // result.valid:false rather than throwing. The verifier-server must treat that
-    // as a blocking failure, not silently record ok:true.
+    // as a blocking failure, not silently record ok:true. It must also surface the
+    // rejection as an HTTP 4xx (not 500) — the OIDF suite's negative modules assert
+    // on the verifier's HTTP status, and a 500 reads as a harness/internal error.
     const fx = await generateFixtures({ hostname: "127.0.0.1" });
     handle = await startVerifierServer({ fixtures: fx, port: 0 });
 
@@ -81,13 +83,17 @@ describe("verifier-server", () => {
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ response: jwe }).toString(),
     });
-    expect(res.status).toBe(500);
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
 
     const drained = handle.drainResponses();
     expect(drained).toHaveLength(1);
     expect(drained[0].ok).toBe(false);
     // Either the library threw inside verify (invalidResult turns into result.valid=false
-    // → our handler throws) or it threw earlier; both must be captured as ok:false.
-    expect(drained[0].error?.message ?? "").toMatch(/library rejected|result\.valid|Issuer JWT/i);
+    // → our handler catches it) or verify itself returned result.valid=false; both must
+    // be captured as ok:false with a reason, and never silently accepted.
+    expect(drained[0].reason ?? drained[0].error?.message ?? "").toMatch(
+      /library rejected|result\.valid|Issuer JWT/i,
+    );
   });
 });

@@ -25,6 +25,8 @@ export function buildFullPlanProfile(fx: Fixtures): ProfileBuildOutput {
       query_language: "dcql",
       response_mode: "direct_post.jwt",
     },
+    expect: "accept",
+    credentialFormat: "dc+sd-jwt",
     config: {
       alias: "oidf-ci-release",
       description: "Automated release conformance run from CI",

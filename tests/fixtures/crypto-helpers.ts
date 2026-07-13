@@ -279,7 +279,9 @@ export function createVpFormatsSupported(): Record<string, unknown> {
 export async function encryptAuthorizationResponseJwe(
     payload: Record<string, unknown>,
     recipientPublicJwk: JsonWebKey,
-    enc: 'A128GCM' | 'A256GCM' = 'A256GCM'
+    enc: 'A128GCM' | 'A256GCM' = 'A256GCM',
+    /** mdoc-generated-nonce to place in the JWE `apu` header (ISO 18013-7 Annex B). */
+    mdocGeneratedNonce?: string
 ): Promise<string> {
     const alg = (recipientPublicJwk.alg as 'ECDH-ES') ?? 'ECDH-ES';
     const recipientKey = await crypto.subtle.importKey(
@@ -289,7 +291,10 @@ export async function encryptAuthorizationResponseJwe(
         false,
         []
     );
-    return new CompactEncrypt(new TextEncoder().encode(JSON.stringify(payload)))
-        .setProtectedHeader({ alg, enc })
-        .encrypt(recipientKey);
+    const builder = new CompactEncrypt(new TextEncoder().encode(JSON.stringify(payload)))
+        .setProtectedHeader({ alg, enc });
+    if (mdocGeneratedNonce !== undefined) {
+        builder.setKeyManagementParameters({ apu: new TextEncoder().encode(mdocGeneratedNonce) });
+    }
+    return builder.encrypt(recipientKey);
 }

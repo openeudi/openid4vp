@@ -12,6 +12,7 @@ import {
     buildMdocWithFutureValidFrom,
     buildMdocWithFutureSigned,
     stripCoseSignature,
+    DEFAULT_TEST_SESSION_TRANSCRIPT,
 } from './fixtures/mdoc-helpers.js';
 
 const cbor = new CborEncoder({ mapsAsObjects: false, useRecords: false });
@@ -28,6 +29,7 @@ function trustedOptions(overrides: Partial<ParseOptions> = {}): ParseOptions {
     return {
         trustedCertificates: [issuerKey.certDerBytes],
         nonce: 'n',
+        mdocSessionTranscript: DEFAULT_TEST_SESSION_TRANSCRIPT,
         ...overrides,
     };
 }

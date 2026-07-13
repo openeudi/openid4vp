@@ -9,7 +9,7 @@ import {
     type TestKeyMaterial,
     type BuildSdJwtResult,
 } from './fixtures/crypto-helpers.js';
-import { buildSignedMdoc } from './fixtures/mdoc-helpers.js';
+import { buildSignedMdoc, DEFAULT_TEST_SESSION_TRANSCRIPT } from './fixtures/mdoc-helpers.js';
 
 let issuerKey: TestKeyMaterial;
 let validSdJwt: BuildSdJwtResult;
@@ -50,6 +50,7 @@ describe('parsePresentation', () => {
         const result = await parsePresentation(mdocBytes, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: 'n',
+            mdocSessionTranscript: DEFAULT_TEST_SESSION_TRANSCRIPT,
         });
         expect(result.format).toBe('mdoc');
         expect(result.valid).toBe(true);

@@ -18,8 +18,25 @@ export interface ParseOptions {
     /** Expected audience for key binding JWT verification. Optional. */
     audience?: string;
 
+    /**
+     * Force holder-binding verification even when the issuer JWT carries no
+     * `cnf` claim. When the credential IS holder-bound (`cnf` present), a
+     * KB-JWT is ALWAYS required regardless of this flag — this flag only
+     * extends the requirement to credentials that lack `cnf`. Default: false.
+     */
+    requireKeyBinding?: boolean;
+
     /** Allowed JWT signature algorithms. Defaults to ['ES256', 'ES384', 'ES512']. */
     allowedAlgorithms?: string[];
+
+    /**
+     * CBOR bytes of the ISO 18013-5 `SessionTranscript` data item for the current
+     * OpenID4VP exchange. REQUIRED to verify mDOC device authentication — the
+     * mDOC parser fails closed without it, since device proof-of-possession and
+     * replay/nonce binding cannot otherwise be checked. Construct it from the
+     * OpenID4VP handover (client_id, response_uri, nonce, mdoc-generated-nonce).
+     */
+    mdocSessionTranscript?: Uint8Array;
 
     /**
      * Explicit opt-in to skip the trust check. When omitted or `false`,
