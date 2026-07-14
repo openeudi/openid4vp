@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-07-14
+
 ### Security (library)
 
 - `verifyAuthorizationResponse`'s encrypted-response path now fails loudly with a
