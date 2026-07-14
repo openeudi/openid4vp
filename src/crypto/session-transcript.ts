@@ -48,6 +48,9 @@ async function jwkSha256Thumbprint(jwk: JsonWebKey): Promise<Uint8Array> {
     if (jwk.kty !== 'EC') {
         throw new Error(`Unsupported JWK kty for thumbprint: ${jwk.kty}`);
     }
+    if (!jwk.crv || !jwk.x || !jwk.y) {
+        throw new Error('EC JWK for thumbprint is missing a required member (crv, x, or y)');
+    }
     const canonical = `{"crv":"${jwk.crv}","kty":"EC","x":"${jwk.x}","y":"${jwk.y}"}`;
     return sha256(new TextEncoder().encode(canonical));
 }

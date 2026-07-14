@@ -87,6 +87,7 @@ export {
     UnsupportedJweError,
     DecryptionFailedError,
     MissingDecryptionKeyError,
+    MissingVerifierEncryptionKeyError,
     MultipleCredentialsNotSupportedError,
     type ChainErrorReason,
     type SignedRequestBuildErrorCode,
