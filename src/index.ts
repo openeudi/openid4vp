@@ -4,7 +4,7 @@
 // modules evaluate, so consumers don't have to import it themselves.
 import 'reflect-metadata';
 
-export const VERSION = '0.8.0';
+export const VERSION = '0.9.2';
 
 // Builders
 export { createAuthorizationRequest } from './authorization.js';

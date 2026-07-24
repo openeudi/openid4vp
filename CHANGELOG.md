@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-07-24
+
+### Fixed
+
+- The package now imports the `reflect-metadata` polyfill at its entry point and
+  declares it as a runtime dependency (previously dev-only). `@openeudi/openid4vp`
+  transitively depends on `@peculiar/x509`, which uses `tsyringe` and reads
+  decorator metadata at runtime; consumers that did not already load the polyfill
+  (e.g. apps without a DI framework) hit a `Reflect.getMetadata is not a function`
+  crash unless they knew to `import "reflect-metadata"` before this library. The
+  polyfill now loads automatically in both ESM and CJS output. Reported by
+  @mkascel (eudi-verify) in [openeudi/core#8](https://github.com/openeudi/core/issues/8).
+- `VERSION` export now reports the correct package version (was stale at `0.8.0`).
+
 ## [0.9.1] — 2026-07-14
 
 ### Security (library)
