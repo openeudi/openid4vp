@@ -1,3 +1,9 @@
+// Load the reflect-metadata polyfill before any module that transitively
+// pulls in @peculiar/x509 (→ tsyringe), which reads decorator metadata at
+// runtime. Placing it first guarantees the polyfill is installed before those
+// modules evaluate, so consumers don't have to import it themselves.
+import 'reflect-metadata';
+
 export const VERSION = '0.8.0';
 
 // Builders
