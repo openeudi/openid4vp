@@ -166,10 +166,15 @@ Wallets POST the Authorization Response to your `responseUri`. The library is st
 
 ### Unencrypted (`direct_post`)
 
-The envelope arrives as form-encoded JSON; parse it, check `state`, then verify:
+The envelope arrives as form-encoded JSON; parse it, check `state`, then verify.
+
+**mDOC SessionTranscript wall:** plain `direct_post` has no JWE, so there is no `apu` header and `verifyAuthorizationResponse` cannot auto-build the mDOC `SessionTranscript`. You must pass `options.mdocSessionTranscript` yourself. For wallets that use the OpenID4VP 1.0 Final unencrypted handover, omit `verifierEncryptionJwk` so the handover's `jwkThumbprint` is CBOR `null`:
 
 ```ts
-import { verifyAuthorizationResponse } from "@openeudi/openid4vp";
+import {
+  buildOpenID4VPHandoverSessionTranscript,
+  verifyAuthorizationResponse,
+} from "@openeudi/openid4vp";
 
 const envelope = parsedVpTokenObject; // { vp_token, state, ... }
 
@@ -177,11 +182,25 @@ if (envelope.state !== submittedState) {
   throw new Error("state mismatch — possible CSRF / replay");
 }
 
+const mdocSessionTranscript = await buildOpenID4VPHandoverSessionTranscript({
+  clientId: verifierClientId,
+  nonce,
+  responseUri: verifierResponseUri,
+  // omit verifierEncryptionJwk → jwkThumbprint = null (unencrypted handover)
+});
+
 const result = await verifyAuthorizationResponse(envelope, dcqlQuery, {
   trustedCertificates: [issuerCertDer],
   nonce,
+  clientId: verifierClientId,
+  responseUri: verifierResponseUri,
+  mdocSessionTranscript,
 });
 ```
+
+Without a transcript, the mDOC parser fails closed (`claims: {}`, no `docType` on the failure result). DCQL matching against that doctype-less parse can then surface a misleading `doctype_mismatch` even when the wallet sent the correct credential — prefer `parsed.error` when diagnosing.
+
+For `direct_post.jwt` auto-build (Annex B / `openid4vp-1.0`), see [mDOC SessionTranscript on the encrypted path](#mdoc-sessiontranscript-on-the-encrypted-path).
 
 ### Encrypted (`direct_post.jwt`)
 
@@ -214,7 +233,7 @@ const result = await verifyAuthorizationResponse(decrypted, dcqlQuery, {
 
 #### mDOC SessionTranscript on the encrypted path
 
-Verifying an mDOC credential requires the ISO 18013-5 `SessionTranscript` the device signed over (see [mDOC](#mdoc) below). For `direct_post.jwt`, `verifyAuthorizationResponse` can auto-build the `SessionTranscript` for you, in one of two profiles selected via `options.sessionTranscriptProfile`:
+Verifying an mDOC credential requires the ISO 18013-5 `SessionTranscript` the device signed over (see [mDOC](#mdoc) below). For **unencrypted** `direct_post` (no JWE / no `apu`), auto-build does not run — pass `mdocSessionTranscript` explicitly as shown in [Unencrypted (`direct_post`)](#unencrypted-direct_post). For `direct_post.jwt`, `verifyAuthorizationResponse` can auto-build the `SessionTranscript` for you, in one of two profiles selected via `options.sessionTranscriptProfile`:
 
 - **`'iso-18013-7'` (default)** — the ISO 18013-7 Annex B OID4VP transcript, matching id2/id3-era wallets. Pass `options.clientId` and `options.responseUri` alongside the usual `options.nonce`, and the library derives the `mdoc-generated-nonce` from the JWE's `apu` header to construct the transcript before verification runs.
 
@@ -244,7 +263,7 @@ Verifying an mDOC credential requires the ISO 18013-5 `SessionTranscript` the de
 
   The transcript is `[null, null, ["OpenID4VPHandover", SHA-256(cbor([client_id, nonce, jwk_thumbprint | null, response_uri]))]]`, where `jwk_thumbprint` is the RFC 7638 SHA-256 thumbprint of `verifierEncryptionJwk` (or `null` when the response is unencrypted). Callers who need this transcript outside `verifyAuthorizationResponse` can use the exported `buildOpenID4VPHandoverSessionTranscript({ clientId, nonce, responseUri, verifierEncryptionJwk? })`.
 
-If you already have the transcript bytes (or are verifying an mDOC outside either auto-build path, e.g. the unencrypted `direct_post` flow), pass `options.mdocSessionTranscript: Uint8Array` explicitly — it always takes precedence over either auto-built value. `buildOid4vpSessionTranscript({ clientId, responseUri, nonce, mdocGeneratedNonce })` (Annex B) and `buildOpenID4VPHandoverSessionTranscript({ clientId, nonce, responseUri, verifierEncryptionJwk? })` (1.0-Final) are both exported for callers who need to construct a transcript themselves. Without a transcript, the mDOC parser fails closed — see [mDOC](#mdoc).
+If you already have the transcript bytes (or are verifying an mDOC outside either auto-build path), pass `options.mdocSessionTranscript: Uint8Array` explicitly — it always takes precedence over either auto-built value. `buildOid4vpSessionTranscript({ clientId, responseUri, nonce, mdocGeneratedNonce })` (Annex B) and `buildOpenID4VPHandoverSessionTranscript({ clientId, nonce, responseUri, verifierEncryptionJwk? })` (1.0-Final) are both exported for callers who need to construct a transcript themselves. Without a transcript, the mDOC parser fails closed — see [mDOC](#mdoc). For the plain `direct_post` pattern, see [Unencrypted (`direct_post`)](#unencrypted-direct_post).
 
 ### Supported JWE algorithms
 
