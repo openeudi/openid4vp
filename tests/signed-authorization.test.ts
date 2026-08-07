@@ -262,6 +262,45 @@ describe('createSignedAuthorizationRequest', () => {
         });
     });
 
+    it('x509_hash: client_id equals base64url(SHA-256(DER leaf cert))', async () => {
+        const input = await baseInput({ clientIdPrefix: 'x509_hash', hostname: undefined });
+        const certificateChain = input.certificateChain as Uint8Array[];
+        const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', certificateChain[0]));
+        const expectedHash = Buffer.from(digest)
+            .toString('base64')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+
+        const req = await createSignedAuthorizationRequest(input, pidQuery);
+        const payload = decodeJwt(req.requestObject);
+        expect(payload.client_id).toBe(`x509_hash:${expectedHash}`);
+
+        const params = new URL(req.uri.replace('openid4vp://', 'https://dummy/')).searchParams;
+        expect(params.get('client_id')).toBe(`x509_hash:${expectedHash}`);
+    });
+
+    it('x509_san_dns behaviour is unchanged when clientIdPrefix is explicit', async () => {
+        const req = await createSignedAuthorizationRequest(
+            await baseInput({ clientIdPrefix: 'x509_san_dns' }),
+            pidQuery
+        );
+        const payload = decodeJwt(req.requestObject);
+        expect(payload.client_id).toBe(`x509_san_dns:${hostname}`);
+    });
+
+    it('rejects missing hostname for x509_san_dns with missing_hostname', async () => {
+        await expect(
+            createSignedAuthorizationRequest(
+                await baseInput({ hostname: undefined }),
+                pidQuery
+            )
+        ).rejects.toMatchObject({
+            name: 'SignedRequestBuildError',
+            code: 'missing_hostname',
+        });
+    });
+
     it('exposes error as instanceof SignedRequestBuildError', async () => {
         await expect(
             createSignedAuthorizationRequest(

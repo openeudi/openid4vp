@@ -16,7 +16,8 @@ export interface AuthorizationRequest {
 }
 
 export interface SignedAuthorizationRequestInput {
-    hostname: string;
+    clientIdPrefix?: 'x509_san_dns' | 'x509_hash';
+    hostname?: string;
     requestUri: string;
     responseUri: string;
     nonce: string;

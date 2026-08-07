@@ -20,7 +20,10 @@ const SUPPORTED_SIGNING_ALGS = new Set(['ES256', 'ES384', 'RS256']);
  * carrying only `client_id` + `request_uri`, plus the JWS string the caller
  * must host at `requestUri` with Content-Type `application/oauth-authz-req+jwt`.
  *
- * Client Identifier Prefix is always `x509_san_dns` — other prefixes deferred.
+ * Client Identifier Prefix defaults to `x509_san_dns`; pass
+ * `clientIdPrefix: 'x509_hash'` to use the leaf certificate's SHA-256 hash
+ * instead (OpenID4VP 1.0 §5.9.3). `hostname` is required only for
+ * `x509_san_dns`.
  */
 export async function createSignedAuthorizationRequest(
     input: SignedAuthorizationRequestInput,
@@ -48,14 +51,23 @@ export async function createSignedAuthorizationRequest(
         );
     }
 
+    const clientIdPrefix = input.clientIdPrefix ?? 'x509_san_dns';
     const leafCert = new X509Certificate(toArrayBuffer(input.certificateChain[0]));
 
-    const sanDnsNames = extractDnsNames(leafCert);
-    if (!sanDnsNames.includes(input.hostname)) {
-        throw new SignedRequestBuildError(
-            'hostname_cert_mismatch',
-            `leaf cert SAN DNSName values [${sanDnsNames.join(', ')}] do not include hostname "${input.hostname}"`,
-        );
+    if (clientIdPrefix === 'x509_san_dns' || input.hostname !== undefined) {
+        if (!input.hostname) {
+            throw new SignedRequestBuildError(
+                'missing_hostname',
+                'hostname is required for clientIdPrefix "x509_san_dns"',
+            );
+        }
+        const sanDnsNames = extractDnsNames(leafCert);
+        if (!sanDnsNames.includes(input.hostname)) {
+            throw new SignedRequestBuildError(
+                'hostname_cert_mismatch',
+                `leaf cert SAN DNSName values [${sanDnsNames.join(', ')}] do not include hostname "${input.hostname}"`,
+            );
+        }
     }
 
     const signerPublicSpki = new Uint8Array(
@@ -87,7 +99,10 @@ export async function createSignedAuthorizationRequest(
     }
 
     const state = input.state ?? uuidv4();
-    const clientId = `x509_san_dns:${input.hostname}`;
+    const clientId =
+        clientIdPrefix === 'x509_hash'
+            ? `x509_hash:${await sha256Base64Url(input.certificateChain[0])}`
+            : `x509_san_dns:${input.hostname}`;
     const now = Math.floor(Date.now() / 1000);
 
     const clientMetadata: Record<string, unknown> = {
@@ -168,6 +183,14 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
         if (a[i] !== b[i]) return false;
     }
     return true;
+}
+
+// OpenID4VP 1.0 §5.9.3 (referenced by HAIP 1.0 Final for the x509_hash Client
+// Identifier Prefix): "the base64url-encoded value of the SHA-256 hash of the
+// DER-encoded X.509 certificate" of the leaf cert. Unpadded, per RFC 7515 §2.
+async function sha256Base64Url(derCert: Uint8Array): Promise<string> {
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', toArrayBuffer(derCert)));
+    return bytesToBase64(digest).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
