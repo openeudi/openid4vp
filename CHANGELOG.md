@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- `createSignedAuthorizationRequest` no longer emits the singular
+  `authorization_encrypted_response_alg` / `authorization_encrypted_response_enc`
+  `client_metadata` fields. Those fields were removed from OpenID4VP before 1.0
+  Final; the OIDF conformance suite reads `alg` from `client_metadata.jwks` and
+  `enc` from `encrypted_response_enc_values_supported`, not from the singular
+  fields.
+
 ## [0.9.3] — 2026-08-20
 
 ### Fixed

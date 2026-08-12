@@ -156,12 +156,7 @@ const req = await createSignedAuthorizationRequest({
 
 The caller hosts `req.requestObject` at `requestUri` (the library does not host HTTP). The library verifies that the signing key's public SPKI matches the leaf certificate's public key — an attempt to sign with a mismatched key fails with `SignedRequestBuildError: signing_key_cert_mismatch`.
 
-The emitted `client_metadata` carries both shapes for compatibility:
-
-- 1.0 Final plural — `encrypted_response_enc_values_supported: ["A128GCM", ...]`
-- ID3 singular — `authorization_encrypted_response_alg: "ECDH-ES"`, `authorization_encrypted_response_enc: "A128GCM"`
-
-Verifiers reading either shape (e.g. the OIDF conformance suite reads ID3 directly) work without bespoke configuration.
+The emitted `client_metadata` carries the 1.0 Final shape: `encrypted_response_enc_values_supported: ["A128GCM", ...]`.
 
 ## Authorization responses (direct_post and direct_post.jwt)
 

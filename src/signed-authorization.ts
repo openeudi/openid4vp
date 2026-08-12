@@ -121,12 +121,6 @@ export async function createSignedAuthorizationRequest(
         clientMetadata.jwks = { keys: [jwk] };
         const encValues = enc ?? [...DEFAULT_SUPPORTED_ENC_VALUES];
         clientMetadata.encrypted_response_enc_values_supported = encValues;
-        // OIDF ID3 compatibility bridge — additive, NOT a regression to ID3 shapes.
-        // The suite's EncryptVPResponse condition reads these singular fields directly
-        // (without `skipIfElementMissing`); the 1.0 Final plural array above is the
-        // canonical surface, this duplicate satisfies the older shape too.
-        clientMetadata.authorization_encrypted_response_alg = 'ECDH-ES';
-        clientMetadata.authorization_encrypted_response_enc = encValues[0];
     }
 
     const payload: Record<string, unknown> = {
