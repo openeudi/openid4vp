@@ -436,6 +436,8 @@ See [CHANGELOG.md](./CHANGELOG.md) for per-release changes. Key migration moment
 - **0.6.0** — DCQL surfaces specific `UnmatchedReason` values via `@openeudi/dcql@0.2.0` (BREAKING for callers reading `match.unmatched[].reason`).
 - **0.7.0** — `createSignedAuthorizationRequest`, `decryptAuthorizationResponse`, `verifyAuthorizationResponse` for HAIP / 1.0 §8.1 envelopes.
 - **0.8.0** — additive: ID3 `client_metadata` bridge, `trustedIssuerJwks` opt-in, transitive SD-JWT disclosure check.
+- **0.9.3** — `reflect-metadata` is loaded by the package itself in both ESM and CJS builds. If you added a manual `import "reflect-metadata"` before importing this library to work around the 0.9.2 bug, you can drop it.
+- **0.10.0** — `createSignedAuthorizationRequest` gains `clientIdPrefix` (`x509_san_dns` default, or `x509_hash`), and `hostname` becomes optional — required only for `x509_san_dns`, but still validated against the leaf SAN whenever supplied. **Wire change for existing callers:** the emitted `client_metadata` no longer carries the singular ID3 `authorization_encrypted_response_alg` / `authorization_encrypted_response_enc` fields added in 0.8.0. Verifiers that read the 1.0 Final `encrypted_response_enc_values_supported` array (and `alg` from `client_metadata.jwks`) are unaffected; anything still reading the singular fields needs updating.
 
 ## License
 

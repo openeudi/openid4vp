@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-20
+
 ### Added
 
 - `createSignedAuthorizationRequest` accepts `clientIdPrefix?: 'x509_san_dns' | 'x509_hash'`,

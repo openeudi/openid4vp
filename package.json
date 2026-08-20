@@ -1,6 +1,6 @@
 {
   "name": "@openeudi/openid4vp",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "description": "OpenID4VP credential parsing and validation for EUDI Wallets (SD-JWT VC + mDOC)",
   "license": "Apache-2.0",
   "type": "module",
