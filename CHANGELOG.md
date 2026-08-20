@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.3] — 2026-08-20
+
 ### Fixed
 
 - The `reflect-metadata` auto-load shipped in 0.9.2 did not actually work in the
