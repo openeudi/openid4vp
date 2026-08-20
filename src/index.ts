@@ -1,10 +1,14 @@
-// Load the reflect-metadata polyfill before any module that transitively
-// pulls in @peculiar/x509 (→ tsyringe), which reads decorator metadata at
-// runtime. Placing it first guarantees the polyfill is installed before those
-// modules evaluate, so consumers don't have to import it themselves.
-import 'reflect-metadata';
+// Load the reflect-metadata polyfill before any module that transitively pulls
+// in @peculiar/x509 (→ tsyringe), which reads decorator metadata while its
+// module body evaluates.
+//
+// Being first in this file is NOT sufficient for the published bundles — the
+// bundler hoists external named imports above bare side-effect imports. The
+// build therefore also injects this same module ahead of the entry; see
+// `inject` in tsup.config.ts and tests/bundle-polyfill-order.test.ts.
+import './reflect-polyfill';
 
-export const VERSION = '0.9.2';
+export const VERSION = '0.9.3';
 
 // Builders
 export { createAuthorizationRequest } from './authorization.js';
