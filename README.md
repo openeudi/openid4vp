@@ -422,6 +422,14 @@ Verifier-side conformance is automated against a self-hosted OpenID Foundation c
 - **[@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql)** -- DCQL query matching engine used internally by `verifyPresentation`.
 - **[eIDAS Pro](https://eidas-pro.eu)** -- Managed verification service with admin dashboard, webhook integrations, and plugin support for WooCommerce and Shopify.
 
+## Community integrations
+
+Third-party projects built on this library. These are **not** maintained or audited by OpenEUDI -- evaluate them on their own merits.
+
+- **[eudi-verify](https://github.com/eudi-verify/eudi-verify)** -- Relying-party widget and API, running `@openeudi/openid4vp` as one of two pluggable verifier engines. Includes public [interop notes](https://github.com/eudi-verify/eudi-verify/blob/main/docs/INTEROP.md) covering `mso_mdoc` age-over-18 against an EU Age Verification reference wallet. Demo: [demo.eudi-verify.eu](https://demo.eudi-verify.eu/).
+
+Built something on `@openeudi/openid4vp`? Open an issue and we're happy to consider listing it here.
+
 ## Migration
 
 See [CHANGELOG.md](./CHANGELOG.md) for per-release changes. Key migration moments:
