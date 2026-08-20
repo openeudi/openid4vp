@@ -124,7 +124,7 @@ Mismatches return `valid: false` — they do not throw. Only crypto/structural f
 
 > **Privacy — diagnostics are verifier-internal.** `match.unmatched[].reason` and `detail` (including `value_mismatch`) are intended for verifier-side logging, debugging, and admin UIs. OpenID4VP §11 warns that per-claim verification outcomes can reveal wallet contents to observers. Do NOT echo these diagnostics into the OpenID4VP wire response sent back to the wallet, into end-user-visible error messages that another party could correlate, or into public analytics/third-party logs. The protocol's own error codes are the public interface; these fields are your internal instrumentation.
 
-## Signed authorization requests (x509_san_dns)
+## Signed authorization requests (x509_san_dns, x509_hash)
 
 For flows that require a signed request object (JAR) per OpenID4VP 1.0 §5.10, use `createSignedAuthorizationRequest`:
 
@@ -132,12 +132,13 @@ For flows that require a signed request object (JAR) per OpenID4VP 1.0 §5.10, u
 import { createSignedAuthorizationRequest } from "@openeudi/openid4vp";
 
 const req = await createSignedAuthorizationRequest({
-  hostname: "verifier.example.com",
+  clientIdPrefix: "x509_san_dns",   // or "x509_hash"; defaults to "x509_san_dns"
+  hostname: "verifier.example.com", // required for x509_san_dns; optional for x509_hash
   requestUri: "https://verifier.example.com/request.jwt",
   responseUri: "https://verifier.example.com/response",
   nonce,
   signer: verifierKeyPair,          // CryptoKeyPair with public+private
-  certificateChain: [leafCertDer],  // DER-encoded, leaf SAN DNSName must equal hostname
+  certificateChain: [leafCertDer],  // DER-encoded, leaf SAN DNSName must include hostname when one is given
   encryptionKey: {
     publicJwk: encryptionPublicJwk, // must include alg, e.g. "ECDH-ES"
   },
@@ -151,14 +152,11 @@ const req = await createSignedAuthorizationRequest({
 //                     (Content-Type: application/oauth-authz-req+jwt)
 ```
 
+`clientIdPrefix: "x509_hash"` sets `client_id` to `x509_hash:` followed by the base64url-encoded SHA-256 hash of the DER-encoded leaf certificate, per OpenID4VP 1.0 §5.9.3 (referenced by HAIP 1.0 Final for its mandated Client Identifier Prefix). `hostname` is not required in this mode, since the `client_id` is derived from the certificate rather than the host. If you do supply one it is still checked against the leaf SAN DNSName values — a supplied hostname that the certificate does not cover is treated as a misconfiguration (`hostname_cert_mismatch`) rather than silently ignored.
+
 The caller hosts `req.requestObject` at `requestUri` (the library does not host HTTP). The library verifies that the signing key's public SPKI matches the leaf certificate's public key — an attempt to sign with a mismatched key fails with `SignedRequestBuildError: signing_key_cert_mismatch`.
 
-The emitted `client_metadata` carries both shapes for compatibility:
-
-- 1.0 Final plural — `encrypted_response_enc_values_supported: ["A128GCM", ...]`
-- ID3 singular — `authorization_encrypted_response_alg: "ECDH-ES"`, `authorization_encrypted_response_enc: "A128GCM"`
-
-Verifiers reading either shape (e.g. the OIDF conformance suite reads ID3 directly) work without bespoke configuration.
+The emitted `client_metadata` carries the 1.0 Final shape: `encrypted_response_enc_values_supported: ["A128GCM", ...]`.
 
 ## Authorization responses (direct_post and direct_post.jwt)
 
@@ -395,7 +393,7 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 - **mDOC / ISO 18013-5** `mso_mdoc` format — CBOR decoding, claim extraction, COSE_Sign1 signature verification, MobileSecurityObject validity enforcement, IssuerSignedItem digest verification. Device authentication (ISO 18013-5 §9.1.3) is **mandatory and fails closed**: the `DeviceSignature` (COSE_Sign1) over `DeviceAuthentication`/`SessionTranscript` is verified against the MSO-committed device key. `DeviceMac` (COSE_Mac0) is **not supported and is rejected**.
 - **DCQL** — authorization request builder with DCQL query, matching via [@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql), `verifyPresentation` for combined crypto + match.
 - **HAIP** — `buildHaipQuery` / `validateHaipQuery` helpers for the High Assurance Interoperability Profile.
-- **Signed authorization requests (JAR)** — `createSignedAuthorizationRequest` per RFC 9101 / OpenID4VP 1.0 §5.10 with `x509_san_dns` client-id binding. Emits both 1.0 Final and ID3 `client_metadata` shapes for verifier interop.
+- **Signed authorization requests (JAR)** — `createSignedAuthorizationRequest` per RFC 9101 / OpenID4VP 1.0 §5.10 with `x509_san_dns` or `x509_hash` client-id binding. Emits the OpenID4VP 1.0 Final `client_metadata` shape.
 - **Encrypted responses** — `decryptAuthorizationResponse` for `direct_post.jwt` (ECDH-ES + A128GCM/A256GCM), `verifyAuthorizationResponse` for the 1.0 §8.1 object-keyed `vp_token` envelope.
 - **X.509 chain validation** — RFC 5280 chain building including `nameConstraints`, `StaticTrustStore`, `CompositeTrustStore`.
 - **Revocation checking** — OCSP-first with CRL fallback (`revocationPolicy: 'skip' | 'prefer' | 'require'`).
@@ -406,7 +404,6 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 **What is NOT yet implemented** (planned for follow-up releases):
 
 - Multi-credential DCQL queries (multiple query ids) and multi-presentation arrays per query id — currently rejected with `MultipleCredentialsNotSupportedError`.
-- `client_id_scheme: x509_hash` (HAIP 1.0 final's mandated scheme) — only `x509_san_dns` is supported today.
 - Self-signed-leaf rejection per HAIP 1.0 final's strict constraint (current behaviour accepts self-signed leaves for the verifier's own identity).
 - SIOPv2 (Self-Issued OpenID Provider) identity flows.
 

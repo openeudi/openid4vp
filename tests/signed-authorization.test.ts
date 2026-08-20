@@ -262,6 +262,120 @@ describe('createSignedAuthorizationRequest', () => {
         });
     });
 
+    it('x509_hash: client_id equals base64url(SHA-256(DER leaf cert))', async () => {
+        const input = await baseInput({ clientIdPrefix: 'x509_hash', hostname: undefined });
+        const certificateChain = input.certificateChain as Uint8Array[];
+        const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', certificateChain[0]));
+        const expectedHash = Buffer.from(digest)
+            .toString('base64')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+
+        const req = await createSignedAuthorizationRequest(input, pidQuery);
+        const payload = decodeJwt(req.requestObject);
+        expect(payload.client_id).toBe(`x509_hash:${expectedHash}`);
+
+        const params = new URL(req.uri.replace('openid4vp://', 'https://dummy/')).searchParams;
+        expect(params.get('client_id')).toBe(`x509_hash:${expectedHash}`);
+    });
+
+    it('x509_san_dns behaviour is unchanged when clientIdPrefix is explicit', async () => {
+        const req = await createSignedAuthorizationRequest(
+            await baseInput({ clientIdPrefix: 'x509_san_dns' }),
+            pidQuery
+        );
+        const payload = decodeJwt(req.requestObject);
+        expect(payload.client_id).toBe(`x509_san_dns:${hostname}`);
+    });
+
+    it('x509_hash: no hostname needed, and the leaf SAN is not consulted', async () => {
+        // Cert is issued for a DIFFERENT host than the verifier's own, and no
+        // hostname is supplied — under x509_hash the client_id comes from the
+        // certificate, so there is nothing to check the SAN against. Guards
+        // against the SAN check creeping back in for this prefix.
+        const { signer, certificateChain } = await createVerifierKeypairAndCert(
+            'somewhere-else.example.org'
+        );
+        const input = await baseInput({
+            clientIdPrefix: 'x509_hash',
+            hostname: undefined,
+            signer,
+            certificateChain,
+        });
+
+        const req = await createSignedAuthorizationRequest(input, pidQuery);
+        const payload = decodeJwt(req.requestObject);
+        expect(typeof payload.client_id).toBe('string');
+        expect(payload.client_id as string).toMatch(/^x509_hash:[A-Za-z0-9_-]{43}$/);
+    });
+
+    it('x509_hash: a supplied hostname is still bound to the leaf SAN', async () => {
+        // Documented behaviour: hostname is optional under x509_hash, but if the
+        // caller supplies one we refuse to silently ignore it.
+        const { signer, certificateChain } = await createVerifierKeypairAndCert(
+            'somewhere-else.example.org'
+        );
+        await expect(
+            createSignedAuthorizationRequest(
+                await baseInput({
+                    clientIdPrefix: 'x509_hash',
+                    hostname: 'verifier.example.com',
+                    signer,
+                    certificateChain,
+                }),
+                pidQuery
+            )
+        ).rejects.toMatchObject({
+            name: 'SignedRequestBuildError',
+            code: 'hostname_cert_mismatch',
+        });
+    });
+
+    it('x509_hash: an empty hostname is not reported as an x509_san_dns error', async () => {
+        // Previously `hostname: ''` under x509_hash tripped the hostname-required
+        // branch and blamed a prefix the caller never used. An empty string is
+        // simply no hostname, and x509_hash does not need one.
+        const req = await createSignedAuthorizationRequest(
+            await baseInput({ clientIdPrefix: 'x509_hash', hostname: '' }),
+            pidQuery
+        );
+        const payload = decodeJwt(req.requestObject);
+        expect(payload.client_id as string).toMatch(/^x509_hash:[A-Za-z0-9_-]{43}$/);
+    });
+
+    it('x509_hash: client_id is unpadded base64url of a 32-byte digest', async () => {
+        // The digest itself is checked above against an independently computed
+        // value; this pins the *encoding* contract (RFC 7515 §2: no padding, no
+        // + or / characters), which a Buffer.toString('base64') regression would
+        // otherwise slip past.
+        const req = await createSignedAuthorizationRequest(
+            await baseInput({ clientIdPrefix: 'x509_hash', hostname: undefined }),
+            pidQuery
+        );
+        const payload = decodeJwt(req.requestObject);
+        const hash = (payload.client_id as string).slice('x509_hash:'.length);
+
+        expect(hash).not.toContain('=');
+        expect(hash).not.toContain('+');
+        expect(hash).not.toContain('/');
+        expect(hash).toMatch(/^[A-Za-z0-9_-]+$/);
+        expect(Buffer.from(hash, 'base64url')).toHaveLength(32);
+    });
+
+    it('rejects missing hostname for x509_san_dns with missing_hostname', async () => {
+        // No clientIdPrefix supplied — exercises the x509_san_dns default too.
+        await expect(
+            createSignedAuthorizationRequest(
+                await baseInput({ hostname: undefined }),
+                pidQuery
+            )
+        ).rejects.toMatchObject({
+            name: 'SignedRequestBuildError',
+            code: 'missing_hostname',
+        });
+    });
+
     it('exposes error as instanceof SignedRequestBuildError', async () => {
         await expect(
             createSignedAuthorizationRequest(

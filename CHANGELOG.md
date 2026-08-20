@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `createSignedAuthorizationRequest` accepts `clientIdPrefix?: 'x509_san_dns' | 'x509_hash'`,
+  defaulting to `x509_san_dns` so existing callers are unaffected. With `x509_hash`
+  the `client_id` becomes `x509_hash:` followed by the unpadded base64url SHA-256
+  hash of the DER-encoded leaf certificate, per OpenID4VP 1.0 Final §5.9.3
+  (unpadded base64url per RFC 7515 §2). HAIP 1.0 Final mandates this prefix, and
+  the OpenID Foundation's HAIP verifier test plan pins it with no variant to
+  override — so `x509_san_dns` alone cannot pass that plan. `hostname` is now
+  optional and is required only for `x509_san_dns`; when supplied under either
+  prefix it is still validated against the leaf certificate's SAN DNSName values.
+  A new `missing_hostname` `SignedRequestBuildErrorCode` covers the
+  hostname-required case.
+- This prefix is validated by an OpenID Foundation certification: eudi-verify 1.4.0
+  is [certified](https://openid.net/certification/certified-oid4vp-haip-final/)
+  for `OID4VP-1.0+HAIP-1.0 Verifier iso_mdl direct_post.jwt` (14 Aug 2026), a plan
+  that pins `client_id_prefix=x509_hash`.
+
+### Removed
+
+- `createSignedAuthorizationRequest` no longer emits the singular
+  `authorization_encrypted_response_alg` / `authorization_encrypted_response_enc`
+  `client_metadata` fields. Those fields were removed from OpenID4VP before 1.0
+  Final; the OIDF conformance suite reads `alg` from `client_metadata.jwks` and
+  `enc` from `encrypted_response_enc_values_supported`, not from the singular
+  fields.
+
 ## [0.9.3] — 2026-08-20
 
 ### Fixed
