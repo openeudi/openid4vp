@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The `reflect-metadata` auto-load shipped in 0.9.2 did not actually work in the
+  published bundles: importing `@openeudi/openid4vp` on 0.9.2 without a
+  consumer-side `import "reflect-metadata"` still threw
+  `tsyringe requires a reflect polyfill`, in **both** the ESM and CJS builds.
+  `src/index.ts` did import the polyfill first, but the bundler hoists external
+  *named* imports (`@peculiar/x509`) above bare side-effect imports, so tsyringe
+  evaluated before the polyfill was installed. The build now injects the polyfill
+  ahead of the entry module (`inject` in `tsup.config.ts`), which holds for both
+  formats. Consumers on 0.9.2 who added a manual preload can drop it. Reported by
+  @mkascel (eudi-verify) in [openeudi/core#8](https://github.com/openeudi/core/issues/8).
+  `tests/bundle-polyfill-order.test.ts` now imports both built bundles in a clean
+  child process with no preload, so this cannot regress silently again.
+
 ## [0.9.2] — 2026-07-24
 
 ### Fixed
