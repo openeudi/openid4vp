@@ -54,13 +54,21 @@ export async function createSignedAuthorizationRequest(
     const clientIdPrefix = input.clientIdPrefix ?? 'x509_san_dns';
     const leafCert = new X509Certificate(toArrayBuffer(input.certificateChain[0]));
 
-    if (clientIdPrefix === 'x509_san_dns' || input.hostname !== undefined) {
-        if (!input.hostname) {
-            throw new SignedRequestBuildError(
-                'missing_hostname',
-                'hostname is required for clientIdPrefix "x509_san_dns"',
-            );
-        }
+    // `x509_san_dns` puts the hostname *in* the client_id, so it is mandatory
+    // there. `x509_hash` derives the client_id from the certificate instead and
+    // does not need one.
+    if (clientIdPrefix === 'x509_san_dns' && !input.hostname) {
+        throw new SignedRequestBuildError(
+            'missing_hostname',
+            'hostname is required for clientIdPrefix "x509_san_dns"',
+        );
+    }
+
+    // Whenever a hostname IS supplied, bind it to the leaf SAN — for
+    // `x509_san_dns` because the client_id asserts it, and for `x509_hash`
+    // because silently ignoring a hostname the caller went out of their way to
+    // provide would hide a misconfigured certificate.
+    if (input.hostname) {
         const sanDnsNames = extractDnsNames(leafCert);
         if (!sanDnsNames.includes(input.hostname)) {
             throw new SignedRequestBuildError(
