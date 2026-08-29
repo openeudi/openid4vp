@@ -377,4 +377,82 @@ describe('verifyAuthorizationResponse', () => {
             }),
         ).rejects.toThrow(/empty|no presentations/i);
     });
+
+    describe('dual-format credential_sets query: dispatch on the presented credential', () => {
+        // Same DCQL query, sd-jwt listed first, for both orderings below — only
+        // which credential the wallet actually presents changes between tests.
+        const dualFormatQuery: DcqlQuery = {
+            credentials: [
+                {
+                    id: 'sd-jwt-cred',
+                    format: 'dc+sd-jwt',
+                    meta: { vct_values: ['urn:eu.europa.ec.eudi:pid:1'] },
+                    claims: [{ path: ['given_name'] }],
+                },
+                {
+                    id: 'mdoc-cred',
+                    format: 'mso_mdoc',
+                    meta: { doctype_value: 'eu.europa.ec.eudi.pid.1' },
+                    claims: [{ path: ['eu.europa.ec.eudi.pid.1', 'age_over_18'] }],
+                },
+            ],
+            credential_sets: [{ options: [['sd-jwt-cred'], ['mdoc-cred']] }],
+        };
+
+        it('verifies when the wallet presents the mso_mdoc credential (second in the query)', async () => {
+            const clientId = `x509_san_dns:verifier.${crypto.randomUUID()}.example`;
+            const responseUri = `https://verifier.example/${crypto.randomUUID()}/response`;
+            const nonce = crypto.randomUUID();
+            const mdocGeneratedNonce = crypto.randomUUID();
+
+            const transcript = await buildOid4vpSessionTranscript({
+                clientId,
+                responseUri,
+                nonce,
+                mdocGeneratedNonce,
+            });
+            const mdoc = await buildSignedMdoc({
+                issuerKey,
+                docType: 'eu.europa.ec.eudi.pid.1',
+                namespaces: { 'eu.europa.ec.eudi.pid.1': { age_over_18: true } },
+                sessionTranscript: transcript,
+            });
+
+            // Presented under 'mdoc-cred', the SECOND entry in dualFormatQuery.credentials.
+            // query.credentials[0] is 'sd-jwt-cred' (dc+sd-jwt), so dispatch keyed off
+            // credentials[0] would skip the base64url decode this mso_mdoc token needs.
+            const envelope = { vp_token: { 'mdoc-cred': [bytesToBase64url(mdoc.mdocBytes)] } };
+
+            const result = await verifyAuthorizationResponse(envelope, dualFormatQuery, {
+                trustedCertificates: [issuerKey.certDerBytes],
+                nonce,
+                clientId,
+                responseUri,
+                mdocSessionTranscript: transcript,
+            });
+
+            expect(result.parsed.valid).toBe(true);
+            expect(result.valid).toBe(true);
+        });
+
+        it('verifies when the wallet presents the dc+sd-jwt credential (second in the query)', async () => {
+            // Same query shape, reordered so mso_mdoc is listed FIRST — the opposite
+            // ordering bug: credentials[0].format === 'mso_mdoc' would wrongly
+            // base64url-decode this SD-JWT string presentation.
+            const reorderedQuery: DcqlQuery = {
+                credentials: [dualFormatQuery.credentials[1], dualFormatQuery.credentials[0]],
+                credential_sets: [{ options: [['mdoc-cred'], ['sd-jwt-cred']] }],
+            };
+
+            const envelope = { vp_token: { 'sd-jwt-cred': [signedSdJwtVp.sdJwt] } };
+
+            const result = await verifyAuthorizationResponse(envelope, reorderedQuery, {
+                trustedCertificates: [issuerKey.certDerBytes],
+                nonce: vpNonce,
+            });
+
+            expect(result.parsed.valid).toBe(true);
+            expect(result.valid).toBe(true);
+        });
+    });
 });

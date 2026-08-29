@@ -389,6 +389,58 @@ describe('verifyPresentation — trusted_authority_ids wiring (Task 17)', () => 
     });
 });
 
+describe('verifyPresentation — dual-format credential_sets query: id labeled by presented format', () => {
+    // sd-jwt-cred listed first; the wallet presents the mdoc credential (second in
+    // the query). query.credentials[0].id is 'sd-jwt-cred' — a naive lookup would
+    // mislabel this mDOC presentation's `decoded.id` (and therefore match.credentialId)
+    // as 'sd-jwt-cred' instead of resolving it by the presented format.
+    const dualFormatQuery: DcqlQuery = {
+        credentials: [
+            {
+                id: 'sd-jwt-cred',
+                format: 'dc+sd-jwt',
+                meta: { vct_values: ['urn:eu.europa.ec.eudi:pid:1'] },
+                claims: [{ path: ['given_name'] }],
+            },
+            {
+                id: 'mdoc-cred',
+                format: 'mso_mdoc',
+                meta: { doctype_value: 'eu.europa.ec.eudi.pid.1' },
+                claims: [{ path: ['eu.europa.ec.eudi.pid.1', 'age_over_18'] }],
+            },
+        ],
+        credential_sets: [{ options: [['sd-jwt-cred'], ['mdoc-cred']] }],
+    };
+
+    it('labels an mso_mdoc presentation as "mdoc-cred", not the first-listed "sd-jwt-cred"', async () => {
+        const result = await verifyPresentation(signedMdocVp.mdocBytes, dualFormatQuery, {
+            trustedCertificates: [issuerKey.certDerBytes],
+            nonce: vpNonce,
+            mdocSessionTranscript: signedMdocVp.sessionTranscript,
+        });
+
+        expect(result.valid).toBe(true);
+        expect(result.match.matches).toHaveLength(1);
+        expect(result.match.matches[0].credentialId).toBe('mdoc-cred');
+    });
+
+    it('labels a dc+sd-jwt presentation as "sd-jwt-cred" when mdoc is listed first', async () => {
+        const reorderedQuery: DcqlQuery = {
+            credentials: [dualFormatQuery.credentials[1], dualFormatQuery.credentials[0]],
+            credential_sets: [{ options: [['mdoc-cred'], ['sd-jwt-cred']] }],
+        };
+
+        const result = await verifyPresentation(signedSdJwtVp.sdJwt, reorderedQuery, {
+            trustedCertificates: [issuerKey.certDerBytes],
+            nonce: vpNonce,
+        });
+
+        expect(result.valid).toBe(true);
+        expect(result.match.matches).toHaveLength(1);
+        expect(result.match.matches[0].credentialId).toBe('sd-jwt-cred');
+    });
+});
+
 // ----------------------------------------------------------------
 // Helper: rebuild issuer JWT with a multi-cert x5c chain
 // ----------------------------------------------------------------

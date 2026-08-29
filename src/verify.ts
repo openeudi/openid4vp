@@ -60,8 +60,16 @@ export async function verifyPresentation(
             ? (parsed.namespacedClaims as Record<string, unknown>)
             : (parsed.claims as unknown as Record<string, unknown>);
 
+    // Resolve the query credential this presentation actually is, by format —
+    // query.credentials[0] is only the first-listed entry and mislabels dual-format
+    // queries. This entry point has no queryIds (only vpToken/query), so format is
+    // the only signal available; fall back to the prior behavior when no format match
+    // is found.
+    const presentedCredentialQuery =
+        query.credentials.find((c) => c.format === dcqlFormat) ?? query.credentials[0];
+
     const decoded: DecodedCredential = {
-        id: query.credentials[0]?.id ?? 'presented',
+        id: presentedCredentialQuery?.id ?? 'presented',
         format: dcqlFormat,
         claims: decodedClaims,
     };
@@ -275,14 +283,23 @@ export async function verifyAuthorizationResponse(
         throw new MultipleCredentialsNotSupportedError(queryIds.length, presentationCount);
     }
 
-    const presentation = vpToken[queryIds[0]][0];
+    const presentedQueryId = queryIds[0];
+    const presentation = vpToken[presentedQueryId][0];
 
     // OpenID4VP 1.0 / ISO 18013-7: an `mso_mdoc` VP token is a base64url-encoded
     // CBOR DeviceResponse. Once carried through a JWE-decrypted JSON envelope it is
     // a string, so decode it back to the Uint8Array the mDOC parser expects. SD-JWT
     // (string) and any already-binary presentation pass through unchanged.
+    //
+    // Dispatch on the credential the wallet actually presented (queryIds[0], per
+    // §8.1) rather than query.credentials[0], the first entry in the DCQL query —
+    // for a dual-format query built with credential_sets those can differ, and the
+    // wrong one always decodes as if it were the first-listed format.
+    const presentedCredentialQuery = query.credentials.find(
+        (c) => c.id === presentedQueryId,
+    );
     const decodedPresentation =
-        query.credentials[0]?.format === 'mso_mdoc' && typeof presentation === 'string'
+        presentedCredentialQuery?.format === 'mso_mdoc' && typeof presentation === 'string'
             ? base64UrlToBytes(presentation)
             : presentation;
 
