@@ -8,6 +8,27 @@ OpenID4VP credential parsing and validation for EUDI Wallets. Supports SD-JWT VC
 npm install @openeudi/openid4vp
 ```
 
+## Security and maturity
+
+This library verifies credentials for identity and age-assurance flows, so its posture is stated here rather than left to be inferred from the feature list.
+
+**No independent third-party security audit has been carried out.** The code has not been reviewed by an external security firm.
+
+**Two high-severity vulnerabilities have been found and fixed, both reported by outside researchers:**
+
+| Advisory | Issue | Fixed in |
+| -------- | ----- | -------- |
+| [GHSA-4c2f-96cf-f5fc](https://github.com/openeudi/openid4vp/security/advisories/GHSA-4c2f-96cf-f5fc) (CVE-2026-75522) | X.509 chain building terminated on Subject DN string equality rather than cryptographic closure, so a forged certificate reusing a trusted anchor's DN was accepted without signature verification | 0.8.1 |
+| [GHSA-h548-cr7v-4v97](https://github.com/openeudi/openid4vp/security/advisories/GHSA-h548-cr7v-4v97) (CVE-2026-77456) | Holder binding was not enforced: an SD-JWT VC's KB-JWT was optional, and mDOC device authentication was never verified, so a captured presentation could be replayed | 0.9.0 |
+
+Both are fixed. Both were found externally rather than by this project's own testing — weigh that accordingly when deciding how much to rely on the library, and **always run the latest release**.
+
+**Pre-1.0.** While the version is below 1.0, minor bumps may contain breaking changes; see the [migration list](#migration). Full EUDI ARF 1.4+ profile compliance is a 1.0 goal, not a current claim.
+
+**What is independently exercised.** The OpenID Foundation conformance suite runs against this library in CI on every pull request, covering the 1.0-Final verifier happy flow for both `sd_jwt_vc` and `iso_mdl` plus the holder-binding negatives. Separately, a downstream deployment built on this library — [eudi-verify](https://github.com/eudi-verify/eudi-verify) 1.4.0 — is [OpenID Certified](https://openid.net/certification/certified-oid4vp-haip-final/) for the `OID4VP-1.0+HAIP-1.0 Verifier iso_mdl direct_post.jwt` profile (14 Aug 2026). That certification is the deployment's, not the library's, but it exercised this code.
+
+Known functional gaps that bear on what you can rely on are listed under [Scope and limitations](#scope-and-limitations). To report a vulnerability, use private reporting as described in [SECURITY.md](./SECURITY.md) — please do not open a public issue.
+
 ## Quick start
 
 Parse a Verifiable Presentation token and extract identity claims:
