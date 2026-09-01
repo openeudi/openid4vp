@@ -156,6 +156,20 @@ const req = await createSignedAuthorizationRequest({
 
 The caller hosts `req.requestObject` at `requestUri` (the library does not host HTTP). The library verifies that the signing key's public SPKI matches the leaf certificate's public key — an attempt to sign with a mismatched key fails with `SignedRequestBuildError: signing_key_cert_mismatch`.
 
+### Self-signed verifier certificates are rejected
+
+HAIP 1.0 Final requires the verifier certificate to chain to a trust anchor the wallet recognises. A self-signed leaf asserts an identity nothing vouches for, so a wallet enforcing the profile will reject the request object. `createSignedAuthorizationRequest` therefore **rejects a self-signed leaf by default** with `SignedRequestBuildError: self_signed_leaf`, failing at build time rather than emitting a request no conforming wallet will honour.
+
+```ts
+// Local development or tests only — not valid under HAIP 1.0 Final.
+await createSignedAuthorizationRequest({
+  ...input,
+  allowSelfSignedCertificate: true,
+}, dcqlQuery);
+```
+
+The check verifies the leaf's signature against its own public key rather than comparing Subject and Issuer DN strings. That distinction is deliberate: [GHSA-4c2f-96cf-f5fc](https://github.com/openeudi/openid4vp/security/advisories/GHSA-4c2f-96cf-f5fc) was a DN-string-equality bug, and a DN comparison here would both miss a re-signed certificate and wrongly reject a legitimate cross-signed one.
+
 The emitted `client_metadata` carries the 1.0 Final shape: `encrypted_response_enc_values_supported: ["A128GCM", ...]`.
 
 ## Authorization responses (direct_post and direct_post.jwt)
@@ -393,7 +407,7 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 - **mDOC / ISO 18013-5** `mso_mdoc` format — CBOR decoding, claim extraction, COSE_Sign1 signature verification, MobileSecurityObject validity enforcement, IssuerSignedItem digest verification. Device authentication (ISO 18013-5 §9.1.3) is **mandatory and fails closed**: the `DeviceSignature` (COSE_Sign1) over `DeviceAuthentication`/`SessionTranscript` is verified against the MSO-committed device key. `DeviceMac` (COSE_Mac0) is **not supported and is rejected**.
 - **DCQL** — authorization request builder with DCQL query, matching via [@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql), `verifyPresentation` for combined crypto + match.
 - **HAIP** — `buildHaipQuery` / `validateHaipQuery` helpers for the High Assurance Interoperability Profile.
-- **Signed authorization requests (JAR)** — `createSignedAuthorizationRequest` per RFC 9101 / OpenID4VP 1.0 §5.10 with `x509_san_dns` or `x509_hash` client-id binding. Emits the OpenID4VP 1.0 Final `client_metadata` shape.
+- **Signed authorization requests (JAR)** — `createSignedAuthorizationRequest` per RFC 9101 / OpenID4VP 1.0 §5.10 with `x509_san_dns` or `x509_hash` client-id binding. Emits the OpenID4VP 1.0 Final `client_metadata` shape. Self-signed verifier leaf certificates are rejected by default per HAIP 1.0 Final.
 - **Encrypted responses** — `decryptAuthorizationResponse` for `direct_post.jwt` (ECDH-ES + A128GCM/A256GCM), `verifyAuthorizationResponse` for the 1.0 §8.1 object-keyed `vp_token` envelope.
 - **X.509 chain validation** — RFC 5280 chain building including `nameConstraints`, `StaticTrustStore`, `CompositeTrustStore`.
 - **Revocation checking** — OCSP-first with CRL fallback (`revocationPolicy: 'skip' | 'prefer' | 'require'`).
@@ -404,7 +418,6 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 **What is NOT yet implemented** (planned for follow-up releases):
 
 - Multi-credential DCQL queries (multiple query ids) and multi-presentation arrays per query id — currently rejected with `MultipleCredentialsNotSupportedError`.
-- Self-signed-leaf rejection per HAIP 1.0 final's strict constraint (current behaviour accepts self-signed leaves for the verifier's own identity).
 - SIOPv2 (Self-Issued OpenID Provider) identity flows.
 
 EUDI Architecture Reference Framework (ARF) alignment: tracks OpenID4VP 1.0 final. Full ARF 1.4+ profile compliance will be added before a stable 1.0.
@@ -437,6 +450,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for per-release changes. Key migration moment
 - **0.7.0** — `createSignedAuthorizationRequest`, `decryptAuthorizationResponse`, `verifyAuthorizationResponse` for HAIP / 1.0 §8.1 envelopes.
 - **0.8.0** — additive: ID3 `client_metadata` bridge, `trustedIssuerJwks` opt-in, transitive SD-JWT disclosure check.
 - **0.9.3** — `reflect-metadata` is loaded by the package itself in both ESM and CJS builds. If you added a manual `import "reflect-metadata"` before importing this library to work around the 0.9.2 bug, you can drop it.
+- **0.11.0** — **BREAKING:** `createSignedAuthorizationRequest` now rejects a self-signed leaf certificate with `SignedRequestBuildError: self_signed_leaf`, per HAIP 1.0 Final. Verifiers using a self-signed certificate for their own identity must either move to a CA-issued certificate (the correct fix) or pass `allowSelfSignedCertificate: true` to keep the previous behaviour. Verification of wallet presentations is unaffected — this concerns only the verifier's own request-signing certificate.
 - **0.10.0** — `createSignedAuthorizationRequest` gains `clientIdPrefix` (`x509_san_dns` default, or `x509_hash`), and `hostname` becomes optional — required only for `x509_san_dns`, but still validated against the leaf SAN whenever supplied. **Wire change for existing callers:** the emitted `client_metadata` no longer carries the singular ID3 `authorization_encrypted_response_alg` / `authorization_encrypted_response_enc` fields added in 0.8.0. Verifiers that read the 1.0 Final `encrypted_response_enc_values_supported` array (and `alg` from `client_metadata.jwks`) are unaffected; anything still reading the singular fields needs updating.
 
 ## License

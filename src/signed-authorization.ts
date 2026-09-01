@@ -89,6 +89,26 @@ export async function createSignedAuthorizationRequest(
         );
     }
 
+    // HAIP 1.0 Final requires the verifier certificate to chain to a trust
+    // anchor the wallet recognises. A self-signed leaf asserts an identity
+    // nothing vouches for, so a wallet enforcing the profile rejects the request
+    // object — better to fail here, at build time, than to ship a request no
+    // conforming wallet will honour.
+    //
+    // isSelfSigned() verifies the signature against the certificate's own public
+    // key rather than comparing Subject and Issuer DN strings. That distinction
+    // matters: GHSA-4c2f-96cf-f5fc was a DN-string-equality bug, and a DN check
+    // here would both miss a re-signed certificate and misjudge a legitimate
+    // cross-signed one.
+    if (input.allowSelfSignedCertificate !== true && (await leafCert.isSelfSigned())) {
+        throw new SignedRequestBuildError(
+            'self_signed_leaf',
+            'leaf certificate is self-signed; HAIP 1.0 Final requires a certificate ' +
+                'chaining to a trust anchor. Pass allowSelfSignedCertificate: true to ' +
+                'override for local development or tests.',
+        );
+    }
+
     const responseMode = input.responseMode ?? 'direct_post.jwt';
 
     if (responseMode === 'direct_post.jwt') {

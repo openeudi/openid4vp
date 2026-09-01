@@ -226,27 +226,75 @@ export interface VerifierKeyMaterial {
     hostname: string;
 }
 
-export async function createVerifierKeypairAndCert(hostname: string): Promise<VerifierKeyMaterial> {
+/**
+ * Verifier key material for `createSignedAuthorizationRequest`.
+ *
+ * Produces a CA-issued leaf by default, matching what the builder now requires:
+ * HAIP 1.0 Final rejects a self-signed verifier certificate, so a self-signed
+ * fixture would only ever exercise the error path. Pass `{ selfSigned: true }`
+ * to get the old single self-signed certificate, for tests that specifically
+ * cover that rejection or the `allowSelfSignedCertificate` override.
+ */
+export async function createVerifierKeypairAndCert(
+    hostname: string,
+    options: { selfSigned?: boolean } = {}
+): Promise<VerifierKeyMaterial> {
     const signer = (await crypto.subtle.generateKey(
         { name: 'ECDSA', namedCurve: 'P-256' },
         true,
         ['sign', 'verify']
     )) as CryptoKeyPair;
 
-    const cert = await x509.X509CertificateGenerator.createSelfSigned({
+    const san = new x509.SubjectAlternativeNameExtension([{ type: 'dns', value: hostname }]);
+    const notBefore = new Date(Date.now() - 60_000);
+    const notAfter = new Date(Date.now() + 3600_000);
+
+    if (options.selfSigned === true) {
+        const cert = await x509.X509CertificateGenerator.createSelfSigned({
+            serialNumber: '01',
+            name: `CN=${hostname}`,
+            notBefore,
+            notAfter,
+            signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+            keys: signer,
+            extensions: [san],
+        });
+        return { signer, certificateChain: [new Uint8Array(cert.rawData)], hostname };
+    }
+
+    const caKeys = (await crypto.subtle.generateKey(
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        true,
+        ['sign', 'verify']
+    )) as CryptoKeyPair;
+
+    const caCert = await x509.X509CertificateGenerator.createSelfSigned({
         serialNumber: '01',
-        name: `CN=${hostname}`,
-        notBefore: new Date(Date.now() - 60_000),
-        notAfter: new Date(Date.now() + 3600_000),
+        name: 'CN=test-verifier-ca',
+        notBefore,
+        notAfter,
         signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
-        keys: signer,
-        extensions: [
-            new x509.SubjectAlternativeNameExtension([{ type: 'dns', value: hostname }]),
-        ],
+        keys: caKeys,
+        extensions: [new x509.BasicConstraintsExtension(true, 1, true)],
     });
 
-    const certDer = new Uint8Array(cert.rawData);
-    return { signer, certificateChain: [certDer], hostname };
+    const leafCert = await x509.X509CertificateGenerator.create({
+        serialNumber: '02',
+        subject: `CN=${hostname}`,
+        issuer: caCert.subject,
+        notBefore,
+        notAfter,
+        signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+        publicKey: signer.publicKey,
+        signingKey: caKeys.privateKey,
+        extensions: [san],
+    });
+
+    return {
+        signer,
+        certificateChain: [new Uint8Array(leafCert.rawData), new Uint8Array(caCert.rawData)],
+        hostname,
+    };
 }
 
 export interface EncryptionKeypair {

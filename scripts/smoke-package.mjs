@@ -134,13 +134,34 @@ await check('createSignedAuthorizationRequest exercises @peculiar/x509 + tsyring
         true,
         ['sign', 'verify'],
     );
-    const cert = await x509.X509CertificateGenerator.createSelfSigned({
+    // A CA-issued leaf, not self-signed: the builder rejects self-signed verifier
+    // certificates by default (HAIP 1.0 Final), so a self-signed fixture here
+    // would only ever exercise the error path.
+    const caKeys = await crypto.subtle.generateKey(
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        true,
+        ['sign', 'verify'],
+    );
+    const notBefore = new Date(Date.now() - 60_000);
+    const notAfter = new Date(Date.now() + 3_600_000);
+    const caCert = await x509.X509CertificateGenerator.createSelfSigned({
         serialNumber: '01',
-        name: `CN=${hostname}`,
-        notBefore: new Date(Date.now() - 60_000),
-        notAfter: new Date(Date.now() + 3_600_000),
+        name: 'CN=smoke-test-ca',
+        notBefore,
+        notAfter,
         signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
-        keys: signer,
+        keys: caKeys,
+        extensions: [new x509.BasicConstraintsExtension(true, 1, true)],
+    });
+    const cert = await x509.X509CertificateGenerator.create({
+        serialNumber: '02',
+        subject: `CN=${hostname}`,
+        issuer: caCert.subject,
+        notBefore,
+        notAfter,
+        signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+        publicKey: signer.publicKey,
+        signingKey: caKeys.privateKey,
         extensions: [new x509.SubjectAlternativeNameExtension([{ type: 'dns', value: hostname }])],
     });
 
@@ -165,7 +186,7 @@ await check('createSignedAuthorizationRequest exercises @peculiar/x509 + tsyring
         responseUri: `https://${hostname}/response`,
         nonce: 'smoke-nonce',
         signer,
-        certificateChain: [new Uint8Array(cert.rawData)],
+        certificateChain: [new Uint8Array(cert.rawData), new Uint8Array(caCert.rawData)],
         encryptionKey: { publicJwk },
         vpFormatsSupported: { 'dc+sd-jwt': { 'sd-jwt_alg_values': ['ES256'] } },
     };
