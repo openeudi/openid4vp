@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-09-01
+
+### Fixed
+
+- `verifyAuthorizationResponse` and `verifyPresentation` decided how to decode a
+  presentation — and which credential id to label the match with — from
+  `query.credentials[0]`, the first entry in the DCQL query, rather than the
+  credential the wallet actually presented. For a single-format query the two
+  coincide, so nothing was visibly broken; for a dual-format query built with
+  `credential_sets`, only the first-listed format could ever verify and the other
+  failed closed with a parser error. `verifyAuthorizationResponse` now resolves
+  the presented credential by `queryIds[0]` (the id the wallet keyed the
+  `vp_token` with, per OpenID4VP 1.0 §8.1); `verifyPresentation`, which has no
+  `queryIds`, resolves by the presented credential's format. Reported and fixed
+  by @mkascel (eudi-verify) in [#39](https://github.com/openeudi/openid4vp/pull/39).
+
+  Two notes for consumers: a `vp_token` keyed by an id absent from the query
+  previously decoded as `query.credentials[0]`'s format and could verify, and now
+  fails closed. `match.credentialId` remains unreliable for *same-format*
+  multi-credential queries — pre-existing, tracked in
+  [#41](https://github.com/openeudi/openid4vp/issues/41).
+
 ## [0.10.0] — 2026-08-20
 
 ### Added
