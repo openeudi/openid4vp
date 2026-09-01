@@ -26,13 +26,56 @@ jobs:
           cache: "npm"
           registry-url: "https://registry.npmjs.org"
 
+      # Fail before install/build/test rather than deep inside `npm publish`,
+      # where a mismatch surfaces as a confusing "version already exists".
+      - name: Resolve release channel and check the tag
+        id: rel
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v${tag} does not match package.json version ${pkg}. Bump the version, or delete and re-push the tag."
+            exit 1
+          fi
+
+          # npm does NOT infer a prerelease from semver: without --tag it always
+          # writes `latest`, so a `v1.2.3-rc.1` tag would hand a release
+          # candidate to every plain `npm install`. Route prereleases to `next`.
+          case "$tag" in
+            *-*) channel="next";   prerelease="true"  ;;
+            *)   channel="latest"; prerelease="false" ;;
+          esac
+
+          # Stable releases must have their notes filed under a dated heading.
+          # 0.9.3 shipped with its notes still under [Unreleased], so a published
+          # release read as unreleased. Prereleases are exempt — their notes
+          # legitimately still live under [Unreleased].
+          if [ "$prerelease" = "false" ]; then
+            heading="$(grep -m1 -E "^## \[${tag}\]" CHANGELOG.md || true)"
+            if [ -z "$heading" ]; then
+              echo "::error::CHANGELOG.md has no '## [${tag}]' heading. Move the [Unreleased] notes under a dated ${tag} heading."
+              exit 1
+            fi
+            if ! printf '%s' "$heading" | grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}'; then
+              echo "::error::CHANGELOG heading for ${tag} carries no YYYY-MM-DD date: ${heading}"
+              exit 1
+            fi
+          fi
+
+          echo "version=${tag}"        >> "$GITHUB_OUTPUT"
+          echo "channel=${channel}"    >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+          echo "Publishing ${tag} to dist-tag '${channel}' (prerelease=${prerelease})"
+
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - run: npm publish --access public --provenance
+      - run: npm publish --access public --provenance --tag "${{ steps.rel.outputs.channel }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           generate_release_notes: true
-
+          prerelease: ${{ steps.rel.outputs.prerelease }}
