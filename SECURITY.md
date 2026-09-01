@@ -2,12 +2,20 @@
 
 ## Supported Versions
 
-| Version | Supported |
-| ------- | --------- |
-| 0.2.x   | Yes       |
-| < 0.2   | No        |
+| Version  | Supported |
+| -------- | --------- |
+| 0.11.x   | Yes       |
+| < 0.11   | No        |
 
-Only the latest release receives security updates.
+Only the latest minor receives security updates. While this package is pre-1.0
+there are no maintained backport branches: a fix ships in the next release from
+`main`, so staying current is a prerequisite for being covered by this policy.
+
+Two high-severity advisories have been published to date
+([GHSA-4c2f-96cf-f5fc](https://github.com/openeudi/openid4vp/security/advisories/GHSA-4c2f-96cf-f5fc),
+[GHSA-h548-cr7v-4v97](https://github.com/openeudi/openid4vp/security/advisories/GHSA-h548-cr7v-4v97)),
+fixed in 0.8.1 and 0.9.0 respectively. The library has not had an independent
+third-party security audit; see the README's "Security and maturity" section.
 
 ## Reporting a Vulnerability
 
