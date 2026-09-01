@@ -155,7 +155,8 @@ export type SignedRequestBuildErrorCode =
     | 'missing_vp_formats'
     | 'unsupported_signing_alg'
     | 'empty_supported_enc_values'
-    | 'missing_hostname';
+    | 'missing_hostname'
+    | 'self_signed_leaf';
 
 export class SignedRequestBuildError extends OpenID4VPError {
     readonly code: SignedRequestBuildErrorCode;

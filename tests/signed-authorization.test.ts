@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { decodeJwt, decodeProtectedHeader } from 'jose';
+import * as x509 from '@peculiar/x509';
 
 import { createSignedAuthorizationRequest } from '../src/signed-authorization.js';
 import { buildHaipQuery } from '../src/haip.js';
@@ -374,6 +375,87 @@ describe('createSignedAuthorizationRequest', () => {
             name: 'SignedRequestBuildError',
             code: 'missing_hostname',
         });
+    });
+
+    it('rejects a self-signed leaf with self_signed_leaf by default', async () => {
+        const { signer, certificateChain } = await createVerifierKeypairAndCert(hostname, {
+            selfSigned: true,
+        });
+        await expect(
+            createSignedAuthorizationRequest(
+                await baseInput({ signer, certificateChain }),
+                pidQuery
+            )
+        ).rejects.toMatchObject({
+            name: 'SignedRequestBuildError',
+            code: 'self_signed_leaf',
+        });
+    });
+
+    it('allowSelfSignedCertificate: true permits a self-signed leaf', async () => {
+        const { signer, certificateChain } = await createVerifierKeypairAndCert(hostname, {
+            selfSigned: true,
+        });
+        const req = await createSignedAuthorizationRequest(
+            await baseInput({ signer, certificateChain, allowSelfSignedCertificate: true }),
+            pidQuery
+        );
+        const payload = decodeJwt(req.requestObject);
+        expect(payload.client_id).toBe(`x509_san_dns:${hostname}`);
+    });
+
+    it('a CA-issued leaf whose Subject DN equals its issuer DN is not treated as self-signed', async () => {
+        // The check verifies the signature against the cert's own public key
+        // rather than comparing Subject and Issuer DN strings. GHSA-4c2f-96cf-f5fc
+        // was exactly a DN-string-equality bug, so pin the distinction: this leaf
+        // shares its CA's DN but is signed by the CA's key, and must pass.
+        const sharedDn = 'CN=shared-dn.example.com';
+        const caKeys = (await crypto.subtle.generateKey(
+            { name: 'ECDSA', namedCurve: 'P-256' },
+            true,
+            ['sign', 'verify']
+        )) as CryptoKeyPair;
+        const leafKeys = (await crypto.subtle.generateKey(
+            { name: 'ECDSA', namedCurve: 'P-256' },
+            true,
+            ['sign', 'verify']
+        )) as CryptoKeyPair;
+
+        const caCert = await x509.X509CertificateGenerator.createSelfSigned({
+            serialNumber: '01',
+            name: sharedDn,
+            notBefore: new Date(Date.now() - 60_000),
+            notAfter: new Date(Date.now() + 3600_000),
+            signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+            keys: caKeys,
+            extensions: [new x509.BasicConstraintsExtension(true, 1, true)],
+        });
+
+        const leafCert = await x509.X509CertificateGenerator.create({
+            serialNumber: '02',
+            subject: sharedDn,
+            issuer: sharedDn,
+            notBefore: new Date(Date.now() - 60_000),
+            notAfter: new Date(Date.now() + 3600_000),
+            signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+            publicKey: leafKeys.publicKey,
+            signingKey: caKeys.privateKey,
+            extensions: [
+                new x509.SubjectAlternativeNameExtension([{ type: 'dns', value: hostname }]),
+            ],
+        });
+
+        const req = await createSignedAuthorizationRequest(
+            await baseInput({
+                signer: leafKeys,
+                certificateChain: [
+                    new Uint8Array(leafCert.rawData),
+                    new Uint8Array(caCert.rawData),
+                ],
+            }),
+            pidQuery
+        );
+        expect(decodeJwt(req.requestObject).client_id).toBe(`x509_san_dns:${hostname}`);
     });
 
     it('exposes error as instanceof SignedRequestBuildError', async () => {

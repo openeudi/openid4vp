@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-09-01
+
+### Changed (library)
+
+- **BREAKING**: `createSignedAuthorizationRequest` now rejects a self-signed leaf
+  certificate with the new `SignedRequestBuildError` code `self_signed_leaf`.
+  HAIP 1.0 Final requires the verifier certificate to chain to a trust anchor the
+  wallet recognises; a self-signed leaf asserts an identity nothing vouches for,
+  so a wallet enforcing the profile rejects the request object. Failing at build
+  time is better than emitting a request no conforming wallet will honour. This
+  closes the last of the README's documented HAIP divergences.
+
+  The check calls `isSelfSigned()`, which verifies the leaf's signature against
+  its own public key rather than comparing Subject and Issuer DN strings. That
+  distinction is deliberate: [GHSA-4c2f-96cf-f5fc](https://github.com/openeudi/openid4vp/security/advisories/GHSA-4c2f-96cf-f5fc)
+  was a DN-string-equality bug, and a DN comparison here would both miss a
+  re-signed certificate and wrongly reject a legitimate cross-signed one.
+
+  **Migration:** verifiers using a self-signed certificate for their own identity
+  should move to a CA-issued certificate. To keep the previous behaviour for local
+  development or tests, pass `allowSelfSignedCertificate: true`.
+
+  Verification of wallet presentations is unaffected — this concerns only the
+  verifier's own request-signing certificate.
+
+### Added (library)
+
+- `allowSelfSignedCertificate?: boolean` on `SignedAuthorizationRequestInput`
+  (default `false`), the documented escape hatch for the above.
+
 ## [0.10.1] — 2026-09-01
 
 ### Fixed
