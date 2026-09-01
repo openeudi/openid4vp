@@ -9,8 +9,21 @@ permissions:
   id-token: write
 
 jobs:
+  # Conformance GATES the publish. These used to be two independent workflows on
+  # the same tag, so a failing conformance run could not stop a release — on
+  # v0.11.0 it went red while the package published regardless. The OIDF suite is
+  # the main external correctness signal for this library; shipping past it is
+  # not a trade worth making for ~2 minutes of release latency.
+  conformance:
+    name: OIDF Conformance
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/oidf-release.yml
+
   publish:
     name: Publish to npm
+    needs: conformance
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -74,8 +87,19 @@ jobs:
       - run: npm test
       - run: npm publish --access public --provenance --tag "${{ steps.rel.outputs.channel }}"
 
+      # Collected from the conformance job (same run) and attached only once the
+      # release exists, so nothing races release creation.
+      - name: Download conformance results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: conformance-results-${{ github.ref_name }}
+          path: ./conformance-results
+        continue-on-error: true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           generate_release_notes: true
           prerelease: ${{ steps.rel.outputs.prerelease }}
+          files: ./conformance-results/*
+          fail_on_unmatched_files: false

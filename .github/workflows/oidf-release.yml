@@ -1,14 +1,15 @@
 name: OIDF Conformance (release full-plan)
 
 on:
-  push:
-    tags: ["v*"]
-  # Allow manual runs (e.g. to validate the conformance harness without cutting
-  # a release tag). The release-artefact attach step is guarded to tag pushes.
+  # Called by release.yml so conformance GATES the npm publish. Previously this
+  # workflow triggered on the tag independently, which meant a conformance
+  # failure could not stop a release — and did not, on v0.11.0.
+  workflow_call: {}
+  # Manual runs, e.g. to validate the harness without cutting a release tag.
   workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: read
   packages: read
 
 jobs:
@@ -143,13 +144,35 @@ jobs:
             fi
           done
 
-      - name: Attach to GitHub Release
-        # Only on tag pushes — manual (workflow_dispatch) runs have no release.
-        if: always() && startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.4.0
+      # Every profile writes its results as `oidf-result.json` / `summary.md`, so
+      # attaching the raw glob put ten identically-named pairs on one GitHub
+      # Release and the upload raced itself into repeated 404s. Give each file a
+      # name carrying its profile before anything downstream collects them.
+      - name: Normalise result filenames
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p ./conformance-results
+          for dir in ./oidf-result-1final-*; do
+            [ -d "$dir" ] || continue
+            profile="$(basename "$dir")"
+            if [ -f "$dir/oidf-result.json" ]; then
+              cp "$dir/oidf-result.json" "./conformance-results/${profile}.json"
+            fi
+            if [ -f "$dir/summary.md" ]; then
+              cp "$dir/summary.md" "./conformance-results/${profile}.summary.md"
+            fi
+          done
+          ls -1 ./conformance-results
+
+      # Collected by release.yml and attached to the GitHub Release *after* the
+      # release exists. Attaching from here raced release.yml creating it.
+      - name: Upload combined conformance results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          files: ./oidf-result-1final-*/*
-          fail_on_unmatched_files: false
+          name: conformance-results-${{ github.ref_name }}
+          path: ./conformance-results/
 
       - name: Tear down suite
         if: always()
