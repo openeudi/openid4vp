@@ -13,7 +13,7 @@ import {
     MissingVerifierEncryptionKeyError,
     MultipleCredentialsNotSupportedError,
 } from './errors.js';
-import type { CredentialFormat } from './types/presentation.js';
+import type { CredentialFormat, PresentationResult } from './types/presentation.js';
 import type { AuthorizationResponse } from './types/authorization.js';
 import type {
     EncryptedResponse,
@@ -60,13 +60,21 @@ export async function verifyPresentation(
             ? (parsed.namespacedClaims as Record<string, unknown>)
             : (parsed.claims as unknown as Record<string, unknown>);
 
-    // Resolve the query credential this presentation actually is, by format —
-    // query.credentials[0] is only the first-listed entry and mislabels dual-format
-    // queries. This entry point has no queryIds (only vpToken/query), so format is
-    // the only signal available; fall back to the prior behavior when no format match
-    // is found.
+    // Resolve which query credential this presentation actually is. `decoded.id`
+    // is what DCQL matching attributes the presentation to, so getting it wrong
+    // reports a credential the wallet never presented.
+    //
+    // This entry point has no `queryIds` — unlike verifyAuthorizationResponse,
+    // which reads the id the wallet keyed the vp_token with — so the credential
+    // has to be identified from its own contents. Format alone is not enough: a
+    // query can list several entries of the same format distinguished only by
+    // vct or doctype. Narrow by format, then by credential type, and only fall
+    // back to first-listed when nothing identifies it.
+    const sameFormat = query.credentials.filter((c) => c.format === dcqlFormat);
     const presentedCredentialQuery =
-        query.credentials.find((c) => c.format === dcqlFormat) ?? query.credentials[0];
+        sameFormat.find((c) => matchesCredentialType(c, parsed)) ??
+        sameFormat[0] ??
+        query.credentials[0];
 
     const decoded: DecodedCredential = {
         id: presentedCredentialQuery?.id ?? 'presented',
@@ -100,6 +108,34 @@ export async function verifyPresentation(
         submission,
         valid: parsed.valid && match.satisfied,
     };
+}
+
+/**
+ * Does this query credential's type constraint match what was actually presented?
+ *
+ * `vct_values` / `doctype_value` are the only things distinguishing two query
+ * entries of the same format, so they are what identifies the presented
+ * credential when no query id is available. Returns false when the query states
+ * no constraint — an unconstrained entry matches anything, which makes it useless
+ * for telling two entries apart, so it should not win over a specific one.
+ */
+function matchesCredentialType(
+    credentialQuery: DcqlQuery['credentials'][number],
+    parsed: PresentationResult
+): boolean {
+    if (parsed.format === 'sd-jwt-vc') {
+        const vctValues = credentialQuery.meta?.vct_values;
+        return (
+            typeof parsed.vct === 'string' &&
+            Array.isArray(vctValues) &&
+            vctValues.includes(parsed.vct)
+        );
+    }
+    if (parsed.format === 'mdoc') {
+        const doctype = credentialQuery.meta?.doctype_value;
+        return typeof parsed.docType === 'string' && doctype === parsed.docType;
+    }
+    return false;
 }
 
 function isEncryptedResponse(x: unknown): x is EncryptedResponse {
