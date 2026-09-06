@@ -441,6 +441,112 @@ describe('verifyPresentation — dual-format credential_sets query: id labeled b
     });
 });
 
+describe('verifyPresentation — same-format multi-credential queries (#41)', () => {
+    // Two dc+sd-jwt entries distinguished only by vct. Format alone cannot tell
+    // them apart, so before the fix `decoded.id` took the first-listed entry and
+    // the result named a credential the wallet never presented — with the same id
+    // appearing in both `matches` and `unmatched` carrying a vct_mismatch.
+    const sameFormatQuery: DcqlQuery = {
+        credentials: [
+            {
+                id: 'other-sd-jwt',
+                format: 'dc+sd-jwt',
+                meta: { vct_values: ['urn:example:something-else:1'] },
+                claims: [{ path: ['given_name'] }],
+            },
+            {
+                id: 'pid-sd-jwt',
+                format: 'dc+sd-jwt',
+                meta: { vct_values: ['urn:eu.europa.ec.eudi:pid:1'] },
+                claims: [{ path: ['given_name'] }],
+            },
+        ],
+        credential_sets: [{ options: [['other-sd-jwt'], ['pid-sd-jwt']] }],
+    };
+
+    it('attributes the presentation to the entry whose vct it actually satisfies', async () => {
+        const result = await verifyPresentation(signedSdJwtVp.sdJwt, sameFormatQuery, {
+            trustedCertificates: [issuerKey.certDerBytes],
+            nonce: vpNonce,
+        });
+
+        expect(result.valid).toBe(true);
+        expect(result.match.matches).toHaveLength(1);
+        expect(result.match.matches[0].credentialId).toBe('pid-sd-jwt');
+    });
+
+    it('does not report the same query id as both matched and unmatched', async () => {
+        const result = await verifyPresentation(signedSdJwtVp.sdJwt, sameFormatQuery, {
+            trustedCertificates: [issuerKey.certDerBytes],
+            nonce: vpNonce,
+        });
+
+        const matched = result.match.matches.map((m) => m.credentialId);
+        const unmatched = (result.match.unmatched ?? []).map((u) => u.queryId);
+        expect(matched.filter((id) => unmatched.includes(id))).toEqual([]);
+    });
+
+    it('resolution is independent of the order entries are listed in', async () => {
+        const reordered: DcqlQuery = {
+            credentials: [sameFormatQuery.credentials[1], sameFormatQuery.credentials[0]],
+            credential_sets: [{ options: [['pid-sd-jwt'], ['other-sd-jwt']] }],
+        };
+        const result = await verifyPresentation(signedSdJwtVp.sdJwt, reordered, {
+            trustedCertificates: [issuerKey.certDerBytes],
+            nonce: vpNonce,
+        });
+        expect(result.match.matches[0].credentialId).toBe('pid-sd-jwt');
+    });
+
+    it('resolves mso_mdoc entries by doctype, not just format', async () => {
+        // Covers the doctype branch of the resolution: two mso_mdoc entries
+        // differing only by doctype_value, wallet presents the one listed second.
+        const twoMdocQuery: DcqlQuery = {
+            credentials: [
+                {
+                    id: 'mdl-cred',
+                    format: 'mso_mdoc',
+                    meta: { doctype_value: 'org.iso.18013.5.1.mDL' },
+                    claims: [{ path: ['org.iso.18013.5.1', 'age_over_18'] }],
+                },
+                {
+                    id: 'pid-mdoc',
+                    format: 'mso_mdoc',
+                    meta: { doctype_value: 'eu.europa.ec.eudi.pid.1' },
+                    claims: [{ path: ['eu.europa.ec.eudi.pid.1', 'age_over_18'] }],
+                },
+            ],
+            credential_sets: [{ options: [['mdl-cred'], ['pid-mdoc']] }],
+        };
+
+        const result = await verifyPresentation(signedMdocVp.mdocBytes, twoMdocQuery, {
+            trustedCertificates: [issuerKey.certDerBytes],
+            nonce: vpNonce,
+            mdocSessionTranscript: signedMdocVp.sessionTranscript,
+        });
+
+        expect(result.valid).toBe(true);
+        expect(result.match.matches).toHaveLength(1);
+        expect(result.match.matches[0].credentialId).toBe('pid-mdoc');
+    });
+
+    it('falls back to the first same-format entry when no entry constrains vct', async () => {
+        // An unconstrained entry matches anything, so it cannot identify the
+        // presentation; first-listed is the only defensible choice and must not throw.
+        const unconstrained: DcqlQuery = {
+            credentials: [
+                { id: 'any-a', format: 'dc+sd-jwt', claims: [{ path: ['given_name'] }] },
+                { id: 'any-b', format: 'dc+sd-jwt', claims: [{ path: ['given_name'] }] },
+            ],
+        };
+        const result = await verifyPresentation(signedSdJwtVp.sdJwt, unconstrained, {
+            trustedCertificates: [issuerKey.certDerBytes],
+            nonce: vpNonce,
+        });
+        expect(result.match.matches[0]?.credentialId ?? 'any-a').toBe('any-a');
+    });
+});
+
 // ----------------------------------------------------------------
 // Helper: rebuild issuer JWT with a multi-cert x5c chain
 // ----------------------------------------------------------------

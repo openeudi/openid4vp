@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `verifyPresentation` resolved which query credential a presentation represents
+  by format alone, so a query listing several entries of the same format —
+  distinguished only by `vct_values` or `doctype_value` — attributed the
+  presentation to whichever was listed first. `match.credentialId` then named a
+  credential the wallet never presented, and the same query id appeared in both
+  `matches` and `unmatched` carrying a `vct_mismatch` against the entry it was
+  reported as matching. Resolution now narrows by format and then by credential
+  type, falling back to first-listed only when no entry constrains the type.
+  Verification itself was sound — the credential did satisfy some entry's
+  constraints — but a verifier branching on `match.credentialId` could attribute
+  a presentation to the wrong requested credential.
+  ([#41](https://github.com/openeudi/openid4vp/issues/41))
+
+  `verifyAuthorizationResponse` was never affected: it resolves by `queryIds[0]`,
+  the id the wallet actually keyed the `vp_token` with.
+
 ## [0.11.0] — 2026-09-01
 
 ### Changed (library)
