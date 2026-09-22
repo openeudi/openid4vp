@@ -47,6 +47,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   New `HaipValidationError` codes: `EMPTY_OPTIONS`, `DUPLICATE_CREDENTIAL_ID`,
   `MISSING_CREDENTIAL_SETS`, `UNKNOWN_OPTION_REFERENCE`.
 
+### Fixed
+
+- A missing `xmldsigjs` crypto engine was reported as a trusted-list **signature**
+  failure. `LotlFetcher.verifyAgainst` caught every exception and returned
+  `false`, so `XMLJS0014: WebCrypto module is not found` was indistinguishable
+  from a genuine trust failure and surfaced as
+  `no signing anchor verified the signature on <url>` — sending at least one
+  integrator bisecting a perfectly valid national trusted list. The per-anchor
+  `console.warn` did name the real error, but it was emitted once per anchor and
+  buried under the summary line that callers actually act on.
+
+  `LotlFetcher` now checks for a registered engine up front and throws the new
+  `LotlConfigurationError` before performing any network request. Because a
+  missing engine means *no* list can ever verify, it is not subject to the
+  §8.4 graceful-degradation paths: `NationalTlResolver` re-throws it instead of
+  warning and skipping the country, and `LotlTrustStore` re-throws it instead of
+  serving a cached snapshot it could never refresh. Ordinary per-country fetch
+  and signature failures degrade exactly as before.
+
+  Note for anyone writing a similar guard: `xmldsig.Application.crypto` is a
+  getter that *throws* when no engine is registered rather than returning a
+  falsy value, so `if (!Application.crypto)` propagates the raw `XmlError`
+  instead of catching the condition.
+
+  Engine registration stays the consumer's responsibility — the library does not
+  pick a WebCrypto provider on your behalf — but that requirement is now
+  documented in the README next to `trustStore`, and the failure names the
+  remedy. ([#51](https://github.com/openeudi/openid4vp/issues/51))
+
 ### Unchanged (deliberately)
 
 - `validateHaipQuery` still rejects `credential_sets` with

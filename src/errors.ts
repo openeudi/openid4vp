@@ -147,6 +147,20 @@ export class LotlSignatureError extends OpenID4VPError {
     readonly code = 'lotl_signature_invalid' as const;
 }
 
+/**
+ * The environment is not configured to verify trusted-list signatures at all —
+ * distinct from a list whose signature did not verify.
+ *
+ * `xmldsigjs` needs a WebCrypto engine registered once per process, and this
+ * library deliberately leaves that to the consumer rather than picking a
+ * provider on their behalf. Without it, no trusted list can ever verify, so
+ * this is raised eagerly instead of degrading per-list: a configuration fault
+ * reported as a trust failure sends people bisecting valid XML.
+ */
+export class LotlConfigurationError extends OpenID4VPError {
+    readonly code = 'lotl_configuration_invalid' as const;
+}
+
 // ---------------------------------------------------------------------------
 // New in 0.7.0: workstream B-remaining (signed requests + direct_post.jwt)
 // ---------------------------------------------------------------------------
