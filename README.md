@@ -159,6 +159,27 @@ Validate a hand-built disjunction with `validateCredentialSetQuery`. Note this i
 deliberately **not** HAIP-minimal: `validateHaipQuery` rejects `credential_sets`
 and `isHaipQuery` returns `false` for these queries.
 
+> **`match.unmatched` is non-empty on success here.** A disjunction is satisfied
+> when the wallet takes **one** option, so the option it did *not* take is
+> reported as unmatched — typically with `format_mismatch` or `vct_mismatch`
+> against the credential the wallet never held. That is the expected result, not
+> a failure:
+>
+> ```ts
+> // Wallet presented the PID; the attestation option was not taken.
+> result.valid                  // true
+> result.match.satisfied        // true
+> result.match.matches          // [{ queryId: "pid", ... }]
+> result.match.unmatched        // [{ queryId: "age-attestation", reason: "format_mismatch" }]
+> ```
+>
+> Gate on `result.valid` (or `match.satisfied`), **never** on
+> `match.unmatched.length === 0`. The latter is the correct test only for a query
+> without `credential_sets`, and silently rejects every valid disjunction
+> response. If you log `unmatched` as "mismatch reasons" (as the verification
+> example below does), expect a benign entry per successful disjunction and
+> filter accordingly so it does not trip alerting.
+
 > **Not ZKP.** This is the plain `mso_mdoc` attestation path. The AV technical
 > specification's preferred mechanism — a Zero-Knowledge Proof — is not supported
 > over OpenID4VP (no standardised DCQL query for it exists); it rides only the W3C
@@ -188,6 +209,11 @@ if (result.valid) {
 ```
 
 Mismatches return `valid: false` — they do not throw. Only crypto/structural failures (malformed VP tokens, invalid signatures, expired credentials) and malformed DCQL queries throw exceptions.
+
+The `else` branch above is the right place to read `unmatched` for an ordinary
+query. For a **`credential_sets` disjunction** it is not the whole story: the
+option the wallet did not take is reported as unmatched even when `valid` is
+`true`. See [Offering the wallet a choice](#offering-the-wallet-a-choice-credential_sets).
 
 > **Privacy — diagnostics are verifier-internal.** `match.unmatched[].reason` and `detail` (including `value_mismatch`) are intended for verifier-side logging, debugging, and admin UIs. OpenID4VP §11 warns that per-claim verification outcomes can reveal wallet contents to observers. Do NOT echo these diagnostics into the OpenID4VP wire response sent back to the wallet, into end-user-visible error messages that another party could correlate, or into public analytics/third-party logs. The protocol's own error codes are the public interface; these fields are your internal instrumentation.
 
