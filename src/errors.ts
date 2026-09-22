@@ -45,7 +45,12 @@ export type HaipValidationCode =
     | 'MISSING_MDOC_META'
     | 'NO_CLAIMS'
     | 'CLAIM_SETS_DISALLOWED'
-    | 'CREDENTIAL_SETS_DISALLOWED';
+    | 'CREDENTIAL_SETS_DISALLOWED'
+    // Added in 0.12.0 for the credential_sets disjunction profile.
+    | 'EMPTY_OPTIONS'
+    | 'DUPLICATE_CREDENTIAL_ID'
+    | 'MISSING_CREDENTIAL_SETS'
+    | 'UNKNOWN_OPTION_REFERENCE';
 
 export class HaipValidationError extends Error {
     readonly code: HaipValidationCode;

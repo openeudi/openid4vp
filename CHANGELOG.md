@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `buildCredentialSetQuery` and `validateCredentialSetQuery` — build and validate a
+  DCQL `credential_sets` disjunction, offering a wallet a choice of credentials in
+  a single request.
+
+  The motivating case is a proof-of-age check, which has two mutually exclusive
+  routes in two formats: a Proof-of-Age attestation (`mso_mdoc`, `age_over_18` in
+  namespace `eu.europa.ec.av.1`) or a PID (`dc+sd-jwt`, `birth_date`, threshold
+  computed by the verifier). The PID carries **no** age attribute — CIR (EU)
+  2024/2977 Annex, as amended by CIR 2026/1731, defines no `age_over_*`
+  attribute — and proof-of-age attestations have almost no issuer coverage yet, so
+  a verifier that wants the privacy-preserving answer *when available* and a
+  working answer *otherwise* has to offer both at once. `buildHaipQuery` builds
+  exactly one credential and cannot express this.
+
+  Option order is a privacy preference signal — most-preferred first. Wallets are
+  not obliged to honour it.
+
+  **Scope and ceiling.** This delivers the plain `mso_mdoc` attestation path over
+  OpenID4VP. It is **not** Zero-Knowledge Proof age verification. The AV technical
+  specification (Annex A, §A.6) is explicit that ZKP — its *preferred* mechanism —
+  "[is] not supported over OpenID for Verifiable Presentations in this version of
+  the profile, since no standardized DCQL query for requesting Zero-Knowledge Proof
+  is available"; ZKP rides only the W3C Digital Credentials API. Plain mDoc is the
+  profile's designated fallback for that transport, so this is the best OpenID4VP
+  can do by the specification's own design. Revisit when a standardised DCQL ZKP
+  query exists.
+
+  Doctype and namespace are both `eu.europa.ec.av.1`, per
+  [`av-doc-technical-specification`](https://github.com/eu-digital-identity-wallet/av-doc-technical-specification/blob/8b9728752bd8d8eede6077ade4be8900949de2d9/docs/annexes/annex-A/annex-A-av-profile.md)
+  Annex A §A.4.1–§A.4.2, pinned to commit `8b97287` (spec 1.1.0, merged 2026-09-02
+  via PR #66 — the newest tag is still `v1.0.6`, so the content is untagged).
+  Because the doctype and namespace are the same string, `buildHaipQuery`'s
+  existing doctype→namespace fallback already produces the correct claim path and
+  `HAIP_DOCTYPE_NAMESPACES` needs no new entry.
+
+  New `HaipValidationError` codes: `EMPTY_OPTIONS`, `DUPLICATE_CREDENTIAL_ID`,
+  `MISSING_CREDENTIAL_SETS`, `UNKNOWN_OPTION_REFERENCE`.
+
+### Unchanged (deliberately)
+
+- `validateHaipQuery` still rejects `credential_sets` with
+  `CREDENTIAL_SETS_DISALLOWED`, and `isHaipQuery` still returns `false` for a
+  disjunction. HAIP-minimal genuinely disallows them; the disjunction is a
+  separate profile with its own validator, not a relaxation of this one. Tests pin
+  that boundary against erosion.
+- `buildHaipQuery`, `verifyPresentation` and `verifyAuthorizationResponse` are
+  unchanged. `verifyPresentation` already resolved dual-format `credential_sets`
+  queries (0.11.1, #48), and `verifyAuthorizationResponse`'s
+  `MultipleCredentialsNotSupportedError` guard never applied to a disjunction — a
+  wallet satisfies one option and returns one presentation. Both were verified
+  against the Proof-of-Age shape before this work began, and a response presenting
+  *both* options is still rejected.
+
 ## [0.11.1] — 2026-09-06
 
 ### Fixed

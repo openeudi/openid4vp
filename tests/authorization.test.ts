@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createAuthorizationRequest } from '../src/authorization.js';
-import { buildHaipQuery } from '../src/haip.js';
+import { buildHaipQuery, buildCredentialSetQuery } from '../src/haip.js';
 import type { DcqlQuery } from '@openeudi/dcql';
 
 const pidQuery: DcqlQuery = buildHaipQuery({
@@ -102,5 +102,46 @@ describe('createAuthorizationRequest', () => {
         const params = new URL(req.uri.replace('openid4vp://', 'https://dummy/')).searchParams;
         const parsed = JSON.parse(params.get('dcql_query')!);
         expect(parsed.credentials[0].meta.vct_values[0]).toBe('https://issuer.eu/pid?v=1&realm=eu');
+    });
+});
+
+describe('createAuthorizationRequest — credential_sets disjunction', () => {
+    // The disjunction is carried inside the request object, so it has to survive
+    // the JSON round-trip intact: a dropped `credential_sets` would silently
+    // degrade the request to "present BOTH credentials", which no wallet holding
+    // only one of them can satisfy.
+    const ageOrPidQuery: DcqlQuery = buildCredentialSetQuery({
+        options: [
+            {
+                credentialId: 'age-attestation',
+                format: 'mso_mdoc',
+                doctypeValue: 'eu.europa.ec.av.1',
+                claims: ['age_over_18'],
+            },
+            {
+                credentialId: 'pid',
+                format: 'dc+sd-jwt',
+                vctValues: ['urn:eu.europa.ec.eudi:pid:1'],
+                claims: ['birth_date'],
+            },
+        ],
+    });
+
+    it('round-trips credential_sets through the request URI', () => {
+        const req = createAuthorizationRequest(
+            {
+                clientId: 'x509_san_dns:verifier.example.com',
+                responseUri: 'https://verifier.example.com/callback',
+                nonce: 'test-nonce-abc123',
+            },
+            ageOrPidQuery,
+        );
+        const params = new URL(req.uri.replace('openid4vp://', 'https://dummy/')).searchParams;
+        const parsed = JSON.parse(params.get('dcql_query')!);
+
+        expect(parsed).toEqual(ageOrPidQuery);
+        expect(parsed.credential_sets).toEqual([
+            { options: [['age-attestation'], ['pid']] },
+        ]);
     });
 });

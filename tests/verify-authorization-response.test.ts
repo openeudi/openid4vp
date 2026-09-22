@@ -456,3 +456,126 @@ describe('verifyAuthorizationResponse', () => {
         });
     });
 });
+
+// ---------------------------------------------------------------------------
+// §2 proof — "proof-of-age attestation OR PID" disjunction.
+//
+// These tests exist to FALSIFY two claims the age-attestation handoff makes
+// about behaviour that already shipped in 0.11.1, before any builder is written:
+//
+//   1. verifyPresentation resolves a dual-format credential_sets query by the
+//      credential actually presented (already covered for the mDL/PID pair).
+//   2. verifyAuthorizationResponse's MultipleCredentialsNotSupportedError guard
+//      does NOT trip on a disjunction — a wallet satisfies ONE option and
+//      returns ONE presentation, so queryIds.length === 1 and
+//      presentationCount === 1.
+//
+// They use the real Proof-of-Age shape rather than a stand-in: doctype
+// `eu.europa.ec.av.1` in namespace `eu.europa.ec.av.1`, per
+// av-doc-technical-specification Annex A §A.4.1/§A.4.2 @ 8b97287.
+// If either claim were false, these go red and the work is far larger than a
+// sibling builder.
+// ---------------------------------------------------------------------------
+describe('age-attestation OR PID disjunction — verifyAuthorizationResponse', () => {
+    const AV_DOCTYPE = 'eu.europa.ec.av.1';
+
+    // Hand-written on purpose: this is the shape buildCredentialSetQuery must
+    // later produce, asserted here against the CURRENT verifier.
+    const ageOrPidQuery: DcqlQuery = {
+        credentials: [
+            {
+                id: 'age-attestation',
+                format: 'mso_mdoc',
+                meta: { doctype_value: AV_DOCTYPE },
+                claims: [{ path: [AV_DOCTYPE, 'age_over_18'] }],
+            },
+            {
+                id: 'pid',
+                format: 'dc+sd-jwt',
+                meta: { vct_values: ['urn:eu.europa.ec.eudi:pid:1'] },
+                claims: [{ path: ['birth_date'] }],
+            },
+        ],
+        credential_sets: [{ options: [['age-attestation'], ['pid']] }],
+    };
+
+    it('verifies a wallet that satisfies the age-attestation option', async () => {
+        const clientId = `x509_san_dns:verifier.${crypto.randomUUID()}.example`;
+        const responseUri = `https://verifier.example/${crypto.randomUUID()}/response`;
+        const nonce = crypto.randomUUID();
+        const mdocGeneratedNonce = crypto.randomUUID();
+
+        const transcript = await buildOid4vpSessionTranscript({
+            clientId,
+            responseUri,
+            nonce,
+            mdocGeneratedNonce,
+        });
+        const attestation = await buildSignedMdoc({
+            issuerKey,
+            docType: AV_DOCTYPE,
+            namespaces: { [AV_DOCTYPE]: { age_over_18: true } },
+            sessionTranscript: transcript,
+        });
+
+        const envelope = {
+            vp_token: { 'age-attestation': [bytesToBase64url(attestation.mdocBytes)] },
+        };
+
+        const result = await verifyAuthorizationResponse(envelope, ageOrPidQuery, {
+            trustedCertificates: [issuerKey.certDerBytes],
+            nonce,
+            clientId,
+            responseUri,
+            mdocSessionTranscript: transcript,
+        });
+
+        expect(result.valid).toBe(true);
+        expect(result.match.matches[0].credentialId).toBe('age-attestation');
+    });
+
+    it('verifies a wallet that satisfies the PID option instead', async () => {
+        const pidVp = await buildSignedSdJwt({
+            issuerKey,
+            claims: { vct: 'urn:eu.europa.ec.eudi:pid:1' },
+            disclosureClaims: [['birth_date', '1990-01-01']],
+        });
+
+        const envelope = { vp_token: { pid: [pidVp.sdJwt] } };
+
+        const result = await verifyAuthorizationResponse(envelope, ageOrPidQuery, {
+            trustedCertificates: [issuerKey.certDerBytes],
+            nonce: vpNonce,
+        });
+
+        expect(result.valid).toBe(true);
+        expect(result.match.matches[0].credentialId).toBe('pid');
+    });
+
+    it('still rejects a wallet that presents BOTH options', async () => {
+        const pidVp = await buildSignedSdJwt({
+            issuerKey,
+            claims: { vct: 'urn:eu.europa.ec.eudi:pid:1' },
+            disclosureClaims: [['birth_date', '1990-01-01']],
+        });
+        const attestation = await buildSignedMdoc({
+            issuerKey,
+            docType: AV_DOCTYPE,
+            namespaces: { [AV_DOCTYPE]: { age_over_18: true } },
+        });
+
+        const envelope = {
+            vp_token: {
+                'age-attestation': [bytesToBase64url(attestation.mdocBytes)],
+                pid: [pidVp.sdJwt],
+            },
+        };
+
+        await expect(
+            verifyAuthorizationResponse(envelope, ageOrPidQuery, {
+                trustedCertificates: [issuerKey.certDerBytes],
+                nonce: vpNonce,
+            }),
+        ).rejects.toThrow(MultipleCredentialsNotSupportedError);
+    });
+});
