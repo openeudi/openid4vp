@@ -390,6 +390,21 @@ Both `parsePresentation` and `verifyPresentation` accept:
 - `verifierEncryptionJwk?` — *(`VerifyAuthorizationResponseOptions` only)* the verifier's response-encryption public JWK. Required on the encrypted path when `sessionTranscriptProfile: 'openid4vp-1.0'` is used, to derive the handover's JWK thumbprint; ignored for the `'iso-18013-7'` profile.
 - `trustedCertificates` (required when `trustStore` is unset) — DER-encoded issuer leaf certificates for the 0.4.x byte-equality trust check. Deprecated since 0.5.0 — pass an empty array and supply `trustStore` for production deployments.
 - `trustStore?` — `TrustStore` instance for full RFC 5280 chain validation (e.g. `LotlTrustStore`, `StaticTrustStore`, or `CompositeTrustStore`). When set, takes precedence over `trustedCertificates`.
+
+  > **`LotlTrustStore` requires an `xmldsigjs` crypto engine.** Trusted lists are
+  > verified as signed XML, and this library does not pick a WebCrypto provider on
+  > your behalf. Register one **once at startup**, before any trusted-list fetch:
+  >
+  > ```ts
+  > import * as xmldsig from "xmldsigjs";
+  > import { Crypto } from "@peculiar/webcrypto";
+  >
+  > xmldsig.Application.setEngine("NodeJS", new Crypto());
+  > ```
+  >
+  > Omit it and `LotlTrustStore` throws `LotlConfigurationError` on first use,
+  > naming this as the cause. `StaticTrustStore` is unaffected.
+
 - `revocationPolicy?` — `'skip'` (default) | `'prefer'` | `'require'`. Controls whether the chain validator consults OCSP / CRL.
 - `fetcher?` — HTTP transport for CRL/OCSP/LOTL fetches. Defaults to `globalThis.fetch`.
 - `cache?` — cache for CRL/OCSP/LOTL artefacts. Defaults to `new InMemoryCache()`.
@@ -477,6 +492,7 @@ class MyCustomParser implements ICredentialParser {
 | `MalformedCredentialError` | Credential structure is malformed         | Token cannot be decoded or is structurally invalid |
 | `NonceValidationError`     | Nonce does not match expected value       | Key binding JWT nonce does not match               |
 | `HaipValidationError`      | HAIP query constraint violated            | DCQL query fails `validateHaipQuery`               |
+| `LotlConfigurationError`   | No xmldsigjs crypto engine registered     | `LotlTrustStore` used without `Application.setEngine` |
 
 ```ts
 import { MalformedCredentialError, ExpiredCredentialError } from "@openeudi/openid4vp";

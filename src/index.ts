@@ -96,6 +96,7 @@ export {
     RevocationCheckFailedError,
     LotlFetchError,
     LotlSignatureError,
+    LotlConfigurationError,
     SignedRequestBuildError,
     UnsupportedJweError,
     DecryptionFailedError,

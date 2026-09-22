@@ -1,4 +1,5 @@
 import { X509Certificate } from '@peculiar/x509';
+import { LotlConfigurationError } from '../errors.js';
 import type { Cache } from './Cache.js';
 import type { Fetcher } from './Fetcher.js';
 import { EU_LOTL_SIGNING_ANCHORS } from './lotl-signing-anchors.js';
@@ -122,6 +123,11 @@ export class LotlTrustStore implements TrustStore {
                 };
                 return this.snapshot;
             } catch (err) {
+                // Serving stale anchors is the right answer for a transient
+                // fetch or signature failure. It is the wrong answer for a
+                // missing crypto engine: no future refresh can succeed either,
+                // so the store would quietly serve an ageing snapshot forever.
+                if (err instanceof LotlConfigurationError) throw err;
                 if (this.snapshot) {
                     console.warn(
                         `[openid4vp] LOTL refresh failed; serving cached snapshot (${(err as Error).message})`

@@ -2,7 +2,7 @@ import { X509Certificate } from '@peculiar/x509';
 import { DOMParser } from '@xmldom/xmldom';
 import type { Document as XmlDocument } from '@xmldom/xmldom';
 import * as xmldsig from 'xmldsigjs';
-import { LotlFetchError, LotlSignatureError } from '../errors.js';
+import { LotlConfigurationError, LotlFetchError, LotlSignatureError } from '../errors.js';
 import type { Fetcher } from './Fetcher.js';
 
 const XMLDSIG_NS = 'http://www.w3.org/2000/09/xmldsig#';
@@ -29,6 +29,11 @@ export class LotlFetcher {
         url: string,
         signingAnchors: readonly X509Certificate[]
     ): Promise<XmlDocument> {
+        // Checked up front: without an engine NO list can verify, so failing
+        // here beats fetching, walking every anchor, and reporting the result
+        // as an unverified signature.
+        assertCryptoEngineRegistered();
+
         let xmlText: string;
         try {
             const response = await this.fetcher(url, { method: 'GET' });
@@ -82,6 +87,40 @@ export class LotlFetcher {
         }
         throw new LotlSignatureError(
             `no signing anchor verified the signature on ${url}`
+        );
+    }
+}
+
+/**
+ * Fail fast when the consumer never registered an `xmldsigjs` crypto engine.
+ *
+ * `Application.crypto` is a getter that THROWS `XmlError`
+ * ("XMLJS0014: WebCrypto module is not found") when unset rather than returning
+ * a falsy value, so the access has to be guarded — a plain
+ * `if (!Application.crypto)` would propagate that raw error instead of this one.
+ *
+ * Engine registration is deliberately left to the consumer (see the comments on
+ * `verifyAgainst`), so this reports the omission as configuration rather than
+ * silently treating every trusted list as unverifiable.
+ */
+function assertCryptoEngineRegistered(): void {
+    let engine: unknown;
+    try {
+        engine = xmldsig.Application.crypto;
+    } catch (err) {
+        throw new LotlConfigurationError(
+            'no xmldsigjs crypto engine registered — trusted-list signatures cannot be ' +
+                "verified. Call xmldsig.Application.setEngine('NodeJS', new Crypto()) " +
+                '(e.g. from @peculiar/webcrypto) once at startup, before using ' +
+                `LotlTrustStore. Underlying error: ${err instanceof Error ? err.message : String(err)}`,
+            { cause: err instanceof Error ? err : undefined }
+        );
+    }
+    if (!engine) {
+        throw new LotlConfigurationError(
+            'no xmldsigjs crypto engine registered — trusted-list signatures cannot be ' +
+                "verified. Call xmldsig.Application.setEngine('NodeJS', new Crypto()) " +
+                '(e.g. from @peculiar/webcrypto) once at startup, before using LotlTrustStore.'
         );
     }
 }

@@ -1,4 +1,5 @@
 import { X509Certificate } from '@peculiar/x509';
+import { LotlConfigurationError } from '../errors.js';
 import type { Document as XmlDocument, Element as XmlElement } from '@xmldom/xmldom';
 import type { LotlFetcher } from './LotlFetcher.js';
 import type {
@@ -32,6 +33,11 @@ export class NationalTlResolver {
                 );
                 return parseNationalTl(doc, pointer.country);
             } catch (err) {
+                // §8.4 graceful degradation covers a country whose list is
+                // unreachable or badly signed. A configuration fault is not
+                // that: every country would fail identically, leaving an empty
+                // anchor set behind a pile of misleading per-country warnings.
+                if (err instanceof LotlConfigurationError) throw err;
                 console.warn(
                     `[openid4vp] national TL for ${pointer.country} failed: ${(err as Error).message}`
                 );
