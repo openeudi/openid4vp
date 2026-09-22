@@ -13,4 +13,4 @@ export type {
     EncryptedResponse,
     VerifyAuthorizationResponseOptions,
 } from './verify.js';
-export type { HaipQueryInput } from './haip.js';
+export type { HaipQueryInput, CredentialSetQueryInput } from './haip.js';

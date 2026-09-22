@@ -18,6 +18,8 @@ export {
     validateHaipQuery,
     isHaipQuery,
     HAIP_DOCTYPE_NAMESPACES,
+    buildCredentialSetQuery,
+    validateCredentialSetQuery,
 } from './haip.js';
 
 // Parsers / verifiers
@@ -64,6 +66,7 @@ export type {
     VerifyAuthorizationResponseOptions,
     VerifyResult,
     HaipQueryInput,
+    CredentialSetQueryInput,
 } from './types/index.js';
 
 // -------------------------------------------------------------------

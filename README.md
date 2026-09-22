@@ -119,6 +119,73 @@ Supported formats: `dc+sd-jwt` and `mso_mdoc`. Other formats (e.g., `jwt_vc_json
 
 Known EUDI doctypes auto-namespace their claim paths (e.g., `org.iso.18013.5.1.mDL` → claims under `org.iso.18013.5.1`). Unknown doctypes use the full doctype string as the namespace.
 
+### Offering the wallet a choice (`credential_sets`)
+
+Some questions can be answered by more than one credential. The clearest case is
+proof of age: a wallet may hold a **Proof-of-Age attestation** (`mso_mdoc`, with
+`age_over_18` in namespace `eu.europa.ec.av.1`) or only a **PID** (`dc+sd-jwt`,
+carrying `birth_date` — the PID has no age attribute, so the verifier computes the
+threshold). Asking for both in one request avoids a second wallet interaction:
+
+```ts
+import { buildCredentialSetQuery } from "@openeudi/openid4vp";
+
+const query = buildCredentialSetQuery({
+  options: [
+    // Most-preferred first — discloses only a boolean.
+    {
+      credentialId: "age-attestation",
+      format: "mso_mdoc",
+      doctypeValue: "eu.europa.ec.av.1",
+      claims: ["age_over_18"],
+    },
+    // Fallback — the verifier computes the threshold from birth_date.
+    {
+      credentialId: "pid",
+      format: "dc+sd-jwt",
+      vctValues: ["urn:eu.europa.ec.eudi:pid:1"],
+      claims: ["birth_date"],
+    },
+  ],
+});
+```
+
+The wallet satisfies **one** option and returns **one** presentation;
+`verifyAuthorizationResponse` resolves it by the id the wallet keyed `vp_token`
+with. Option order is a privacy preference signal, not a constraint — wallets are
+not obliged to honour it.
+
+Validate a hand-built disjunction with `validateCredentialSetQuery`. Note this is
+deliberately **not** HAIP-minimal: `validateHaipQuery` rejects `credential_sets`
+and `isHaipQuery` returns `false` for these queries.
+
+> **`match.unmatched` is non-empty on success here.** A disjunction is satisfied
+> when the wallet takes **one** option, so the option it did *not* take is
+> reported as unmatched — typically with `format_mismatch` or `vct_mismatch`
+> against the credential the wallet never held. That is the expected result, not
+> a failure:
+>
+> ```ts
+> // Wallet presented the PID; the attestation option was not taken.
+> result.valid                  // true
+> result.match.satisfied        // true
+> result.match.matches          // [{ queryId: "pid", ... }]
+> result.match.unmatched        // [{ queryId: "age-attestation", reason: "format_mismatch" }]
+> ```
+>
+> Gate on `result.valid` (or `match.satisfied`), **never** on
+> `match.unmatched.length === 0`. The latter is the correct test only for a query
+> without `credential_sets`, and silently rejects every valid disjunction
+> response. If you log `unmatched` as "mismatch reasons" (as the verification
+> example below does), expect a benign entry per successful disjunction and
+> filter accordingly so it does not trip alerting.
+
+> **Not ZKP.** This is the plain `mso_mdoc` attestation path. The AV technical
+> specification's preferred mechanism — a Zero-Knowledge Proof — is not supported
+> over OpenID4VP (no standardised DCQL query for it exists); it rides only the W3C
+> Digital Credentials API. Plain mDoc is the profile's designated fallback for this
+> transport.
+
 ## Verifying presentations against a query
 
 Use `verifyPresentation` to combine crypto/structural verification with DCQL matching in a single call:
@@ -142,6 +209,11 @@ if (result.valid) {
 ```
 
 Mismatches return `valid: false` — they do not throw. Only crypto/structural failures (malformed VP tokens, invalid signatures, expired credentials) and malformed DCQL queries throw exceptions.
+
+The `else` branch above is the right place to read `unmatched` for an ordinary
+query. For a **`credential_sets` disjunction** it is not the whole story: the
+option the wallet did not take is reported as unmatched even when `valid` is
+`true`. See [Offering the wallet a choice](#offering-the-wallet-a-choice-credential_sets).
 
 > **Privacy — diagnostics are verifier-internal.** `match.unmatched[].reason` and `detail` (including `value_mismatch`) are intended for verifier-side logging, debugging, and admin UIs. OpenID4VP §11 warns that per-claim verification outcomes can reveal wallet contents to observers. Do NOT echo these diagnostics into the OpenID4VP wire response sent back to the wallet, into end-user-visible error messages that another party could correlate, or into public analytics/third-party logs. The protocol's own error codes are the public interface; these fields are your internal instrumentation.
 
@@ -427,7 +499,7 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 - **SD-JWT VC** — full cryptographic verification (issuer JWT signature via `x5c`, transitive disclosure-hash check, key binding JWT signature + `sd_hash`, nonce check). Holder binding (KB-JWT) is **mandatory and fails closed** whenever the issuer JWT carries a `cnf` claim; `requireKeyBinding` extends the requirement to credentials without `cnf`. Optional `trustedIssuerJwks` alternate trust path for VCs without `x5c`.
 - **mDOC / ISO 18013-5** `mso_mdoc` format — CBOR decoding, claim extraction, COSE_Sign1 signature verification, MobileSecurityObject validity enforcement, IssuerSignedItem digest verification. Device authentication (ISO 18013-5 §9.1.3) is **mandatory and fails closed**: the `DeviceSignature` (COSE_Sign1) over `DeviceAuthentication`/`SessionTranscript` is verified against the MSO-committed device key. `DeviceMac` (COSE_Mac0) is **not supported and is rejected**.
 - **DCQL** — authorization request builder with DCQL query, matching via [@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql), `verifyPresentation` for combined crypto + match.
-- **HAIP** — `buildHaipQuery` / `validateHaipQuery` helpers for the High Assurance Interoperability Profile.
+- **HAIP** — `buildHaipQuery` / `validateHaipQuery` helpers for the High Assurance Interoperability Profile, plus `buildCredentialSetQuery` / `validateCredentialSetQuery` for `credential_sets` disjunctions.
 - **Signed authorization requests (JAR)** — `createSignedAuthorizationRequest` per RFC 9101 / OpenID4VP 1.0 §5.10 with `x509_san_dns` or `x509_hash` client-id binding. Emits the OpenID4VP 1.0 Final `client_metadata` shape. Self-signed verifier leaf certificates are rejected by default per HAIP 1.0 Final.
 - **Encrypted responses** — `decryptAuthorizationResponse` for `direct_post.jwt` (ECDH-ES + A128GCM/A256GCM), `verifyAuthorizationResponse` for the 1.0 §8.1 object-keyed `vp_token` envelope.
 - **X.509 chain validation** — RFC 5280 chain building including `nameConstraints`, `StaticTrustStore`, `CompositeTrustStore`.

@@ -3,7 +3,7 @@ import { decodeJwt, decodeProtectedHeader } from 'jose';
 import * as x509 from '@peculiar/x509';
 
 import { createSignedAuthorizationRequest } from '../src/signed-authorization.js';
-import { buildHaipQuery } from '../src/haip.js';
+import { buildHaipQuery, buildCredentialSetQuery } from '../src/haip.js';
 import { SignedRequestBuildError } from '../src/errors.js';
 import type { DcqlQuery } from '@openeudi/dcql';
 import {
@@ -465,5 +465,52 @@ describe('createSignedAuthorizationRequest', () => {
                 pidQuery
             )
         ).rejects.toBeInstanceOf(SignedRequestBuildError);
+    });
+});
+
+describe('createSignedAuthorizationRequest — credential_sets disjunction', () => {
+    const ageOrPidQuery: DcqlQuery = buildCredentialSetQuery({
+        options: [
+            {
+                credentialId: 'age-attestation',
+                format: 'mso_mdoc',
+                doctypeValue: 'eu.europa.ec.av.1',
+                claims: ['age_over_18'],
+            },
+            {
+                credentialId: 'pid',
+                format: 'dc+sd-jwt',
+                vctValues: ['urn:eu.europa.ec.eudi:pid:1'],
+                claims: ['birth_date'],
+            },
+        ],
+    });
+
+    it('embeds credential_sets in the signed request object payload', async () => {
+        const { signer, certificateChain } = await createVerifierKeypairAndCert(
+            'verifier.example.com',
+        );
+        const { publicJwk } = await createEncryptionKeypair();
+
+        const req = await createSignedAuthorizationRequest(
+            {
+                hostname: 'verifier.example.com',
+                requestUri: 'https://verifier.example.com/request.jwt',
+                responseUri: 'https://verifier.example.com/response',
+                nonce: 'test-nonce-abc',
+                signer,
+                certificateChain,
+                encryptionKey: { publicJwk },
+                vpFormatsSupported: createVpFormatsSupported(),
+            },
+            ageOrPidQuery,
+        );
+
+        const payload = decodeJwt(req.requestObject) as { dcql_query: DcqlQuery };
+
+        expect(payload.dcql_query).toEqual(ageOrPidQuery);
+        expect(payload.dcql_query.credential_sets).toEqual([
+            { options: [['age-attestation'], ['pid']] },
+        ]);
     });
 });
