@@ -8,18 +8,36 @@ import {
 import {
   AuthorityKeyIdentifierExtension,
   BasicConstraintsExtension,
+  ExtendedKeyUsageExtension,
   KeyUsageFlags,
   KeyUsagesExtension,
   Name as X509Name,
   SubjectAlternativeNameExtension,
   SubjectKeyIdentifierExtension,
   X509Certificate,
-  X509Certificates,
 } from "@peculiar/x509";
 import { CertificateChainError } from "../errors.js";
 import { certificatesEqual } from "./x509-utils.js";
 
 const NAME_CONSTRAINTS_OID = "2.5.29.30";
+
+/** ISO/IEC 18013-5 Annex B `id-mdl-kp-mdlDS` — Document Signer extended key usage. */
+export const ISO_18013_5_DS_EKU = "1.0.18013.5.1.2";
+
+/** Default ceiling on chain length, leaf and anchor included. */
+export const DEFAULT_MAX_CHAIN_LENGTH = 5;
+
+/**
+ * Certificate profile the chain is validated against.
+ *
+ * - `generic` — RFC 5280 rules only. Used for SD-JWT VC (`x5c`), where no
+ *   profile mandates a specific EKU on the issuer certificate.
+ * - `iso18013-5` — additionally enforces the ISO/IEC 18013-5 Annex B
+ *   certificate profile on built chains: the Document Signer MUST carry
+ *   keyUsage `digitalSignature` and EKU `1.0.18013.5.1.2`, and every CA
+ *   (IACA) MUST carry keyUsage `keyCertSign`. Used for `mso_mdoc`.
+ */
+export type CertificateProfile = "generic" | "iso18013-5";
 
 type SubtreeName =
   | { type: "dn"; value: string }
@@ -37,6 +55,23 @@ export interface ChainBuilderOptions {
   allowedAlgorithms?: string[];
   /** Override "now" (used by tests). Defaults to `new Date()`. */
   now?: () => Date;
+  /** Certificate profile. Default `generic`. */
+  profile?: CertificateProfile;
+  /**
+   * Maximum number of certificates in a chain, leaf and anchor included.
+   * Default {@link DEFAULT_MAX_CHAIN_LENGTH}. Bounds work on attacker-supplied
+   * `x5c` / `x5chain` pools independently of any pathLenConstraint.
+   */
+  maxChainLength?: number;
+}
+
+export interface BuildContext {
+  /**
+   * When the credential was signed (mDOC `validityInfo.signed`, SD-JWT `iat`).
+   * When set, every certificate in the chain must also have been valid then,
+   * in addition to being valid now.
+   */
+  issuedAt?: Date;
 }
 
 const DEFAULT_ALGORITHMS = [
@@ -72,13 +107,14 @@ export class ChainBuilder {
   async build(
     leaf: X509Certificate,
     anchors: X509Certificate[],
-    intermediates: X509Certificate[] = []
+    intermediates: X509Certificate[] = [],
+    context: BuildContext = {}
   ): Promise<X509Certificate[]> {
     // Try each anchor; first one that closes a valid chain wins.
     const errors: Error[] = [];
     for (const anchor of anchors) {
       try {
-        return await this.tryBuild(leaf, anchor, intermediates);
+        return await this.tryBuild(leaf, anchor, intermediates, context);
       } catch (err) {
         errors.push(err as Error);
       }
@@ -92,57 +128,100 @@ export class ChainBuilder {
     });
   }
 
+  /**
+   * Build a path from `leaf` up to `anchor`. Trust is by presence in the
+   * anchor set and is established ONLY by (a) the leaf being byte-identical to
+   * the anchor, or (b) a verified signature by the anchor's key on the last
+   * certificate of the path. Subject/Issuer DN equality is used to select
+   * candidates, never to conclude trust (GHSA-4c2f-96cf-f5fc).
+   */
   private async tryBuild(
     leaf: X509Certificate,
     anchor: X509Certificate,
-    intermediates: X509Certificate[]
+    intermediates: X509Certificate[],
+    context: BuildContext
   ): Promise<X509Certificate[]> {
-    this.checkPerCert(leaf);
-    this.checkLeafKeyUsage(leaf);
+    this.checkPerCert(leaf, context);
+
+    // Direct match: the presented signer IS the listed anchor. The anchor is
+    // trusted by presence, so no issuer is needed and the CA/profile rules
+    // for built chains do not apply — only usability as a signer.
+    if (certificatesEqual(leaf, anchor)) {
+      this.checkLeafKeyUsage(leaf, "generic");
+      return [leaf];
+    }
+
+    const profile = this.opts.profile ?? "generic";
+    this.checkLeafKeyUsage(leaf, profile);
+    this.checkLeafExtendedKeyUsage(leaf, profile);
+
+    const maxLength = this.opts.maxChainLength ?? DEFAULT_MAX_CHAIN_LENGTH;
+    // The anchor closes via signature, never via the pool; the leaf is never
+    // its own issuer. Both are excluded so a pool copy cannot short-circuit.
+    const pool = intermediates.filter(
+      (c) => !certificatesEqual(c, anchor) && !certificatesEqual(c, leaf)
+    );
     const chain: X509Certificate[] = [leaf];
     let current = leaf;
-    const pool = new X509Certificates(intermediates);
-    let nonLeafDepth = 0; // how many non-self-issued CAs above leaf
 
-    while (current.subject !== anchor.subject) {
-      const issuer = pool.find((c) => c.subject === current.issuer);
-      if (!issuer) {
-        if (current.issuer !== anchor.subject) {
-          throw new CertificateChainError(`no issuer certificate found for ${current.subject}`, {
-            reason: "signature",
-          });
-        }
-        // climbed to the anchor
-        this.checkPerCert(anchor);
-        this.checkCaAndPathLen(anchor, nonLeafDepth);
-        this.checkAkiSkiMatch(current, anchor);
-        await this.verifySignature(current, anchor);
-        chain.push(anchor);
-        this.checkNameConstraints(leaf, chain.slice(1));
-        return chain;
+    for (;;) {
+      if (chain.length + 1 > maxLength) {
+        throw new CertificateChainError(
+          `chain from ${leaf.subject} exceeds the maximum length of ${maxLength} certificates`,
+          { reason: "path_length" }
+        );
       }
-      this.checkPerCert(issuer);
+      const nonLeafDepth = chain.length - 1; // CAs already between leaf and the next issuer
+
+      let anchorError: Error | undefined;
+      if (current.issuer === anchor.subject) {
+        try {
+          await this.closeAtAnchor(current, anchor, nonLeafDepth, context);
+          chain.push(anchor);
+          this.checkNameConstraints(leaf, chain.slice(1));
+          return chain;
+        } catch (err) {
+          anchorError = err as Error;
+        }
+      }
+
+      const candidates = pool.filter(
+        (c) => c.subject === current.issuer && !chain.some((x) => certificatesEqual(x, c))
+      );
+      let issuer: X509Certificate | undefined;
+      for (const candidate of candidates) {
+        if (await this.signatureVerifies(current, candidate)) {
+          issuer = candidate;
+          break;
+        }
+      }
+      if (!issuer) {
+        if (anchorError) throw anchorError;
+        throw new CertificateChainError(
+          candidates.length > 0
+            ? `signature verification failed for ${current.subject}`
+            : `no issuer certificate found for ${current.subject}`,
+          { reason: "signature" }
+        );
+      }
+      this.checkPerCert(issuer, context);
       this.checkCaAndPathLen(issuer, nonLeafDepth);
       this.checkAkiSkiMatch(current, issuer);
-      await this.verifySignature(current, issuer);
       chain.push(issuer);
       current = issuer;
-      nonLeafDepth += 1;
     }
-    // The loop terminated because `current.subject === anchor.subject`. That is
-    // a valid chain closure ONLY if `current` IS the anchor (byte-identical) —
-    // a certificate that merely reuses the anchor's Subject DN string was never
-    // signed by the anchor's key and must not be trusted. Subject-DN equality is
-    // not cryptographic closure. (The signature-verified closure path is the
-    // `!issuer` branch above, which calls `verifySignature(current, anchor)`.)
-    if (!certificatesEqual(current, anchor)) {
-      throw new CertificateChainError(
-        `certificate ${current.subject} shares the trust anchor's Subject DN but is not the anchor (no signature closure)`,
-        { reason: "signature" }
-      );
-    }
-    this.checkNameConstraints(leaf, chain.slice(1));
-    return chain;
+  }
+
+  private async closeAtAnchor(
+    current: X509Certificate,
+    anchor: X509Certificate,
+    nonLeafDepth: number,
+    context: BuildContext
+  ): Promise<void> {
+    this.checkPerCert(anchor, context);
+    this.checkCaAndPathLen(anchor, nonLeafDepth);
+    this.checkAkiSkiMatch(current, anchor);
+    await this.verifySignature(current, anchor);
   }
 
   /**
@@ -202,7 +281,7 @@ export class ChainBuilder {
   }
 
   private checkCaAndPathLen(cert: X509Certificate, nonLeafDepth: number): void {
-    this.checkCaKeyUsage(cert);
+    this.checkCaKeyUsage(cert, this.opts.profile ?? "generic");
     const bc = cert.getExtension(BasicConstraintsExtension);
     if (!bc || !bc.ca) {
       throw new CertificateChainError(
@@ -218,9 +297,19 @@ export class ChainBuilder {
     }
   }
 
-  private checkLeafKeyUsage(leaf: X509Certificate): void {
+  private checkLeafKeyUsage(leaf: X509Certificate, profile: CertificateProfile): void {
     const ext = leaf.getExtension(KeyUsagesExtension);
-    if (!ext) return; // no keyUsage → no restriction
+    if (!ext) {
+      // RFC 5280: absent keyUsage → no restriction. ISO 18013-5 Annex B makes
+      // it mandatory on the Document Signer.
+      if (profile === "iso18013-5") {
+        throw new CertificateChainError(
+          `document signer ${leaf.subject} has no keyUsage extension (ISO 18013-5 requires digitalSignature)`,
+          { reason: "key_usage" }
+        );
+      }
+      return;
+    }
     if ((ext.usages & KeyUsageFlags.digitalSignature) === 0) {
       throw new CertificateChainError(
         `leaf ${leaf.subject} does not assert digitalSignature key usage`,
@@ -229,9 +318,29 @@ export class ChainBuilder {
     }
   }
 
-  private checkCaKeyUsage(cert: X509Certificate): void {
+  private checkLeafExtendedKeyUsage(leaf: X509Certificate, profile: CertificateProfile): void {
+    if (profile !== "iso18013-5") return;
+    const ext = leaf.getExtension(ExtendedKeyUsageExtension);
+    const usages = (ext?.usages ?? []).map(String);
+    if (!usages.includes(ISO_18013_5_DS_EKU)) {
+      throw new CertificateChainError(
+        `document signer ${leaf.subject} lacks extended key usage ${ISO_18013_5_DS_EKU} (id-mdl-kp-mdlDS)`,
+        { reason: "extended_key_usage" }
+      );
+    }
+  }
+
+  private checkCaKeyUsage(cert: X509Certificate, profile: CertificateProfile): void {
     const ext = cert.getExtension(KeyUsagesExtension);
-    if (!ext) return;
+    if (!ext) {
+      if (profile === "iso18013-5") {
+        throw new CertificateChainError(
+          `CA ${cert.subject} has no keyUsage extension (ISO 18013-5 requires keyCertSign)`,
+          { reason: "key_usage" }
+        );
+      }
+      return;
+    }
     if ((ext.usages & KeyUsageFlags.keyCertSign) === 0) {
       throw new CertificateChainError(
         `CA ${cert.subject} does not assert keyCertSign key usage`,
@@ -254,6 +363,15 @@ export class ChainBuilder {
     }
   }
 
+  /** Signature check that never throws — used to select among DN-matching candidates. */
+  private async signatureVerifies(child: X509Certificate, issuer: X509Certificate): Promise<boolean> {
+    try {
+      return await child.verify({ publicKey: issuer.publicKey, signatureOnly: true });
+    } catch {
+      return false;
+    }
+  }
+
   private async verifySignature(child: X509Certificate, issuer: X509Certificate): Promise<void> {
     // `signatureOnly: true` skips @peculiar/x509's internal validity check —
     // we own validity enforcement via `checkValidity` with clock-skew tolerance.
@@ -263,25 +381,29 @@ export class ChainBuilder {
     }
   }
 
-  private checkPerCert(cert: X509Certificate): void {
-    this.checkValidity(cert);
+  private checkPerCert(cert: X509Certificate, context: BuildContext = {}): void {
+    const now = (this.opts.now ?? (() => new Date()))();
+    this.checkValidity(cert, now, "");
+    if (context.issuedAt) {
+      this.checkValidity(cert, context.issuedAt, ` at issuance time ${context.issuedAt.toISOString()}`);
+    }
     this.checkAlgorithm(cert);
   }
 
-  private checkValidity(cert: X509Certificate): void {
-    const now = (this.opts.now ?? (() => new Date()))().getTime();
+  private checkValidity(cert: X509Certificate, at: Date, label: string): void {
+    const time = at.getTime();
     const skewMs = (this.opts.clockSkewTolerance ?? 60) * 1000;
     const notBefore = cert.notBefore.getTime();
     const notAfter = cert.notAfter.getTime();
-    if (now + skewMs < notBefore) {
+    if (time + skewMs < notBefore) {
       throw new CertificateChainError(
-        `certificate ${cert.subject} not yet valid (notBefore=${cert.notBefore.toISOString()})`,
+        `certificate ${cert.subject} not yet valid${label} (notBefore=${cert.notBefore.toISOString()})`,
         { reason: "validity" }
       );
     }
-    if (now - skewMs > notAfter) {
+    if (time - skewMs > notAfter) {
       throw new CertificateChainError(
-        `certificate ${cert.subject} expired (notAfter=${cert.notAfter.toISOString()})`,
+        `certificate ${cert.subject} expired${label} (notAfter=${cert.notAfter.toISOString()})`,
         { reason: "validity" }
       );
     }

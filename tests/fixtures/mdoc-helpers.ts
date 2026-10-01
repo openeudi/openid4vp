@@ -53,6 +53,11 @@ export interface BuildSignedMdocOptions {
     sessionTranscript?: Uint8Array;
     /** When true, omit deviceSigned entirely (models the pre-fix vulnerable presentation). */
     omitDeviceAuth?: boolean;
+    /**
+     * Full x5chain (leaf first) for the issuerAuth unprotected header. Default:
+     * the single `issuerKey.certDerBytes`. The leaf MUST certify `issuerKey`.
+     */
+    x5chain?: Uint8Array[];
 }
 
 export interface BuildSignedMdocResult {
@@ -147,6 +152,7 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
         deviceKey,
         sessionTranscript = DEFAULT_TEST_SESSION_TRANSCRIPT,
         omitDeviceAuth = false,
+        x5chain,
     } = options;
 
     const coseAlg = ALG_TO_COSE_LABEL[alg];
@@ -227,7 +233,9 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
     const protectedHeader = new Map<number, unknown>([[1, coseAlg]]);
     const protectedBytes = cbor.encode(protectedHeader);
 
-    const unprotectedHeader = new Map<number, unknown>([[33, issuerKey.certDerBytes]]);
+    const unprotectedHeader = new Map<number, unknown>([
+        [33, x5chain && x5chain.length > 0 ? x5chain : issuerKey.certDerBytes],
+    ]);
 
     // Sig_structure1 = ["Signature1", protected_bytes, external_aad (empty), payload]
     const sigStructure1 = ['Signature1', protectedBytes, new Uint8Array(0), msoTag24];

@@ -91,6 +91,7 @@ export type ChainErrorReason =
     | 'validity'
     | 'name_constraints'
     | 'key_usage'
+    | 'extended_key_usage'
     | 'basic_constraints'
     | 'path_length'
     | 'algorithm_disallowed'

@@ -1,7 +1,7 @@
 import { X509Certificate } from '@peculiar/x509';
 import type { TrustAnchor } from './TrustAnchor.js';
 import type { NationalTlSnapshot } from './lotl-types.js';
-import { getSkiHex } from './x509-utils.js';
+import { certificatesEqual, getSkiHex } from './x509-utils.js';
 
 /**
  * Resolves trust anchors for a given leaf credential. The library calls
@@ -68,8 +68,9 @@ export class StaticTrustStore implements TrustStore {
 
 /**
  * Combines multiple `TrustStore` instances. Children are queried in parallel;
- * results concatenate in child-order; duplicate anchors are dropped by
- * Subject Key Identifier.
+ * results concatenate in child-order; duplicate anchors (byte-identical DER)
+ * are dropped, first occurrence wins. Distinct certificates that share a key
+ * (e.g. a re-issued root) are both kept, so neither validity window is lost.
  */
 export class CompositeTrustStore implements TrustStore {
     constructor(private readonly stores: TrustStore[]) {}
@@ -78,14 +79,10 @@ export class CompositeTrustStore implements TrustStore {
         const results = await Promise.all(
             this.stores.map((store) => store.getAnchors(hint))
         );
-        const seen = new Set<string>();
         const out: TrustAnchor[] = [];
         for (const batch of results) {
             for (const anchor of batch) {
-                const ski = getSkiHex(anchor.certificate);
-                const key = ski ?? anchor.certificate.serialNumber;
-                if (seen.has(key)) continue;
-                seen.add(key);
+                if (out.some((a) => certificatesEqual(a.certificate, anchor.certificate))) continue;
                 out.push(anchor);
             }
         }

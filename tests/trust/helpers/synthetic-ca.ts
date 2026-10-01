@@ -58,11 +58,17 @@ export interface CreateCaOpts {
     pathLenConstraint?: number;
     /** Use an RSA key (default: ECDSA P-256). Drives the cert's signatureAlgorithm. */
     keySpec?: RsaKeySpec;
+    /** Hex serial number. Default: random 16 bytes. */
+    serialNumber?: string;
 }
 
 export interface CreateIntermediateOpts extends CreateCaOpts {
     nameConstraintsPermitted?: SyntheticSubtree[];
     nameConstraintsExcluded?: SyntheticSubtree[];
+    /** BasicConstraints cA flag. Default true; false models a mis-issued "CA". */
+    isCa?: boolean;
+    /** Override keyUsage. Default keyCertSign | cRLSign. */
+    keyUsage?: x509.KeyUsageFlags;
 }
 
 export interface CreateLeafOpts {
@@ -70,6 +76,10 @@ export interface CreateLeafOpts {
     notBefore?: Date;
     notAfter?: Date;
     keyUsage?: x509.KeyUsageFlags;
+    /** Omit the keyUsage extension entirely. */
+    omitKeyUsage?: boolean;
+    /** ExtendedKeyUsage OIDs, e.g. ISO 18013-5 mdlDS `1.0.18013.5.1.2`. */
+    extendedKeyUsages?: string[];
     subjectAlternativeName?: Array<
         | { type: 'dns'; value: string }
         | { type: 'email'; value: string }
@@ -212,7 +222,7 @@ export async function createCa(opts: CreateCaOpts = {}): Promise<GeneratedCa> {
     const keys = await generateKeysFor(opts.keySpec);
     const now = new Date();
     const cert = await x509.X509CertificateGenerator.createSelfSigned({
-        serialNumber: randomSerial(),
+        serialNumber: opts.serialNumber ?? randomSerial(),
         name: opts.name ?? 'CN=Test Root CA',
         notBefore: opts.notBefore ?? new Date(now.getTime() - 1000),
         notAfter:
@@ -276,9 +286,13 @@ export async function createIntermediate(
     const keys = await generateEcKeys();
     const now = new Date();
     const extensions: x509.Extension[] = [
-        new x509.BasicConstraintsExtension(true, opts.pathLenConstraint, true),
+        new x509.BasicConstraintsExtension(
+            opts.isCa ?? true,
+            opts.isCa === false ? undefined : opts.pathLenConstraint,
+            true
+        ),
         new x509.KeyUsagesExtension(
-            x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.cRLSign,
+            opts.keyUsage ?? x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.cRLSign,
             true
         ),
         await x509.SubjectKeyIdentifierExtension.create(keys.publicKey),
@@ -318,13 +332,20 @@ export async function createLeaf(
     const now = new Date();
     const extensions: x509.Extension[] = [
         new x509.BasicConstraintsExtension(false, undefined, true),
-        new x509.KeyUsagesExtension(
-            opts.keyUsage ?? x509.KeyUsageFlags.digitalSignature,
-            true
-        ),
         await x509.SubjectKeyIdentifierExtension.create(keys.publicKey),
         await x509.AuthorityKeyIdentifierExtension.create(issuer.certificate, false),
     ];
+    if (!opts.omitKeyUsage) {
+        extensions.push(
+            new x509.KeyUsagesExtension(
+                opts.keyUsage ?? x509.KeyUsageFlags.digitalSignature,
+                true
+            )
+        );
+    }
+    if (opts.extendedKeyUsages && opts.extendedKeyUsages.length > 0) {
+        extensions.push(new x509.ExtendedKeyUsageExtension(opts.extendedKeyUsages, true));
+    }
     if (opts.subjectAlternativeName && opts.subjectAlternativeName.length > 0) {
         extensions.push(buildSanExtension(opts.subjectAlternativeName));
     }

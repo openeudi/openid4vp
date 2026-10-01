@@ -26,6 +26,21 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
     return true;
 }
 
+/**
+ * Read `validityInfo.signed` from the (not yet signature-verified) MSO so the
+ * DS chain can also be checked at issuance time. Only ever ADDS a rejection
+ * condition, so an unverified value cannot widen trust; a malformed MSO is
+ * reported by the authoritative decode after signature verification.
+ */
+function peekMsoSigned(payload: Uint8Array): Date | undefined {
+    try {
+        const signed = decodeMso(payload).validityInfo.signed;
+        return Number.isFinite(signed.getTime()) ? signed : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 function derToPem(der: Uint8Array): string {
     let binary = '';
     for (const b of der) binary += String.fromCharCode(b);
@@ -275,19 +290,22 @@ export class MdocParser implements ICredentialParser {
         let trustResult: TrustEvaluationResult | undefined;
 
         if (options.trustStore) {
-            // 0.5.0 path: RFC 5280 chain validation via TrustEvaluator.
+            // RFC 5280 chain validation via TrustEvaluator: the DS (x5chain[0])
+            // must chain to an anchor (e.g. an IACA) or BE one. x5chain[1..] are
+            // untrusted path candidates only. ISO 18013-5 Annex B certificate
+            // profile (mdlDS EKU, mandatory keyUsage) applies to built chains.
             // Dynamic import keeps the evaluator out of 0.4.0-style callers' bundles.
-            const { TrustEvaluator } = await import('../trust/TrustEvaluator.js');
-            const evaluator = new TrustEvaluator({
+            const { evaluateCredentialIssuer } = await import('../trust/TrustEvaluator.js');
+            trustResult = await evaluateCredentialIssuer({
+                chain: cose.x5chain,
+                profile: 'iso18013-5',
+                issuedAt: peekMsoSigned(cose.payload),
                 trustStore: options.trustStore,
                 revocationPolicy: options.revocationPolicy ?? 'skip',
                 fetcher: options.fetcher,
                 cache: options.cache,
                 clockSkewTolerance: options.clockSkewTolerance,
             });
-            const { X509Certificate } = await import('@peculiar/x509');
-            const leaf = new X509Certificate(issuerCertBytes as Uint8Array<ArrayBuffer>);
-            trustResult = await evaluator.evaluate(leaf);
         } else {
             // 0.4.0 byte-equality path — preserved verbatim for backward compatibility.
             if (options.trustedCertificates.length === 0) {
