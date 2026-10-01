@@ -9,7 +9,12 @@ import { SdJwtParser } from '../../src/parsers/sd-jwt.parser.js';
 import { StaticTrustStore } from '../../src/trust/TrustStore.js';
 import { RevokedCertificateError, RevocationCheckFailedError } from '../../src/errors.js';
 import { OcspClient } from '../../src/trust/OcspClient.js';
+import { createGuardedFetcher } from '../../src/http/guarded-fetch.js';
 import { createCa, createCrl, createLeaf, signOcspResponse } from './helpers/synthetic-ca.js';
+
+// The fixtures are served from 127.0.0.1; the default transport refuses
+// loopback targets, so these tests opt in while still exercising the guard.
+const loopbackFetcher = createGuardedFetcher({ allowHttp: true, allowPrivateNetworks: true });
 
 // ---------------------------------------------------------------------------
 // SD-JWT signing helper (inline port).
@@ -44,7 +49,7 @@ async function makeSdJwtSignedByLeaf(leaf: {
     // Build a bare SD-JWT (no selective disclosures, no key binding). The
     // parser validates x5c + signature + `iss`/`vct` — nothing more is needed.
     const jwt = await new jose.SignJWT(payload)
-        .setProtectedHeader({ alg: 'ES256', typ: 'vc+sd-jwt', x5c: [leafDerBase64] })
+        .setProtectedHeader({ alg: 'ES256', typ: 'dc+sd-jwt', x5c: [leafDerBase64] })
         .sign(signingKey);
 
     return jwt + '~';
@@ -94,6 +99,7 @@ describe('A.2 integration — revocation end-to-end via SdJwtParser', () => {
             nonce: 'abc',
             trustedCertificates: [],
             trustStore: new StaticTrustStore([root.certificate]),
+            fetcher: loopbackFetcher,
             revocationPolicy: 'prefer',
         });
 
@@ -127,6 +133,7 @@ describe('A.2 integration — revocation end-to-end via SdJwtParser', () => {
                 nonce: 'abc',
                 trustedCertificates: [],
                 trustStore: new StaticTrustStore([root.certificate]),
+            fetcher: loopbackFetcher,
                 revocationPolicy: 'require',
             })
         ).rejects.toBeInstanceOf(RevokedCertificateError);
@@ -148,6 +155,7 @@ describe('A.2 integration — revocation end-to-end via SdJwtParser', () => {
                 nonce: 'abc',
                 trustedCertificates: [],
                 trustStore: new StaticTrustStore([root.certificate]),
+            fetcher: loopbackFetcher,
                 revocationPolicy: 'require',
             })
         ).rejects.toBeInstanceOf(RevocationCheckFailedError);

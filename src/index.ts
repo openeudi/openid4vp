@@ -78,6 +78,12 @@ export type { TrustAnchor, LotlAnchorMetadata } from './trust/TrustAnchor.js';
 export type { Fetcher } from './trust/Fetcher.js';
 export { InMemoryCache, type Cache } from './trust/Cache.js';
 export {
+    createGuardedFetcher,
+    GUARDED_FETCH_DEFAULTS,
+    type GuardedFetcherOptions,
+    type HostLookup,
+} from './http/guarded-fetch.js';
+export {
     StaticTrustStore,
     CompositeTrustStore,
     LotlTrustStore,
@@ -103,6 +109,8 @@ export {
     MissingDecryptionKeyError,
     MissingVerifierEncryptionKeyError,
     MultipleCredentialsNotSupportedError,
+    GuardedFetchError,
+    type GuardedFetchRejectReason,
     type ChainErrorReason,
     type SignedRequestBuildErrorCode,
 } from './errors.js';

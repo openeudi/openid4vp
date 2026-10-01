@@ -12,6 +12,7 @@ import { ExtendedKeyUsageExtension, X509Certificate } from '@peculiar/x509';
 import type { Cache } from './Cache.js';
 import { ChainBuilder } from './ChainBuilder.js';
 import { ecdsaDerToIeee } from './ecdsa-util.js';
+import { createDefaultTrustFetcher } from '../http/guarded-fetch.js';
 import type { Fetcher } from './Fetcher.js';
 import type { RevocationResult } from './revocation-types.js';
 
@@ -48,7 +49,7 @@ export class OcspClient {
     private readonly cache: Cache | undefined;
 
     constructor(opts: OcspClientOptions = {}) {
-        this.fetcher = opts.fetcher ?? globalThis.fetch.bind(globalThis);
+        this.fetcher = opts.fetcher ?? createDefaultTrustFetcher();
         this.cache = opts.cache;
     }
 

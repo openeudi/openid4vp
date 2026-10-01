@@ -9,6 +9,11 @@ import {
 } from './helpers/lotl-fixtures.js';
 import { createCa, createLeaf } from './helpers/synthetic-ca.js';
 import { TrustEvaluator } from '../../src/trust/TrustEvaluator.js';
+import { createGuardedFetcher } from '../../src/http/guarded-fetch.js';
+import { GuardedFetchError, LotlFetchError } from '../../src/errors.js';
+
+// Fixtures are served from 127.0.0.1, which the default transport refuses.
+const loopbackFetcher = createGuardedFetcher({ allowHttp: true, allowPrivateNetworks: true });
 
 async function startServer(
     routes: Map<string, string>
@@ -91,11 +96,12 @@ describe('end-to-end — SD-JWT with LotlTrustStore', () => {
         routes.set('/eu-lotl.xml', lotlXml);
 
         try {
-            // No custom `fetcher` — exercises globalThis.fetch (Node v22 built-in)
-            // hitting the real node:http server. This is the end-to-end contract.
+            // Guarded fetcher over Node's built-in fetch hitting the real
+            // node:http server. This is the end-to-end contract.
             const store = new LotlTrustStore({
                 signingAnchors: [lotlSigner.certificate],
                 lotlUrl,
+                fetcher: loopbackFetcher,
             });
             const evaluator = new TrustEvaluator({ trustStore: store });
             const result = await evaluator.evaluate(issuerLeaf.certificate);
@@ -125,8 +131,29 @@ describe('end-to-end — SD-JWT with LotlTrustStore', () => {
             const store = new LotlTrustStore({
                 signingAnchors: [lotlSigner.certificate],
                 lotlUrl: `${server.url}/eu-lotl.xml`,
+                fetcher: loopbackFetcher,
             });
             await expect(store.getAnchors({ issuer: 'CN=anyone' })).rejects.toThrow();
+        } finally {
+            await server.close();
+        }
+    });
+
+    it('default transport refuses a loopback trusted-list URL (SSRF guard)', async () => {
+        const lotlSigner = await createLotlSigner();
+        const routes = new Map<string, string>();
+        routes.set('/eu-lotl.xml', '<x/>');
+        const server = await startServer(routes);
+        try {
+            const store = new LotlTrustStore({
+                signingAnchors: [lotlSigner.certificate],
+                lotlUrl: `${server.url}/eu-lotl.xml`,
+            });
+            const err = await store.getAnchors({ issuer: 'CN=anyone' }).catch((e: unknown) => e);
+            expect(err).toBeInstanceOf(LotlFetchError);
+            const cause = (err as LotlFetchError).cause;
+            expect(cause).toBeInstanceOf(GuardedFetchError);
+            expect((cause as GuardedFetchError).reason).toBe('private_address');
         } finally {
             await server.close();
         }

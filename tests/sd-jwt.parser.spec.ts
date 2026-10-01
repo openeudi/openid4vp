@@ -53,7 +53,7 @@ async function buildSdJwtWithoutX5c(opts: {
         _sd: sdHashes,
     };
 
-    const headerParams: Record<string, unknown> = { alg, typ: 'vc+sd-jwt' };
+    const headerParams: Record<string, unknown> = { alg, typ: 'dc+sd-jwt' };
     if (opts.kid) headerParams.kid = opts.kid;
 
     const issuerJwt = await new jose.SignJWT(payload as jose.JWTPayload)
@@ -286,7 +286,7 @@ describe('SdJwtParser', () => {
 
     describe('parse — missing x5c', () => {
         it('throws MalformedCredentialError when x5c is missing from header', async () => {
-            const noX5cHeader = { alg: 'ES256', typ: 'vc+sd-jwt' };
+            const noX5cHeader = { alg: 'ES256', typ: 'dc+sd-jwt' };
             const noX5cPayload = {
                 iss: 'https://issuer.de/eudi',
                 exp: Math.floor(Date.now() / 1000) + 3600,
@@ -303,7 +303,7 @@ describe('SdJwtParser', () => {
 
     describe('parse — unsupported algorithm', () => {
         it('returns invalid for algorithm not in allowlist', async () => {
-            const rsaHeader = { alg: 'RS256', typ: 'vc+sd-jwt', x5c: [issuerKey.x5cBase64] };
+            const rsaHeader = { alg: 'RS256', typ: 'dc+sd-jwt', x5c: [issuerKey.x5cBase64] };
             const rsaPayload = {
                 iss: 'https://issuer.de/eudi',
                 exp: Math.floor(Date.now() / 1000) + 3600,
