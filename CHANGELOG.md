@@ -76,6 +76,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   verified signature rather than first DN match, so a look-alike in `x5c`
   cannot shadow the genuine issuer. Closure at an anchor is still by signature
   only — Subject-DN equality never establishes trust (GHSA-4c2f-96cf-f5fc).
+- `ChainBuilder` committed to the first intermediate whose signature verified
+  and gave up if that certificate then failed a check, even when another
+  intermediate with the same Subject DN would have completed the chain. A
+  re-issued intermediate shipped next to its expired predecessor was rejected
+  or accepted depending only on the order of `x5c` / `x5chain`, and of two
+  cross-signed copies only the first listed was ever tried. Path search now
+  backtracks across same-subject candidates, so the result no longer depends
+  on certificate order. Anchors are still tried in order, first valid chain
+  wins. Not reachable before this release (the parsers passed no
+  intermediates).
+- Because backtracking lets an attacker-supplied pool force work exponential
+  in its size, each `build` is capped at 32 signature verifications (new
+  `ChainBuilderOptions.maxSignatureChecks`), shared across all anchors tried.
+  Exhausting it fails closed with `CertificateChainError` reason
+  `path_length`. A legitimate path needs a handful.
 - `TrustEvaluator` de-duplicated candidate anchors by serial number, which is
   only unique per issuer, so a distinct anchor from another CA with the same
   serial was silently dropped. `CompositeTrustStore` de-duplicated by SKI, which

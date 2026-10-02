@@ -28,6 +28,25 @@ export const ISO_18013_5_DS_EKU = "1.0.18013.5.1.2";
 export const DEFAULT_MAX_CHAIN_LENGTH = 5;
 
 /**
+ * Default ceiling on signature verifications per `build`. A legitimate path —
+ * even through re-issued or cross-signed intermediates — needs a handful.
+ */
+export const DEFAULT_MAX_SIGNATURE_CHECKS = 32;
+
+/** Mutable state threaded through one path search. */
+interface PathSearch {
+  /** Signature verifications left before the search is abandoned. */
+  remaining: number;
+  /** Most recent failure of a check on a concrete certificate. */
+  specific?: Error;
+  /** Most recent "nothing usable at this step" outcome. */
+  fallback?: Error;
+}
+
+/** Errors that abort the whole search rather than just the current branch. */
+const searchAborts = new WeakSet<Error>();
+
+/**
  * Certificate profile the chain is validated against.
  *
  * - `generic` — RFC 5280 rules only. Used for SD-JWT VC (`x5c`), where no
@@ -63,6 +82,14 @@ export interface ChainBuilderOptions {
    * `x5c` / `x5chain` pools independently of any pathLenConstraint.
    */
   maxChainLength?: number;
+  /**
+   * Maximum number of certificate signature verifications one `build` may
+   * spend searching for a path, closure attempts at anchors included. The
+   * search backtracks across candidates that share a Subject DN, so without
+   * a ceiling an attacker-supplied `x5c` / `x5chain` pool could force work
+   * exponential in its size. Default {@link DEFAULT_MAX_SIGNATURE_CHECKS}.
+   */
+  maxSignatureChecks?: number;
 }
 
 export interface BuildContext {
@@ -103,6 +130,19 @@ export class ChainBuilder {
    * optionally using additional intermediates. Returns the ordered chain
    * (leaf → anchor). Throws `CertificateChainError` on any validation
    * failure.
+   *
+   * Trust is by presence in the anchor set and is established ONLY by (a) the
+   * leaf being byte-identical to an anchor, or (b) a verified signature by an
+   * anchor's key on the last certificate of the path. Subject/Issuer DN
+   * equality is used to select candidates, never to conclude trust
+   * (GHSA-4c2f-96cf-f5fc).
+   *
+   * The search is depth-first and backtracks: when several intermediates share
+   * a Subject DN — a re-issued certificate next to its expired predecessor, or
+   * cross-signed copies under different roots — a candidate that fails a check
+   * or leads nowhere does not end the search. The result therefore does not
+   * depend on the order of `intermediates`. Work is bounded by
+   * `maxChainLength` and `maxSignatureChecks`.
    */
   async build(
     leaf: X509Certificate,
@@ -110,37 +150,42 @@ export class ChainBuilder {
     intermediates: X509Certificate[] = [],
     context: BuildContext = {}
   ): Promise<X509Certificate[]> {
-    // Try each anchor; first one that closes a valid chain wins.
-    const errors: Error[] = [];
+    // One budget for the whole call: trying more anchors must not multiply
+    // the work an attacker-supplied pool can force.
+    const search: PathSearch = {
+      remaining: this.opts.maxSignatureChecks ?? DEFAULT_MAX_SIGNATURE_CHECKS,
+    };
+    // Anchors are tried in order and the first that closes a valid chain wins,
+    // so callers keep control over which anchor (and provenance) is preferred.
+    let lastFailure: Error | undefined;
     for (const anchor of anchors) {
+      search.specific = undefined;
+      search.fallback = undefined;
       try {
-        return await this.tryBuild(leaf, anchor, intermediates, context);
+        const chain = await this.tryBuild(leaf, anchor, intermediates, context, search);
+        if (chain) return chain;
+        lastFailure = search.specific ?? search.fallback;
       } catch (err) {
-        errors.push(err as Error);
+        if (searchAborts.has(err as Error)) throw err;
+        lastFailure = err as Error;
       }
     }
     // All anchors failed — rethrow the most informative error.
-    const last = errors[errors.length - 1];
-    if (last instanceof CertificateChainError) throw last;
+    if (lastFailure instanceof CertificateChainError) throw lastFailure;
     throw new CertificateChainError("no valid chain to any anchor", {
       reason: "signature",
-      cause: last,
+      cause: lastFailure,
     });
   }
 
-  /**
-   * Build a path from `leaf` up to `anchor`. Trust is by presence in the
-   * anchor set and is established ONLY by (a) the leaf being byte-identical to
-   * the anchor, or (b) a verified signature by the anchor's key on the last
-   * certificate of the path. Subject/Issuer DN equality is used to select
-   * candidates, never to conclude trust (GHSA-4c2f-96cf-f5fc).
-   */
+  /** Search for a path from `leaf` that closes at `anchor`. */
   private async tryBuild(
     leaf: X509Certificate,
     anchor: X509Certificate,
     intermediates: X509Certificate[],
-    context: BuildContext
-  ): Promise<X509Certificate[]> {
+    context: BuildContext,
+    search: PathSearch
+  ): Promise<X509Certificate[] | undefined> {
     this.checkPerCert(leaf, context);
 
     // Direct match: the presented signer IS the listed anchor. The anchor is
@@ -155,73 +200,107 @@ export class ChainBuilder {
     this.checkLeafKeyUsage(leaf, profile);
     this.checkLeafExtendedKeyUsage(leaf, profile);
 
-    const maxLength = this.opts.maxChainLength ?? DEFAULT_MAX_CHAIN_LENGTH;
     // The anchor closes via signature, never via the pool; the leaf is never
     // its own issuer. Both are excluded so a pool copy cannot short-circuit.
     const pool = intermediates.filter(
       (c) => !certificatesEqual(c, anchor) && !certificatesEqual(c, leaf)
     );
-    const chain: X509Certificate[] = [leaf];
-    let current = leaf;
+    return this.extendPath([leaf], anchor, pool, context, search);
+  }
 
-    for (;;) {
-      if (chain.length + 1 > maxLength) {
-        throw new CertificateChainError(
-          `chain from ${leaf.subject} exceeds the maximum length of ${maxLength} certificates`,
-          { reason: "path_length" }
-        );
-      }
-      const nonLeafDepth = chain.length - 1; // CAs already between leaf and the next issuer
-
-      let anchorError: Error | undefined;
-      if (current.issuer === anchor.subject) {
-        try {
-          await this.closeAtAnchor(current, anchor, nonLeafDepth, context);
-          chain.push(anchor);
-          this.checkNameConstraints(leaf, chain.slice(1));
-          return chain;
-        } catch (err) {
-          anchorError = err as Error;
-        }
-      }
-
-      const candidates = pool.filter(
-        (c) => c.subject === current.issuer && !chain.some((x) => certificatesEqual(x, c))
+  /**
+   * Try to complete `chain` (leaf first) to `anchor`. Returns the completed
+   * chain, or `undefined` when no extension of this prefix works — failures
+   * are recorded on `search` so the caller can report the most specific one.
+   * Throws only to abandon the whole search (signature budget exhausted).
+   */
+  private async extendPath(
+    chain: X509Certificate[],
+    anchor: X509Certificate,
+    pool: X509Certificate[],
+    context: BuildContext,
+    search: PathSearch
+  ): Promise<X509Certificate[] | undefined> {
+    const leaf = chain[0];
+    const current = chain[chain.length - 1];
+    const maxLength = this.opts.maxChainLength ?? DEFAULT_MAX_CHAIN_LENGTH;
+    if (chain.length + 1 > maxLength) {
+      search.specific = new CertificateChainError(
+        `chain from ${leaf.subject} exceeds the maximum length of ${maxLength} certificates`,
+        { reason: "path_length" }
       );
-      let issuer: X509Certificate | undefined;
-      for (const candidate of candidates) {
-        if (await this.signatureVerifies(current, candidate)) {
-          issuer = candidate;
-          break;
-        }
-      }
-      if (!issuer) {
-        if (anchorError) throw anchorError;
-        throw new CertificateChainError(
-          candidates.length > 0
-            ? `signature verification failed for ${current.subject}`
-            : `no issuer certificate found for ${current.subject}`,
-          { reason: "signature" }
-        );
-      }
-      this.checkPerCert(issuer, context);
-      this.checkCaAndPathLen(issuer, nonLeafDepth);
-      this.checkAkiSkiMatch(current, issuer);
-      chain.push(issuer);
-      current = issuer;
+      return undefined;
     }
+    const nonLeafDepth = chain.length - 1; // CAs already between leaf and the next issuer
+
+    if (current.issuer === anchor.subject) {
+      try {
+        await this.closeAtAnchor(current, anchor, nonLeafDepth, context, search);
+        const closed = [...chain, anchor];
+        this.checkNameConstraints(leaf, closed.slice(1));
+        return closed;
+      } catch (err) {
+        if (searchAborts.has(err as Error)) throw err;
+        search.specific = err as Error;
+      }
+    }
+
+    // Otherwise extend through every pool certificate that actually issued
+    // `current`, backing out of any branch that fails a check or dead-ends.
+    const candidates = pool.filter(
+      (c) => c.subject === current.issuer && !chain.some((x) => certificatesEqual(x, c))
+    );
+    let verified = 0;
+    for (const candidate of candidates) {
+      if (!(await this.signatureVerifies(current, candidate, search))) continue;
+      verified++;
+      try {
+        this.checkPerCert(candidate, context);
+        this.checkCaAndPathLen(candidate, nonLeafDepth);
+        this.checkAkiSkiMatch(current, candidate);
+      } catch (err) {
+        search.specific = err as Error;
+        continue;
+      }
+      const found = await this.extendPath([...chain, candidate], anchor, pool, context, search);
+      if (found) return found;
+    }
+
+    search.fallback = new CertificateChainError(
+      candidates.length > 0 && verified === 0
+        ? `signature verification failed for ${current.subject}`
+        : `no issuer certificate found for ${current.subject}`,
+      { reason: "signature" }
+    );
+    return undefined;
   }
 
   private async closeAtAnchor(
     current: X509Certificate,
     anchor: X509Certificate,
     nonLeafDepth: number,
-    context: BuildContext
+    context: BuildContext,
+    search: PathSearch
   ): Promise<void> {
     this.checkPerCert(anchor, context);
     this.checkCaAndPathLen(anchor, nonLeafDepth);
     this.checkAkiSkiMatch(current, anchor);
+    this.spendSignatureCheck(search);
     await this.verifySignature(current, anchor);
+  }
+
+  /** Charge one signature verification to the search, or abandon it. */
+  private spendSignatureCheck(search: PathSearch): void {
+    if (search.remaining <= 0) {
+      const limit = this.opts.maxSignatureChecks ?? DEFAULT_MAX_SIGNATURE_CHECKS;
+      const err = new CertificateChainError(
+        `certificate path search exceeded ${limit} signature checks`,
+        { reason: "path_length" }
+      );
+      searchAborts.add(err);
+      throw err;
+    }
+    search.remaining--;
   }
 
   /**
@@ -363,8 +442,16 @@ export class ChainBuilder {
     }
   }
 
-  /** Signature check that never throws — used to select among DN-matching candidates. */
-  private async signatureVerifies(child: X509Certificate, issuer: X509Certificate): Promise<boolean> {
+  /**
+   * Signature check used to select among DN-matching candidates. Never throws
+   * on a bad signature; throws only when the search budget is exhausted.
+   */
+  private async signatureVerifies(
+    child: X509Certificate,
+    issuer: X509Certificate,
+    search: PathSearch
+  ): Promise<boolean> {
+    this.spendSignatureCheck(search);
     try {
       return await child.verify({ publicKey: issuer.publicKey, signatureOnly: true });
     } catch {
