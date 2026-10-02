@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **SD-JWT VC `typ` is now enforced: only `dc+sd-jwt` is accepted.**
+  draft-ietf-oauth-sd-jwt-vc-19 (2026-09-15) removed the transitional
+  `vc+sd-jwt` media type. The parser previously did not check `typ` at all, so
+  any value — or none — was accepted. A missing or foreign `typ` now yields
+  `valid: false`; `application/dc+sd-jwt` and case variants are accepted per
+  RFC 7515 §4.1.9.
+
+  **Migration:** wallets that still emit `vc+sd-jwt` can be accepted
+  temporarily with the new, already-deprecated `allowLegacyVcSdJwtTyp: true`
+  option. It will be removed in 1.0.0.
+
+- **Trust-module fetches are now SSRF-guarded by default.** When no `fetcher`
+  is supplied, `LotlTrustStore` (LOTL + national TLs), CRL and OCSP retrieval
+  previously used bare `globalThis.fetch`. They now use
+  `createGuardedFetcher({ allowHttp: true })`, which refuses loopback / private
+  / link-local / cloud-metadata targets (by literal and by every resolved
+  address, IPv4 and IPv6 incl. `::ffff:` mapped), follows at most 3 redirects
+  and re-validates each, never downgrades https → http, and bounds each
+  exchange at 15 s and 16 MiB.
+
+  **Migration:** a CA, OCSP responder or trusted list on a private network
+  needs `fetcher: createGuardedFetcher({ allowHttp: true, allowPrivateNetworks: true })`.
+  Supplying any `fetcher` keeps working exactly as before — it replaces the
+  default, guards included.
+
+### Added
+
+- `createGuardedFetcher(options)` — a `Fetcher` implementing the SD-JWT VC
+  draft-19 HTTP retrieval rules (HTTPS-only by default, SSRF checks including
+  redirect targets, manual bounded redirects, timeout, streamed size cap).
+  Exported for applications that dereference SD-JWT VC URLs themselves —
+  this library does not fetch issuer metadata, `jwks_uri`, Type Metadata,
+  status lists or `x5u`. DNS-rebinding limits are documented in the README.
+- `GuardedFetchError` (`code: 'guarded_fetch_rejected'`, `reason`, `url`) and
+  `GUARDED_FETCH_DEFAULTS`.
+
 ## [0.12.0] — 2026-09-24
 
 ### Added

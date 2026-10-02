@@ -3,6 +3,7 @@ import { CertificateList } from '@peculiar/asn1-x509';
 import { X509Certificate } from '@peculiar/x509';
 import type { Cache } from './Cache.js';
 import { ecdsaDerToIeee } from './ecdsa-util.js';
+import { createDefaultTrustFetcher } from '../http/guarded-fetch.js';
 import type { Fetcher } from './Fetcher.js';
 
 export interface CrlFetcherOptions {
@@ -45,7 +46,7 @@ export class CrlFetcher {
     private readonly cache: Cache | undefined;
 
     constructor(opts: CrlFetcherOptions = {}) {
-        this.fetcher = opts.fetcher ?? globalThis.fetch.bind(globalThis);
+        this.fetcher = opts.fetcher ?? createDefaultTrustFetcher();
         this.cache = opts.cache;
     }
 

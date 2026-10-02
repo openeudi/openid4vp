@@ -92,7 +92,7 @@ export async function buildSignedSdJwt(options: BuildSdJwtOptions): Promise<Buil
         audience,
         expSeconds = 3600,
         alg = 'ES256',
-        typ = 'vc+sd-jwt',
+        typ = 'dc+sd-jwt',
     } = options;
 
     // Build disclosures and compute their SHA-256 hashes

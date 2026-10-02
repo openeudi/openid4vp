@@ -31,7 +31,7 @@ describe('SD-JWT VC holder binding is enforced (GHSA-h548-cr7v-4v97)', () => {
             holderKey, // -> issuer JWT carries cnf.jwk (holder-bound)
             disclosureClaims: [['age_over_18', true]],
             nonce: 'verifier-A-nonce',
-            typ: 'vc+sd-jwt',
+            typ: 'dc+sd-jwt',
         });
 
         // Attacker drops the KB-JWT and replays to a fresh verifier/nonce.
@@ -54,7 +54,7 @@ describe('SD-JWT VC holder binding is enforced (GHSA-h548-cr7v-4v97)', () => {
             holderKey,
             disclosureClaims: [['age_over_18', true]],
             nonce: 'verifier-A-nonce',
-            typ: 'vc+sd-jwt',
+            typ: 'dc+sd-jwt',
         });
 
         const res = await new SdJwtParser().parse(built.sdJwt, {
@@ -76,7 +76,7 @@ describe('SD-JWT VC holder binding is enforced (GHSA-h548-cr7v-4v97)', () => {
             holderKey,
             disclosureClaims: [['age_over_18', true]],
             nonce: 'verifier-A-nonce',
-            typ: 'vc+sd-jwt',
+            typ: 'dc+sd-jwt',
         });
 
         // ... replayed verbatim to verifier B which challenged with nonce B.
@@ -95,7 +95,7 @@ describe('SD-JWT VC holder binding is enforced (GHSA-h548-cr7v-4v97)', () => {
         const built = await buildSignedSdJwt({
             issuerKey,
             disclosureClaims: [['age_over_18', true]],
-            typ: 'vc+sd-jwt',
+            typ: 'dc+sd-jwt',
         });
 
         const res = await new SdJwtParser().parse(built.sdJwt, {

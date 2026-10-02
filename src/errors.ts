@@ -232,3 +232,37 @@ export class MultipleCredentialsNotSupportedError extends OpenID4VPError {
         this.presentationCount = presentationCount;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Guarded HTTP retrieval (SD-JWT VC draft-19 §"HTTP retrieval" alignment)
+// ---------------------------------------------------------------------------
+
+export type GuardedFetchRejectReason =
+    | 'invalid_url'
+    | 'insecure_scheme'
+    | 'private_address'
+    | 'dns_resolution_failed'
+    | 'too_many_redirects'
+    | 'invalid_redirect'
+    | 'response_too_large'
+    | 'timeout';
+
+/**
+ * A request was refused (or cut off) by the guarded fetcher before an
+ * untrusted endpoint could be reached or could exhaust resources.
+ */
+export class GuardedFetchError extends OpenID4VPError {
+    readonly code = 'guarded_fetch_rejected' as const;
+    readonly reason: GuardedFetchRejectReason;
+    readonly url: string;
+
+    constructor(
+        reason: GuardedFetchRejectReason,
+        message: string,
+        options: { url: string; cause?: Error }
+    ) {
+        super(message, { cause: options.cause });
+        this.reason = reason;
+        this.url = options.url;
+    }
+}

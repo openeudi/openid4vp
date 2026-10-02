@@ -406,7 +406,7 @@ Both `parsePresentation` and `verifyPresentation` accept:
   > naming this as the cause. `StaticTrustStore` is unaffected.
 
 - `revocationPolicy?` — `'skip'` (default) | `'prefer'` | `'require'`. Controls whether the chain validator consults OCSP / CRL.
-- `fetcher?` — HTTP transport for CRL/OCSP/LOTL fetches. Defaults to `globalThis.fetch`.
+- `fetcher?` — HTTP transport for CRL/OCSP/LOTL fetches. Defaults to a guarded fetcher — see [Network access](#network-access). A fetcher you supply **replaces** the guards; wrap it with `createGuardedFetcher({ fetch: yourFetcher })` to keep them.
 - `cache?` — cache for CRL/OCSP/LOTL artefacts. Defaults to `new InMemoryCache()`.
 - `clockSkewTolerance?` — seconds of slack applied to certificate validity checks. Default 60.
 - `trustedIssuerJwks?` — opt-in alternate trust path for SD-JWT VCs whose issuer JWT lacks an `x5c` header. The library matches by `kid` (or iterates the array when no `kid` is present) and skips chain validation entirely. Intended for harness setups (e.g. OIDF conformance suite) where the wallet signs without `x5c` and the verifier knows the signing key out-of-band. **Not recommended for production verifiers** — `trustStore` is the secure path.
@@ -414,6 +414,38 @@ Both `parsePresentation` and `verifyPresentation` accept:
 - `allowedAlgorithms?` — restrict signature algorithms. Defaults to `['ES256','ES384','ES512']`.
 - `skipTrustCheck?` — skip trust checks entirely (dev/test only).
 - `expectedDocType?` — for mDOC verification, lock the credential `docType` (or SD-JWT `vct`).
+- `allowLegacyVcSdJwtTyp?` — **deprecated**. Also accept the legacy `vc+sd-jwt` issuer-JWT `typ`, which draft-ietf-oauth-sd-jwt-vc-19 removed. Default `false`; only for interoperating with wallets that have not migrated yet. Removed in 1.0.0.
+
+### Network access
+
+The library dereferences URLs only inside the trust module, and only when you opt into it:
+
+| Fetch | When | Method |
+|---|---|---|
+| EU LOTL + national trusted lists | `LotlTrustStore` | GET |
+| CRL distribution points | `revocationPolicy` `'prefer'`/`'require'` | GET |
+| OCSP responders (AIA) | `revocationPolicy` `'prefer'`/`'require'` | POST |
+
+It does **not** fetch SD-JWT VC issuer metadata (`/.well-known/jwt-vc-issuer`), `jwks_uri`, Type Metadata (`vct` resolution), Token Status Lists, or `x5u`. Issuer keys come from `x5c` or `trustedIssuerJwks`. **If your application dereferences any of those itself, it is responsible for applying the SD-JWT VC draft-19 HTTP retrieval rules** — `createGuardedFetcher()` (HTTPS-only by default) is exported for exactly that.
+
+All library fetches go through `createGuardedFetcher({ allowHttp: true })` unless you pass `fetcher`. It enforces:
+
+- `https:` only by default (`allowHttp: true` for the trust module: RFC 5280 CRLs and RFC 6960 OCSP are conventionally plain HTTP and every artefact is signature-verified); never an `https` → `http` redirect downgrade.
+- No loopback, RFC 1918, CGNAT, link-local (incl. `169.254.169.254`), ULA (incl. `fd00:ec2::254`), multicast, documentation or reserved targets — checked on the URL host *and* on every address it resolves to, including IPv4-mapped/compatible, NAT64 and 6to4 IPv6 forms. `localhost`/`*.localhost` are refused by name.
+- Redirects handled manually (`maxRedirects`, default 3); each target is re-validated before it is requested, and credentials headers are dropped on cross-origin hops.
+- One timeout (`timeoutMs`, default 15 000) for DNS, all hops and the body.
+- A size cap (`maxResponseBytes`, default 16 MiB), enforced from `Content-Length` and again while streaming.
+
+Rejections throw `GuardedFetchError` with a `reason` (`insecure_scheme`, `private_address`, `too_many_redirects`, `response_too_large`, `timeout`, …).
+
+```ts
+import { createGuardedFetcher, LotlTrustStore } from "@openeudi/openid4vp";
+
+const fetcher = createGuardedFetcher({ allowHttp: true, timeoutMs: 10_000, maxResponseBytes: 32 * 1024 * 1024 });
+const trustStore = new LotlTrustStore({ signingAnchors, fetcher });
+```
+
+> **Limits.** DNS rebinding: the guard resolves and validates the host, then the transport resolves it *again*, so a hostile DNS server can answer differently the second time. `fetch` gives no portable way to pin the validated address. If attacker-influenced URLs reach your verifier, also route egress through a filtering proxy, or inject a `fetch` whose connector checks the connected address (e.g. an undici `Agent` with a validating `connect.lookup`). In runtimes without `node:dns` (browsers, some edge workers) only IP literals and `localhost` are checked unless you pass `lookup`. Caching is handled by the `cache` option, not the fetcher.
 
 ## Supported formats
 
@@ -421,6 +453,7 @@ Both `parsePresentation` and `verifyPresentation` accept:
 
 Selective Disclosure JSON Web Token Verifiable Credentials. The token is a string in `jwt~disclosure~kb` format. The parser:
 
+- Requires the issuer JWT `typ` to be `dc+sd-jwt` (draft-ietf-oauth-sd-jwt-vc-19); the legacy `vc+sd-jwt` is rejected unless `allowLegacyVcSdJwtTyp` is set
 - Decodes the issuer JWT and extracts the `x5c` certificate chain
 - Verifies the issuer certificate against your trusted set
 - Checks credential expiry from the `exp` claim
@@ -493,6 +526,7 @@ class MyCustomParser implements ICredentialParser {
 | `NonceValidationError`     | Nonce does not match expected value       | Key binding JWT nonce does not match               |
 | `HaipValidationError`      | HAIP query constraint violated            | DCQL query fails `validateHaipQuery`               |
 | `LotlConfigurationError`   | No xmldsigjs crypto engine registered     | `LotlTrustStore` used without `Application.setEngine` |
+| `GuardedFetchError`        | refusing … / exceeds … / timed out      | A guarded fetch is refused or cut off (`reason`)   |
 
 ```ts
 import { MalformedCredentialError, ExpiredCredentialError } from "@openeudi/openid4vp";
