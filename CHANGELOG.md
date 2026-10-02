@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-10-02
+
 ### Changed — BREAKING
 
 - **SD-JWT VC `typ` is now enforced: only `dc+sd-jwt` is accepted.**
