@@ -8,9 +8,15 @@
  * anchor still verifies (direct match), and that everything else fails closed.
  */
 import { Crypto as PeculiarCrypto } from '@peculiar/webcrypto';
-import { KeyUsageFlags, type X509Certificate } from '@peculiar/x509';
+import {
+    BasicConstraintsExtension,
+    KeyUsageFlags,
+    KeyUsagesExtension,
+    X509Certificate,
+    X509CertificateGenerator,
+} from '@peculiar/x509';
 import { SignJWT } from 'jose';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CertificateChainError, TrustAnchorNotFoundError } from '../../src/errors.js';
 import { MdocParser } from '../../src/parsers/mdoc.parser.js';
@@ -278,6 +284,149 @@ describe('ChainBuilder — anchors are matched by certificate, never by DN (GHSA
 // ---------------------------------------------------------------------------
 // TrustEvaluator
 // ---------------------------------------------------------------------------
+
+describe('ChainBuilder — path search backtracks across same-subject candidates', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    /**
+     * A certificate carrying `subject`'s Subject DN and public key, issued by
+     * `signer`. Models a re-issued intermediate (same signer, new validity) or
+     * a cross-signed one (different signer). Its own validity and CA flag are
+     * chosen per test.
+     */
+    async function issueWithKeyOf(
+        subject: GeneratedCa,
+        signer: GeneratedCa,
+        opts: { notBefore?: Date; notAfter?: Date; isCa?: boolean } = {}
+    ): Promise<X509Certificate> {
+        const now = Date.now();
+        return X509CertificateGenerator.create({
+            serialNumber: crypto.randomUUID().replace(/-/g, '').slice(0, 16),
+            subject: subject.certificate.subject,
+            issuer: signer.certificate.subject,
+            notBefore: opts.notBefore ?? new Date(now - DAY),
+            notAfter: opts.notAfter ?? new Date(now + 90 * DAY),
+            publicKey: subject.keys.publicKey,
+            signingKey: signer.keys.privateKey,
+            signingAlgorithm: { name: 'ECDSA', hash: 'SHA-256' },
+            extensions: [
+                new BasicConstraintsExtension(opts.isCa ?? true, undefined, true),
+                new KeyUsagesExtension(KeyUsageFlags.keyCertSign | KeyUsageFlags.cRLSign, true),
+            ],
+        });
+    }
+
+    it('skips an expired copy of a re-issued intermediate and uses the valid one', async () => {
+        const root = await createCa({ name: uniqueName('Root') });
+        const inter = await createIntermediate(root, { name: uniqueName('Sub CA') });
+        const expiredCopy = await issueWithKeyOf(inter, root, {
+            notBefore: new Date(Date.now() - 400 * DAY),
+            notAfter: new Date(Date.now() - 30 * DAY),
+        });
+        const ds = await createDs(inter);
+
+        // The expired copy verifies the DS's signature (same key) and is listed
+        // first, so a builder that commits to the first verifying candidate
+        // rejects a credential that has a perfectly valid path.
+        const chain = await new ChainBuilder().build(
+            ds.certificate,
+            [root.certificate],
+            [expiredCopy, inter.certificate]
+        );
+
+        expect(chain).toHaveLength(3);
+        expect(certificatesEqual(chain[1], inter.certificate)).toBe(true);
+    });
+
+    it('accepts regardless of the order the candidates are supplied in', async () => {
+        const root = await createCa({ name: uniqueName('Root') });
+        const inter = await createIntermediate(root, { name: uniqueName('Sub CA') });
+        const expiredCopy = await issueWithKeyOf(inter, root, {
+            notBefore: new Date(Date.now() - 400 * DAY),
+            notAfter: new Date(Date.now() - 30 * DAY),
+        });
+        const ds = await createDs(inter);
+
+        for (const pool of [
+            [inter.certificate, expiredCopy],
+            [expiredCopy, inter.certificate],
+        ]) {
+            await expect(
+                new ChainBuilder().build(ds.certificate, [root.certificate], pool)
+            ).resolves.toHaveLength(3);
+        }
+    });
+
+    it('follows the cross-signed copy that leads to the trusted root', async () => {
+        const untrustedRoot = await createCa({ name: uniqueName('Untrusted Root') });
+        const trustedRoot = await createCa({ name: uniqueName('Trusted Root') });
+        const inter = await createIntermediate(untrustedRoot, { name: uniqueName('Sub CA') });
+        const crossSigned = await issueWithKeyOf(inter, trustedRoot);
+        const ds = await createDs(inter);
+
+        // `inter` is listed first and passes every check — but its issuer is a
+        // root the store does not trust. Only the cross-signed copy reaches the
+        // anchor, so the search has to back out of the first branch.
+        const chain = await new ChainBuilder().build(
+            ds.certificate,
+            [trustedRoot.certificate],
+            [inter.certificate, crossSigned]
+        );
+
+        expect(chain).toHaveLength(3);
+        expect(certificatesEqual(chain[1], crossSigned)).toBe(true);
+        expect(certificatesEqual(chain[2], trustedRoot.certificate)).toBe(true);
+    });
+
+    it('still reports the specific failure when no candidate leads anywhere', async () => {
+        const root = await createCa({ name: uniqueName('Root') });
+        const inter = await createIntermediate(root, { name: uniqueName('Sub CA') });
+        const expiredCopy = await issueWithKeyOf(inter, root, {
+            notBefore: new Date(Date.now() - 400 * DAY),
+            notAfter: new Date(Date.now() - 30 * DAY),
+        });
+        const ds = await createDs(inter);
+
+        await expect(
+            new ChainBuilder().build(ds.certificate, [root.certificate], [expiredCopy])
+        ).rejects.toMatchObject({ reason: 'validity' });
+    });
+
+    it('bounds the work an adversarial pool can force on the search', async () => {
+        // Each level holds `width` distinct certificates that all verify the
+        // level below (they share its issuer's key) and all pass the CA checks,
+        // so an unbounded depth-first search would try width^3 paths. None of
+        // them reaches the anchor.
+        const anchor = await createCa({ name: uniqueName('Anchor') });
+        const keyHolders = [
+            await createCa({ name: uniqueName('Level 1') }),
+            await createCa({ name: uniqueName('Level 2') }),
+            await createCa({ name: uniqueName('Level 3') }),
+        ];
+        const forger = await createCa({ name: anchor.certificate.subject });
+        const width = 6;
+        const pool: X509Certificate[] = [];
+        for (let level = 0; level < keyHolders.length; level++) {
+            const signer = keyHolders[level + 1] ?? forger;
+            for (let i = 0; i < width; i++) {
+                pool.push(await issueWithKeyOf(keyHolders[level], signer));
+            }
+        }
+        const ds = await createDs(keyHolders[0]);
+
+        const verify = vi.spyOn(X509Certificate.prototype, 'verify');
+        await expect(
+            new ChainBuilder({ maxSignatureChecks: 20 }).build(
+                ds.certificate,
+                [anchor.certificate],
+                pool
+            )
+        ).rejects.toMatchObject({ reason: 'path_length' });
+        expect(verify.mock.calls.length).toBeLessThanOrEqual(20);
+    });
+});
 
 describe('TrustEvaluator — anchor selection', () => {
     it('trusts a DS that is itself the listed anchor (direct match, not self-signed)', async () => {
