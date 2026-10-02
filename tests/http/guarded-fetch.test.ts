@@ -99,6 +99,28 @@ describe('createGuardedFetcher', () => {
         expect((await rejection(fetcher(`https://${randomHost()}/`))).reason).toBe('dns_resolution_failed');
     });
 
+    it('fails closed when the resolver returns no addresses at all', async () => {
+        // An empty answer is not evidence that the host is public. Treating it
+        // as "nothing blocked" would let any resolver quirk — or a custom
+        // lookup that swallows errors — wave every hostname through.
+        const base = vi.fn<Fetcher>();
+        const fetcher = createGuardedFetcher({ fetch: base, lookup: vi.fn(async () => []) });
+        expect((await rejection(fetcher(`https://${randomHost()}/`))).reason).toBe('dns_resolution_failed');
+        expect(base).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when a redirect target resolves to no addresses', async () => {
+        const first = randomHost();
+        const second = randomHost();
+        const base: Fetcher = vi.fn(async () =>
+            new Response(null, { status: 302, headers: { location: `https://${second}/` } })
+        );
+        const lookup = vi.fn(async (host: string) => (host === first ? [PUBLIC_V4] : []));
+        const fetcher = createGuardedFetcher({ fetch: base, lookup });
+        expect((await rejection(fetcher(`https://${first}/`))).reason).toBe('dns_resolution_failed');
+        expect(base).toHaveBeenCalledTimes(1);
+    });
+
     it('follows a redirect to a public target and re-validates it', async () => {
         const first = randomHost();
         const second = randomHost();

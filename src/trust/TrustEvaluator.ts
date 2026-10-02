@@ -220,6 +220,15 @@ async function resolveProvenance(
     }
 }
 
+/**
+ * Most certificates accepted in a credential's `x5c` / `x5chain`, signer
+ * included. The list is presenter-supplied, and every entry is parsed and
+ * triggers its own trust-store lookup, so its length bounds work that the
+ * chain builder's signature budget does not cover. Real lists carry two to
+ * four; the chain builder accepts at most five certificates in a path.
+ */
+export const MAX_CREDENTIAL_CERTIFICATES = 10;
+
 export interface CredentialIssuerTrustInput extends Omit<TrustEvaluatorOptions, 'now'> {
     /** DER certificates exactly as carried by the credential (`x5c` / `x5chain`), signer first. */
     chain: readonly Uint8Array[];
@@ -238,6 +247,11 @@ export async function evaluateCredentialIssuer(
     const [signerDer, ...rest] = input.chain;
     if (!signerDer) {
         throw new MalformedCredentialError('Missing issuer certificate');
+    }
+    if (input.chain.length > MAX_CREDENTIAL_CERTIFICATES) {
+        throw new MalformedCredentialError(
+            `x5c/x5chain carries ${input.chain.length} certificates; at most ${MAX_CREDENTIAL_CERTIFICATES} are accepted`
+        );
     }
     const parse = (bytes: Uint8Array, position: number): X509Certificate => {
         try {
