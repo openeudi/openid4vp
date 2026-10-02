@@ -219,24 +219,14 @@ describe("ChainBuilder — AKI/SKI matching", () => {
 
 describe("ChainBuilder — basicConstraints", () => {
   it("rejects when an intermediate is not marked as CA", async () => {
-    // Simulate by constructing a "leaf-like" cert that signs another leaf.
     const root = await createCa();
-    const fakeIntermediate = await createLeaf(root, { name: "CN=Fake Intermediate" });
-    // We cannot actually sign with a non-CA in our helpers directly;
-    // this test documents that the validator rejects chains where an
-    // intermediate's BasicConstraints.cA=false. We assert via a synthetic
-    // chain where the intermediate cert is in fact a leaf.
-    const leaf = await createLeaf(root); // signed by root, not the fake intermediate
+    const notCa = await createIntermediate(root, { name: "CN=Not A CA", isCa: false });
+    const leaf = await createLeaf(notCa);
     const builder = new ChainBuilder();
-    // Pass the fake intermediate in the intermediates pool; the builder
-    // should pick root directly (since leaf.issuer == root.subject) and ignore it.
-    // To exercise the cA=false rejection, build a chain where intermediate IS fake.
-    // Generate a truly-fake hierarchy by signing a child with the leaf's keys.
-    // The helpers lack this escape hatch — instead, we skip this sub-test here
-    // and instead verify the pathLen case (covered below) which exercises the
-    // same code path for real.
-    // (No assertion — pathLen test below exercises BasicConstraints code.)
-    expect(true).toBe(true);
+    await expect(builder.build(leaf.certificate, [root.certificate], [notCa.certificate])).rejects.toMatchObject({
+      code: "chain_invalid",
+      reason: "basic_constraints",
+    });
   });
 
   it("rejects when chain exceeds pathLenConstraint", async () => {

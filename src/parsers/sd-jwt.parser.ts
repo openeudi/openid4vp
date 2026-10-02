@@ -328,19 +328,25 @@ export class SdJwtParser implements ICredentialParser {
             // trustedIssuerJwks — cert-chain evaluation is intentionally skipped.
             // No further trust check is performed here.
         } else if (options.trustStore) {
-            // 0.5.0 path: RFC 5280 chain validation via TrustEvaluator.
+            // RFC 5280 chain validation via TrustEvaluator: x5c[0] must chain to
+            // an anchor or BE one; x5c[1..] are untrusted path candidates only.
             // Dynamic import keeps the evaluator out of 0.4.0-style callers' bundles.
-            const { TrustEvaluator } = await import('../trust/TrustEvaluator.js');
-            const evaluator = new TrustEvaluator({
+            const { evaluateCredentialIssuer } = await import('../trust/TrustEvaluator.js');
+            const x5cRest = (x5cArray as unknown[]).slice(1);
+            if (!x5cRest.every((entry) => typeof entry === 'string')) {
+                throw new MalformedCredentialError('x5c entries must be base64 strings');
+            }
+            const iat = payload['iat'];
+            trustResult = await evaluateCredentialIssuer({
+                chain: [issuerCertBytes, ...(x5cRest as string[]).map((entry) => base64ToBytes(entry))],
+                profile: 'generic',
+                issuedAt: typeof iat === 'number' && Number.isFinite(iat) ? new Date(iat * 1000) : undefined,
                 trustStore: options.trustStore,
                 revocationPolicy: options.revocationPolicy ?? 'skip',
                 fetcher: options.fetcher,
                 cache: options.cache,
                 clockSkewTolerance: options.clockSkewTolerance,
             });
-            const { X509Certificate } = await import('@peculiar/x509');
-            const leaf = new X509Certificate(issuerCertBytes as Uint8Array<ArrayBuffer>);
-            trustResult = await evaluator.evaluate(leaf);
         } else {
             // 0.4.0 byte-equality path — preserved verbatim for backward compatibility.
             if (options.trustedCertificates.length === 0) {

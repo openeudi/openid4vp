@@ -44,6 +44,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   status lists or `x5u`. DNS-rebinding limits are documented in the README.
 - `GuardedFetchError` (`code: 'guarded_fetch_rejected'`, `reason`, `url`) and
   `GUARDED_FETCH_DEFAULTS`.
+- **IACA → document-signer chain building on the `trustStore` path.** The EU
+  PID-providers list (ETSI TS 119 602) publishes, for most providers, an ISO
+  18013-5 IACA root rather than the document-signer (DS) certificate that signs
+  the PID. A credential whose signer chains to an anchor now verifies;
+  previously the parsers handed only `x5c[0]` / `x5chain[0]` to the chain
+  builder and dropped the rest, and a DS listed *as* the anchor was never found
+  because anchors were looked up by the signer's issuer only.
+  - `x5c[1..]` (SD-JWT VC) and `x5chain[1..]` (mDOC) are passed to the chain
+    builder as untrusted path candidates. They are never anchors.
+  - A signer that is itself in the trust store (byte-identical DER) is trusted
+    directly — the "listed cert is the signer" case keeps working.
+  - Every certificate must be valid now **and** at issuance time (MSO
+    `validityInfo.signed`, SD-JWT `iat`).
+  - `mso_mdoc` chains follow the ISO 18013-5 Annex B profile: the DS must carry
+    EKU `1.0.18013.5.1.2` (new `CertificateChainError` reason
+    `extended_key_usage`) and `keyUsage` is mandatory on the DS and every CA.
+    SD-JWT VC is unaffected. A directly-listed signer is exempt.
+  - Chains are capped at 5 certificates (leaf and anchor included).
+
+  `trustedCertificates` (deprecated) is unchanged and still byte-equality only:
+  to accept IACA-issued PIDs, pass `trustStore: new StaticTrustStore([...])`.
+
+### Fixed
+
+- `ChainBuilder` could loop forever on a self-issued, non-anchor certificate in
+  the intermediates pool; it now refuses certificates already on the path and
+  enforces the maximum chain length. Not reachable from the parsers before this
+  release (they passed no intermediates), but it is with the change above.
+- Among intermediates sharing a Subject DN, the issuer is now chosen by
+  verified signature rather than first DN match, so a look-alike in `x5c`
+  cannot shadow the genuine issuer. Closure at an anchor is still by signature
+  only — Subject-DN equality never establishes trust (GHSA-4c2f-96cf-f5fc).
+- `TrustEvaluator` de-duplicated candidate anchors by serial number, which is
+  only unique per issuer, so a distinct anchor from another CA with the same
+  serial was silently dropped. `CompositeTrustStore` de-duplicated by SKI, which
+  dropped a re-issued certificate on the same key. Both now de-duplicate by DER
+  identity.
 
 ## [0.12.0] — 2026-09-24
 

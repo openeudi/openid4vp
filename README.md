@@ -391,6 +391,19 @@ Both `parsePresentation` and `verifyPresentation` accept:
 - `trustedCertificates` (required when `trustStore` is unset) — DER-encoded issuer leaf certificates for the 0.4.x byte-equality trust check. Deprecated since 0.5.0 — pass an empty array and supply `trustStore` for production deployments.
 - `trustStore?` — `TrustStore` instance for full RFC 5280 chain validation (e.g. `LotlTrustStore`, `StaticTrustStore`, or `CompositeTrustStore`). When set, takes precedence over `trustedCertificates`.
 
+  The signer certificate (`x5c[0]` / `x5chain[0]`) is trusted when it **is** an anchor (byte-identical DER) or **chains to** one through verified signatures; the remaining `x5c` / `x5chain` entries are untrusted path candidates and never anchors. Anchors may therefore be roots — such as the IACA certificates an ETSI TS 119 602 PID-providers list publishes — or the document-signer certificate itself:
+
+  ```ts
+  import { StaticTrustStore } from "@openeudi/openid4vp";
+
+  // DER bytes of every certificate listed for the PID providers you accept:
+  // IACA roots and directly-listed signer certificates alike.
+  const trustStore = new StaticTrustStore(listedCertificates);
+  await parsePresentation(vpToken, { trustedCertificates: [], trustStore, nonce, mdocSessionTranscript });
+  ```
+
+  Each link's signature, validity now **and** at issuance time (MSO `signed` / SD-JWT `iat`), `basicConstraints` cA + `keyUsage` keyCertSign on every CA, `digitalSignature` on the signer, `pathLenConstraint`, `nameConstraints` and a 5-certificate maximum are enforced. For `mso_mdoc`, built chains must also follow the ISO 18013-5 Annex B profile: the document signer carries EKU `1.0.18013.5.1.2` (`reason: 'extended_key_usage'` otherwise) and `keyUsage` is mandatory. A signer that is itself the listed anchor is trusted by presence and exempt from that profile. Anchors are never matched by Subject DN alone.
+
   > **`LotlTrustStore` requires an `xmldsigjs` crypto engine.** Trusted lists are
   > verified as signed XML, and this library does not pick a WebCrypto provider on
   > your behalf. Register one **once at startup**, before any trusted-list fetch:
@@ -468,7 +481,7 @@ Mobile Document credentials as defined in ISO 18013-5. The token is a CBOR-encod
 
 - Decodes the CBOR DeviceResponse structure
 - Extracts the issuer certificate from the COSE_Sign1 `issuerAuth` (x5chain label 33)
-- Verifies the certificate against your trusted set
+- Verifies the certificate against your trusted set — with `trustStore`, by building a chain from the document signer to an anchor such as an IACA (see [`trustStore`](#parseoptions--verifyoptions))
 - Checks the validity period from `validityInfo`
 - Extracts claims from the `eu.europa.ec.eudi.pid.1` namespace
 - Verifies each `IssuerSignedItem`'s digest against the MSO's `valueDigests`, computed over the full tag-24 `IssuerSignedItemBytes` (`#6.24(bstr .cbor IssuerSignedItem)`) per ISO 18013-5 §9.1.2.4 — not just the inner CBOR — matching how real wallets encode mdocs. mDOC verification, including this digest check and device authentication below, is validated against the OIDF conformance suite acting as an independent ISO 18013-5 mdl wallet.
@@ -552,7 +565,7 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 - **HAIP** — `buildHaipQuery` / `validateHaipQuery` helpers for the High Assurance Interoperability Profile, plus `buildCredentialSetQuery` / `validateCredentialSetQuery` for `credential_sets` disjunctions.
 - **Signed authorization requests (JAR)** — `createSignedAuthorizationRequest` per RFC 9101 / OpenID4VP 1.0 §5.10 with `x509_san_dns` or `x509_hash` client-id binding. Emits the OpenID4VP 1.0 Final `client_metadata` shape. Self-signed verifier leaf certificates are rejected by default per HAIP 1.0 Final.
 - **Encrypted responses** — `decryptAuthorizationResponse` for `direct_post.jwt` (ECDH-ES + A128GCM/A256GCM), `verifyAuthorizationResponse` for the 1.0 §8.1 object-keyed `vp_token` envelope.
-- **X.509 chain validation** — RFC 5280 chain building including `nameConstraints`, `StaticTrustStore`, `CompositeTrustStore`.
+- **X.509 chain validation** — RFC 5280 chain building including `nameConstraints`, `StaticTrustStore`, `CompositeTrustStore`; IACA → document-signer chains for `mso_mdoc` with the ISO 18013-5 Annex B certificate profile.
 - **Revocation checking** — OCSP-first with CRL fallback (`revocationPolicy: 'skip' | 'prefer' | 'require'`).
 - **EU List of Trusted Lists** — `LotlTrustStore` resolves national trust lists via signed XML fetch + XAdES verification; populates `provenance` (LoA, qualified status, country, service name) on verified presentations.
 - **OIDF conformance** — automated against the OpenID Foundation conformance suite in CI (`oidf-pr.yml` happy-flow gate, `oidf-release.yml` full plan).

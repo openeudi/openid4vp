@@ -6,7 +6,9 @@ import type { TrustStore } from '../trust/TrustStore.js';
 export interface ParseOptions {
     /**
      * DER-encoded issuer leaf certificates used for byte-equality trust check.
-     * Kept for 0.4.0 compatibility.
+     * Kept for 0.4.0 compatibility. No chain building: a credential signed by a
+     * document signer issued under a listed root (e.g. an IACA) is rejected on
+     * this path — use `trustStore` for that.
      * @deprecated since 0.5.0. Use `trustStore: new StaticTrustStore([...])`
      * with root/intermediate CAs for RFC 5280 chain validation. Scheduled
      * for removal in 1.0.0.
@@ -57,6 +59,15 @@ export interface ParseOptions {
      * Trust anchor resolver. When provided, the library performs RFC 5280
      * chain validation and ignores `trustedCertificates`. When unset, the
      * library falls back to 0.4.0 byte-equality against `trustedCertificates`.
+     *
+     * The credential's signer certificate (`x5c[0]` / `x5chain[0]`) is trusted
+     * when it either IS an anchor (byte-identical DER) or chains to one through
+     * verified signatures, using the remaining `x5c` / `x5chain` entries as
+     * untrusted path candidates. Anchors may be roots such as an ISO 18013-5
+     * IACA, or the document-signer certificate itself. For `mso_mdoc`, built
+     * chains must also satisfy the ISO 18013-5 Annex B certificate profile
+     * (DS EKU `1.0.18013.5.1.2`, mandatory keyUsage). Every certificate must be
+     * valid now and at the credential's issuance time (MSO `signed` / `iat`).
      */
     trustStore?: TrustStore;
 

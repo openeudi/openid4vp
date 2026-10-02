@@ -2,7 +2,11 @@ import {
     AuthorityKeyIdentifierExtension,
     X509Certificate,
 } from '@peculiar/x509';
-import { RevokedCertificateError, TrustAnchorNotFoundError } from '../errors.js';
+import {
+    MalformedCredentialError,
+    RevokedCertificateError,
+    TrustAnchorNotFoundError,
+} from '../errors.js';
 import type { Cache } from './Cache.js';
 import { ChainBuilder, type ChainBuilderOptions } from './ChainBuilder.js';
 import type { Fetcher } from './Fetcher.js';
@@ -22,7 +26,10 @@ export interface TrustEvaluatorOptions extends ChainBuilderOptions {
 }
 
 export interface EvaluateContext {
+    /** Additional, untrusted certificates (e.g. `x5c[1..]`) used only as path candidates. */
     intermediates?: X509Certificate[];
+    /** Credential signing time; the chain must also have been valid then. */
+    issuedAt?: Date;
 }
 
 export interface TrustEvaluationResult {
@@ -69,13 +76,12 @@ export class TrustEvaluator {
         context: EvaluateContext = {}
     ): Promise<TrustEvaluationResult> {
         const hint = deriveHint(leaf);
-        const seen = new Set<string>();
         const anchors: TrustAnchor[] = [];
+        // De-duplicate by DER identity. serialNumber is only unique per issuer,
+        // so keying on it could silently drop a distinct anchor from another CA.
         const pushUnique = (batch: TrustAnchor[]) => {
             for (const a of batch) {
-                const key = a.certificate.serialNumber;
-                if (seen.has(key)) continue;
-                seen.add(key);
+                if (anchors.some((x) => certificatesEqual(x.certificate, a.certificate))) continue;
                 anchors.push(a);
             }
         };
@@ -86,6 +92,11 @@ export class TrustEvaluator {
         for (const inter of context.intermediates ?? []) {
             pushUnique(await this.trustStore.getAnchors(deriveHint(inter)));
         }
+        // Direct match: the signer certificate may itself be the listed anchor
+        // (a trusted list that publishes the document signer rather than its
+        // root). Ask the store about the leaf's own identity; `ChainBuilder`
+        // accepts such a candidate only if it is byte-identical to the leaf.
+        pushUnique(await this.trustStore.getAnchors(deriveSelfHint(leaf)));
         if (anchors.length === 0) {
             throw new TrustAnchorNotFoundError(
                 `no trust anchor for issuer=${hint.issuer ?? '(none)'}`
@@ -95,7 +106,8 @@ export class TrustEvaluator {
         const chain = await this.chainBuilder.build(
             leaf,
             anchorCerts,
-            context.intermediates ?? []
+            context.intermediates ?? [],
+            { issuedAt: context.issuedAt }
         );
         const terminusCert = chain[chain.length - 1];
         // Select the anchor the chain actually closed at by DER byte-identity —
@@ -160,6 +172,14 @@ function deriveHint(leaf: X509Certificate) {
     };
 }
 
+function deriveSelfHint(cert: X509Certificate) {
+    const skiHex = getSkiHex(cert);
+    return {
+        issuer: cert.subject,
+        aki: skiHex ? hexToBytes(skiHex) : undefined,
+    };
+}
+
 function hexToBytes(s: string): Uint8Array {
     const clean = s.replace(/[^0-9a-f]/gi, '');
     const out = new Uint8Array(clean.length / 2);
@@ -198,4 +218,39 @@ async function resolveProvenance(
         );
         return undefined;
     }
+}
+
+export interface CredentialIssuerTrustInput extends Omit<TrustEvaluatorOptions, 'now'> {
+    /** DER certificates exactly as carried by the credential (`x5c` / `x5chain`), signer first. */
+    chain: readonly Uint8Array[];
+    issuedAt?: Date;
+}
+
+/**
+ * Parser entry point: evaluate the signer certificate of a credential against
+ * the trust store, using the rest of the credential's certificate list as
+ * untrusted path candidates. Certificates supplied by the credential are never
+ * treated as anchors.
+ */
+export async function evaluateCredentialIssuer(
+    input: CredentialIssuerTrustInput
+): Promise<TrustEvaluationResult> {
+    const [signerDer, ...rest] = input.chain;
+    if (!signerDer) {
+        throw new MalformedCredentialError('Missing issuer certificate');
+    }
+    const parse = (bytes: Uint8Array, position: number): X509Certificate => {
+        try {
+            return new X509Certificate(bytes as Uint8Array<ArrayBuffer>);
+        } catch (err) {
+            throw new MalformedCredentialError(
+                `Invalid certificate at x5c/x5chain position ${position}: ${(err as Error).message}`
+            );
+        }
+    };
+    const leaf = parse(signerDer, 0);
+    const intermediates = rest.map((bytes, i) => parse(bytes, i + 1));
+    const { chain, issuedAt, ...evaluatorOptions } = input;
+    void chain;
+    return new TrustEvaluator(evaluatorOptions).evaluate(leaf, { intermediates, issuedAt });
 }
