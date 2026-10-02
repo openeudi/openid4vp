@@ -6,9 +6,12 @@ import { isIpLiteral, isPublicIpAddress } from './ip-address.js';
 /**
  * Resolves a hostname to every IP address it currently maps to. Must return
  * all records (A and AAAA): the guard rejects the host if ANY of them is
- * non-public.
+ * non-public, and treats an empty result as a resolution failure.
  */
 export type HostLookup = (hostname: string) => Promise<readonly string[]>;
+
+/** `undefined` means no resolver exists in this runtime, not "no records". */
+type InternalLookup = (hostname: string) => Promise<readonly string[] | undefined>;
 
 export interface GuardedFetcherOptions {
     /**
@@ -73,9 +76,9 @@ function loadDns(): Promise<DnsPromises | undefined> {
     return dnsModule;
 }
 
-const defaultLookup: HostLookup = async (hostname) => {
+const defaultLookup: InternalLookup = async (hostname) => {
     const dns = await loadDns();
-    if (!dns) return [];
+    if (!dns) return undefined;
     const records = await dns.lookup(hostname, { all: true, verbatim: true });
     return records.map((r) => r.address);
 };
@@ -115,7 +118,7 @@ export function createGuardedFetcher(options: GuardedFetcherOptions = {}): Fetch
     const maxRedirects = options.maxRedirects ?? GUARDED_FETCH_DEFAULTS.maxRedirects;
     const timeoutMs = options.timeoutMs ?? GUARDED_FETCH_DEFAULTS.timeoutMs;
     const maxBytes = options.maxResponseBytes ?? GUARDED_FETCH_DEFAULTS.maxResponseBytes;
-    const lookup = options.lookup ?? defaultLookup;
+    const lookup: InternalLookup = options.lookup ?? defaultLookup;
     const transport: Fetcher = options.fetch ?? ((url, init) => globalThis.fetch(url, init));
 
     return async (input: string, init: RequestInit = {}): Promise<Response> => {
@@ -244,13 +247,23 @@ export function createGuardedFetcher(options: GuardedFetcherOptions = {}): Fetch
             return url;
         }
 
-        let addresses: readonly string[];
+        let addresses: readonly string[] | undefined;
         try {
             addresses = await lookup(host);
         } catch (err) {
             throw new GuardedFetchError('dns_resolution_failed', `could not resolve ${host}`, {
                 url: url.href,
                 cause: toError(err),
+            });
+        }
+        // No resolver in this runtime: only literal and `localhost` checks
+        // apply (documented on `lookup`). Not the same as an empty answer.
+        if (addresses === undefined) return url;
+        // An empty answer proves nothing about the host, so it fails closed
+        // rather than being read as "no blocked address found".
+        if (addresses.length === 0) {
+            throw new GuardedFetchError('dns_resolution_failed', `${host} resolved to no addresses`, {
+                url: url.href,
             });
         }
         const blocked = addresses.find((a) => !isPublicIpAddress(a));

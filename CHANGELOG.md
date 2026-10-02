@@ -68,6 +68,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `createGuardedFetcher` treated a host that resolved to **no** addresses as
+  public — the private-address check found nothing to block and let the
+  request through. Node's resolver throws instead of answering empty, so the
+  built-in default was not affected, but an injected `lookup` that returns `[]`
+  (for example one that swallows its own errors) waved every hostname through.
+  An empty answer now fails closed as `dns_resolution_failed`, on the first
+  request and on every redirect hop. Runtimes without `node:dns` keep their
+  documented literal-only checks; that case is distinguished from an empty
+  answer.
+- On the `trustStore` path a credential's `x5c` / `x5chain` may carry at most
+  10 certificates, signer included; a longer list is rejected as `MalformedCredentialError` before any entry is
+  parsed. Every entry is parsed and triggers its own trust-store lookup, so
+  the presenter-controlled list length bounded work the chain builder's own
+  limits did not. Real lists carry two to four. `trustedCertificates`
+  (byte-equality) is unaffected, as it never reads past the signer.
 - `ChainBuilder` could loop forever on a self-issued, non-anchor certificate in
   the intermediates pool; it now refuses certificates already on the path and
   enforces the maximum chain length. Not reachable from the parsers before this

@@ -18,12 +18,16 @@ import {
 import { SignJWT } from 'jose';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CertificateChainError, TrustAnchorNotFoundError } from '../../src/errors.js';
+import {
+    CertificateChainError,
+    MalformedCredentialError,
+    TrustAnchorNotFoundError,
+} from '../../src/errors.js';
 import { MdocParser } from '../../src/parsers/mdoc.parser.js';
 import type { ParseOptions } from '../../src/parsers/parser.interface.js';
 import { SdJwtParser } from '../../src/parsers/sd-jwt.parser.js';
 import { ChainBuilder, ISO_18013_5_DS_EKU } from '../../src/trust/ChainBuilder.js';
-import { TrustEvaluator } from '../../src/trust/TrustEvaluator.js';
+import { evaluateCredentialIssuer, TrustEvaluator } from '../../src/trust/TrustEvaluator.js';
 import { StaticTrustStore } from '../../src/trust/TrustStore.js';
 import { certificatesEqual } from '../../src/trust/x509-utils.js';
 import { buildSignedSdJwt, type TestKeyMaterial } from '../fixtures/crypto-helpers.js';
@@ -425,6 +429,40 @@ describe('ChainBuilder — path search backtracks across same-subject candidates
             )
         ).rejects.toMatchObject({ reason: 'path_length' });
         expect(verify.mock.calls.length).toBeLessThanOrEqual(20);
+    });
+});
+
+describe('evaluateCredentialIssuer — size of the credential-supplied certificate list', () => {
+    // x5c / x5chain come from the presenter. Every entry is parsed, and each
+    // one triggers its own trust-store lookup, so the list length bounds work
+    // the chain builder's signature budget does not cover.
+
+    it('accepts a list at the cap', async () => {
+        const iaca = await createIaca();
+        const ds = await createDs(iaca);
+        const chain = [der(ds.certificate), ...Array<Uint8Array>(9).fill(der(iaca.certificate))];
+
+        const result = await evaluateCredentialIssuer({
+            chain,
+            trustStore: new StaticTrustStore([der(iaca.certificate)]),
+        });
+
+        expect(certificatesEqual(result.chain[result.chain.length - 1], iaca.certificate)).toBe(true);
+    });
+
+    it('rejects a list longer than the cap before parsing it', async () => {
+        const iaca = await createIaca();
+        const ds = await createDs(iaca);
+        // Garbage past the signer: if any of it were parsed, the error would
+        // name a certificate position instead of the list length.
+        const chain = [der(ds.certificate), ...Array<Uint8Array>(10).fill(new Uint8Array([0xde, 0xad]))];
+
+        await expect(
+            evaluateCredentialIssuer({ chain, trustStore: new StaticTrustStore([der(iaca.certificate)]) })
+        ).rejects.toThrow(MalformedCredentialError);
+        await expect(
+            evaluateCredentialIssuer({ chain, trustStore: new StaticTrustStore([der(iaca.certificate)]) })
+        ).rejects.toThrow(/11 certificates.*at most 10/);
     });
 });
 

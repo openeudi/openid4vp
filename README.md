@@ -391,7 +391,7 @@ Both `parsePresentation` and `verifyPresentation` accept:
 - `trustedCertificates` (required when `trustStore` is unset) — DER-encoded issuer leaf certificates for the 0.4.x byte-equality trust check. Deprecated since 0.5.0 — pass an empty array and supply `trustStore` for production deployments.
 - `trustStore?` — `TrustStore` instance for full RFC 5280 chain validation (e.g. `LotlTrustStore`, `StaticTrustStore`, or `CompositeTrustStore`). When set, takes precedence over `trustedCertificates`.
 
-  The signer certificate (`x5c[0]` / `x5chain[0]`) is trusted when it **is** an anchor (byte-identical DER) or **chains to** one through verified signatures; the remaining `x5c` / `x5chain` entries are untrusted path candidates and never anchors. Anchors may therefore be roots — such as the IACA certificates an ETSI TS 119 602 PID-providers list publishes — or the document-signer certificate itself:
+  The signer certificate (`x5c[0]` / `x5chain[0]`) is trusted when it **is** an anchor (byte-identical DER) or **chains to** one through verified signatures; the remaining `x5c` / `x5chain` entries are untrusted path candidates and never anchors. A list longer than 10 certificates, signer included, is rejected as malformed before any entry is parsed. Anchors may therefore be roots — such as the IACA certificates an ETSI TS 119 602 PID-providers list publishes — or the document-signer certificate itself:
 
   ```ts
   import { StaticTrustStore } from "@openeudi/openid4vp";
@@ -444,7 +444,7 @@ It does **not** fetch SD-JWT VC issuer metadata (`/.well-known/jwt-vc-issuer`), 
 All library fetches go through `createGuardedFetcher({ allowHttp: true })` unless you pass `fetcher`. It enforces:
 
 - `https:` only by default (`allowHttp: true` for the trust module: RFC 5280 CRLs and RFC 6960 OCSP are conventionally plain HTTP and every artefact is signature-verified); never an `https` → `http` redirect downgrade.
-- No loopback, RFC 1918, CGNAT, link-local (incl. `169.254.169.254`), ULA (incl. `fd00:ec2::254`), multicast, documentation or reserved targets — checked on the URL host *and* on every address it resolves to, including IPv4-mapped/compatible, NAT64 and 6to4 IPv6 forms. `localhost`/`*.localhost` are refused by name.
+- No loopback, RFC 1918, CGNAT, link-local (incl. `169.254.169.254`), ULA (incl. `fd00:ec2::254`), multicast, documentation or reserved targets — checked on the URL host *and* on every address it resolves to, including IPv4-mapped/compatible, NAT64 and 6to4 IPv6 forms. `localhost`/`*.localhost` are refused by name. A host that resolves to no addresses at all is refused as `dns_resolution_failed` rather than treated as public.
 - Redirects handled manually (`maxRedirects`, default 3); each target is re-validated before it is requested, and credentials headers are dropped on cross-origin hops.
 - One timeout (`timeoutMs`, default 15 000) for DNS, all hops and the body.
 - A size cap (`maxResponseBytes`, default 16 MiB), enforced from `Content-Length` and again while streaming.
