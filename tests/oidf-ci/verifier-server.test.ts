@@ -64,7 +64,7 @@ describe("verifier-server", () => {
     const attacker = await generateKeyPair("ES256");
     const attackerJwk = await exportJWK(attacker.publicKey);
     const fakeIssuerJwt = await new SignJWT({ vct: "urn:eudi:pid:1", iss: "attacker", given_name: "Mallory" })
-      .setProtectedHeader({ alg: "ES256", typ: "vc+sd-jwt", kid: fx.issuerSigningJwkPublic.kid })
+      .setProtectedHeader({ alg: "ES256", typ: "dc+sd-jwt", kid: fx.issuerSigningJwkPublic.kid })
       .setIssuedAt()
       .setExpirationTime("5m")
       .sign(attacker.privateKey);

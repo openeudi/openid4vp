@@ -3,6 +3,7 @@ import { DOMParser } from '@xmldom/xmldom';
 import type { Document as XmlDocument } from '@xmldom/xmldom';
 import * as xmldsig from 'xmldsigjs';
 import { LotlConfigurationError, LotlFetchError, LotlSignatureError } from '../errors.js';
+import { createDefaultTrustFetcher } from '../http/guarded-fetch.js';
 import type { Fetcher } from './Fetcher.js';
 
 const XMLDSIG_NS = 'http://www.w3.org/2000/09/xmldsig#';
@@ -22,7 +23,7 @@ export class LotlFetcher {
     private readonly fetcher: Fetcher;
 
     constructor(opts: LotlFetcherOptions = {}) {
-        this.fetcher = opts.fetcher ?? globalThis.fetch.bind(globalThis);
+        this.fetcher = opts.fetcher ?? createDefaultTrustFetcher();
     }
 
     async fetchSigned(

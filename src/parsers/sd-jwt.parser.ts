@@ -16,6 +16,20 @@ type SdJwtHasher = (data: string | ArrayBuffer, alg: string) => Promise<Uint8Arr
 
 const DEFAULT_ALLOWED_ALGORITHMS = ['ES256', 'ES384', 'ES512'];
 
+const SD_JWT_VC_TYP = 'dc+sd-jwt';
+/** Removed in draft-ietf-oauth-sd-jwt-vc-19; accepted only behind `allowLegacyVcSdJwtTyp`. */
+const LEGACY_SD_JWT_VC_TYP = 'vc+sd-jwt';
+
+/**
+ * Normalises a JOSE `typ` media type for comparison: RFC 7515 §4.1.9 lets the
+ * `application/` prefix be omitted, and media types compare case-insensitively.
+ */
+function normalizeTyp(typ: unknown): string | undefined {
+    if (typeof typ !== 'string') return undefined;
+    const lower = typ.toLowerCase();
+    return lower.startsWith('application/') ? lower.slice('application/'.length) : lower;
+}
+
 /**
  * SHA-256 hasher implementation using the Web Crypto API.
  * Compatible with the @sd-jwt/decode Hasher signature.
@@ -194,6 +208,26 @@ export class SdJwtParser implements ICredentialParser {
         const alg = header.alg;
         if (typeof alg !== 'string' || !allowedAlgorithms.includes(alg)) {
             return invalidResult(`Unsupported algorithm: ${alg}`);
+        }
+
+        // Step 3b: Explicit typing (draft-ietf-oauth-sd-jwt-vc-19) — the
+        // issuer JWT's `typ` MUST be `dc+sd-jwt`. Checked before signature
+        // verification so a token of another JWT type is never processed as a
+        // credential (cross-JWT confusion).
+        const typ = normalizeTyp(header.typ);
+        if (typ === LEGACY_SD_JWT_VC_TYP) {
+            if (options.allowLegacyVcSdJwtTyp !== true) {
+                return invalidResult(
+                    `Legacy SD-JWT VC typ '${LEGACY_SD_JWT_VC_TYP}' is not accepted (removed in ` +
+                        `draft-ietf-oauth-sd-jwt-vc-19; expected '${SD_JWT_VC_TYP}'). ` +
+                        `Set allowLegacyVcSdJwtTyp to accept it during migration.`
+                );
+            }
+        } else if (typ !== SD_JWT_VC_TYP) {
+            return invalidResult(
+                `Unsupported SD-JWT VC typ: ${header.typ === undefined ? '(missing)' : String(header.typ)} ` +
+                    `(expected '${SD_JWT_VC_TYP}')`
+            );
         }
 
         // Step 4: Extract public key — either from x5c certificate or, when x5c is absent

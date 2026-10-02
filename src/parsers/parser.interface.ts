@@ -77,7 +77,13 @@ export interface ParseOptions {
      */
     revocationPolicy?: 'skip' | 'prefer' | 'require';
 
-    /** HTTP transport for CRL/OCSP/LOTL fetches. Defaults to `globalThis.fetch`. */
+    /**
+     * HTTP transport for CRL/OCSP/LOTL fetches. Defaults to a guarded fetcher
+     * (`createGuardedFetcher({ allowHttp: true })`): no private/loopback/metadata
+     * targets, manual re-validated redirects (max 3), 15 s timeout, 16 MiB cap.
+     * A caller-supplied fetcher replaces those guards entirely — wrap it with
+     * `createGuardedFetcher({ fetch: yourFetcher })` to keep them.
+     */
     fetcher?: Fetcher;
 
     /** Cache for CRL/OCSP/LOTL artefacts. Defaults to `new InMemoryCache()`. */
@@ -107,6 +113,16 @@ export interface ParseOptions {
      * secure path.
      */
     trustedIssuerJwks?: JsonWebKey[];
+
+    /**
+     * Accept the legacy `vc+sd-jwt` media type in the SD-JWT VC issuer JWT's
+     * `typ` header, in addition to `dc+sd-jwt`. Default `false`.
+     *
+     * @deprecated draft-ietf-oauth-sd-jwt-vc-19 removed `vc+sd-jwt`; only
+     * `dc+sd-jwt` is conformant. This exists solely to keep interoperating
+     * with wallets that have not migrated yet and will be removed in 1.0.0.
+     */
+    allowLegacyVcSdJwtTyp?: boolean;
 }
 
 export interface ICredentialParser {
