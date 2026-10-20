@@ -9,7 +9,10 @@ async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
 }
 
 /**
- * Build the ISO 18013-7 Annex B `OID4VPHandover` SessionTranscript:
+ * Build the legacy `OID4VPHandover` SessionTranscript of ISO 18013-7 Annex B,
+ * as used by OpenID4VP draft-era (ID2/ID3) wallets. OpenID4VP 1.0 Final
+ * wallets use {@link buildOpenID4VPHandoverSessionTranscript} instead; this
+ * layout is selected by `sessionTranscriptProfile: 'oid4vp-draft-annex-b'`:
  *
  *   SessionTranscript = [ null, null, OID4VPHandover ]
  *   OID4VPHandover = [ clientIdHash, responseUriHash, nonce ]
@@ -90,4 +93,32 @@ export async function buildOpenID4VPHandoverSessionTranscript(params: {
     const thumb = verifierEncryptionJwk ? await jwkSha256Thumbprint(verifierEncryptionJwk) : null;
     const infoHash = await sha256(new Uint8Array(enc.encode([clientId, nonce, thumb, responseUri])));
     return new Uint8Array(enc.encode([null, null, ['OpenID4VPHandover', infoHash]]));
+}
+
+/**
+ * Build the OpenID4VP 1.0 (Final) `OpenID4VPDCAPIHandover` SessionTranscript
+ * for a presentation made over the W3C Digital Credentials API (§B.2.6.2):
+ *
+ *   SessionTranscript = [ null, null, OpenID4VPDCAPIHandover ]
+ *   OpenID4VPDCAPIHandover = [ "OpenID4VPDCAPIHandover", SHA-256(cbor(OpenID4VPDCAPIHandoverInfo)) ]
+ *   OpenID4VPDCAPIHandoverInfo = [ origin, nonce, jwkThumbprint | null ]
+ *
+ * `origin` is the bare web origin the browser passed to the wallet (for
+ * example `https://shop.example`) — §B.2.6.2 says it "MUST NOT be prefixed with
+ * `origin:`", unlike the KB-JWT `aud`. `verifierEncryptionJwk` is the public
+ * key the verifier advertised for `dc_api.jwt`; omit it for `dc_api`, which
+ * puts CBOR `null` in the third element.
+ */
+export async function buildOpenID4VPDCAPIHandoverSessionTranscript(params: {
+    origin: string;
+    nonce: string;
+    verifierEncryptionJwk?: JsonWebKey;
+}): Promise<Uint8Array> {
+    const { origin, nonce, verifierEncryptionJwk } = params;
+    if (origin.startsWith('origin:')) {
+        throw new TypeError('origin must be the bare web origin, without the "origin:" prefix (OpenID4VP 1.0 §B.2.6.2)');
+    }
+    const thumb = verifierEncryptionJwk ? await jwkSha256Thumbprint(verifierEncryptionJwk) : null;
+    const infoHash = await sha256(new Uint8Array(enc.encode([origin, nonce, thumb])));
+    return new Uint8Array(enc.encode([null, null, ['OpenID4VPDCAPIHandover', infoHash]]));
 }

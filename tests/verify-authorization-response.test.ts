@@ -80,7 +80,7 @@ describe('verifyAuthorizationResponse', () => {
         expect(result.valid).toBe(true);
     });
 
-    it('auto-builds the mDOC SessionTranscript from the JWE apu header (encrypted mso_mdoc, no caller transcript)', async () => {
+    it('auto-builds the legacy Annex B mDOC SessionTranscript from the JWE apu header when sessionTranscriptProfile is "oid4vp-draft-annex-b" (encrypted mso_mdoc, no caller transcript)', async () => {
         // Verifier request config that both sides agree on.
         const clientId = `x509_san_dns:verifier.${crypto.randomUUID()}.example`;
         const responseUri = `https://verifier.example/${crypto.randomUUID()}/response`;
@@ -127,6 +127,7 @@ describe('verifyAuthorizationResponse', () => {
             decryptionKey: privateKey,
             clientId,
             responseUri,
+            sessionTranscriptProfile: 'oid4vp-draft-annex-b',
             // NB: no mdocSessionTranscript — the library must build it from apu.
         });
 

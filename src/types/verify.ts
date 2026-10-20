@@ -25,16 +25,34 @@ export interface EncryptedResponse {
     response: string;
 }
 
+/**
+ * mDOC SessionTranscript layouts that `verifyAuthorizationResponse` can
+ * auto-build.
+ *
+ * - `'openid4vp-1.0'` — OpenID4VP 1.0 Final `OpenID4VPHandover` (§B.2.6.1).
+ *   The default since the release after 0.13.0.
+ * - `'oid4vp-draft-annex-b'` — the legacy ISO 18013-7 Annex B
+ *   `OID4VPHandover` used by draft-era (ID2/ID3) wallets, derived from the
+ *   `mdoc-generated-nonce` in the JWE `apu` header.
+ * - `'iso-18013-7'` — deprecated alias of `'oid4vp-draft-annex-b'`, kept so
+ *   existing configurations keep working. Removed in 1.0.0.
+ */
+export type SessionTranscriptProfile =
+    | 'openid4vp-1.0'
+    | 'oid4vp-draft-annex-b'
+    /** @deprecated Use `'oid4vp-draft-annex-b'`. Removed in 1.0.0. */
+    | 'iso-18013-7';
+
 export type VerifyAuthorizationResponseOptions = VerifyOptions & {
     decryptionKey?: CryptoKey;
 
     /**
-     * The OpenID4VP verifier's `client_id`, as sent in the authorization request.
-     * Combined with {@link responseUri}, {@link ParseOptions.nonce} and the
-     * `mdoc-generated-nonce` (carried in the JWE `apu` header, ISO 18013-7 Annex B),
-     * it lets the encrypted-response path auto-build the mDOC SessionTranscript the
-     * mDOC parser requires — so callers need not construct the CBOR by hand. Ignored
-     * when the caller supplies {@link ParseOptions.mdocSessionTranscript} explicitly.
+     * The OpenID4VP verifier's `client_id`, as sent in the authorization request
+     * (including its Client Identifier Prefix). Together with
+     * {@link responseUri} and {@link ParseOptions.nonce} it lets
+     * `verifyAuthorizationResponse` auto-build the mDOC SessionTranscript the
+     * mDOC parser requires, so callers need not construct the CBOR by hand.
+     * Ignored when the caller supplies {@link ParseOptions.mdocSessionTranscript}.
      */
     clientId?: string;
 
@@ -45,26 +63,29 @@ export type VerifyAuthorizationResponseOptions = VerifyOptions & {
     responseUri?: string;
 
     /**
-     * Which mDOC SessionTranscript layout to auto-build when {@link clientId},
-     * {@link responseUri} and {@link ParseOptions.nonce} are present and the
-     * caller has not supplied {@link ParseOptions.mdocSessionTranscript}:
+     * Which mDOC SessionTranscript layout to auto-build when the presented
+     * credential is `mso_mdoc`, {@link clientId}, {@link responseUri} and
+     * {@link ParseOptions.nonce} are present, and the caller has not supplied
+     * {@link ParseOptions.mdocSessionTranscript}:
      *
-     * - `'iso-18013-7'` (default): the ISO 18013-7 Annex B `OID4VPHandover`,
-     *   derived from the `mdoc-generated-nonce` carried in the JWE `apu` header.
-     *   This is the id2/id3-era layout and is kept as the default for
-     *   backwards compatibility.
-     * - `'openid4vp-1.0'`: the OpenID4VP 1.0 (Final) `OpenID4VPHandover`
-     *   (§B.2.6), derived from {@link verifierEncryptionJwk}'s RFC 7638
-     *   thumbprint instead of an `apu` nonce.
+     * - `'openid4vp-1.0'` (default): the OpenID4VP 1.0 Final
+     *   `OpenID4VPHandover` (§B.2.6.1). Built for both envelopes: for
+     *   `direct_post.jwt` the third element is the RFC 7638 thumbprint of
+     *   {@link verifierEncryptionJwk}; for unencrypted `direct_post` it is
+     *   `null`, as the spec requires.
+     * - `'oid4vp-draft-annex-b'`: the legacy ISO 18013-7 Annex B
+     *   `OID4VPHandover`, derived from the `mdoc-generated-nonce` in the JWE
+     *   `apu` header. Encrypted responses only.
+     * - `'iso-18013-7'`: deprecated alias of `'oid4vp-draft-annex-b'`.
      */
-    sessionTranscriptProfile?: 'iso-18013-7' | 'openid4vp-1.0';
+    sessionTranscriptProfile?: SessionTranscriptProfile;
 
     /**
-     * The verifier's response-encryption public JWK. Required when
-     * {@link sessionTranscriptProfile} is `'openid4vp-1.0'` and the response is
-     * encrypted — its RFC 7638 SHA-256 thumbprint is embedded in the
-     * OpenID4VPHandover SessionTranscript. Ignored for the `'iso-18013-7'`
-     * profile (which uses the JWE `apu` header instead).
+     * The verifier's response-encryption public JWK. Required for an encrypted
+     * `mso_mdoc` response under the `'openid4vp-1.0'` profile — its RFC 7638
+     * SHA-256 thumbprint is embedded in the OpenID4VPHandover SessionTranscript.
+     * Ignored for unencrypted responses (the thumbprint is then `null`) and for
+     * the legacy Annex B profile (which uses the JWE `apu` header instead).
      */
     verifierEncryptionJwk?: JsonWebKey;
 };

@@ -12,6 +12,7 @@ export type {
     VerifyResult,
     EncryptedResponse,
     VerifyAuthorizationResponseOptions,
+    SessionTranscriptProfile,
 } from './verify.js';
 export type { HaipQueryInput, CredentialSetQueryInput } from './haip.js';
 export type {
