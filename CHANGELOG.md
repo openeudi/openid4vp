@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`verifier_info` in authorization requests** (OpenID4VP 1.0 §5.1). Both
+  `createSignedAuthorizationRequest` and `createAuthorizationRequest` accept
+  `verifierInfo: Array<{ format, data, credential_ids? }>` and emit it as
+  `verifier_info`: in the signed request object, or JSON-encoded in the
+  unsigned URI. It is validated before signing: a non-empty array, a non-empty
+  `format`, a non-empty `data` string or an object, and `credential_ids`, when
+  present, non-empty and each matching a DCQL Credential Query `id`. For the
+  two ETSI TS 119 472-2 V1.3.1 formats, `registrar_dataset` and
+  `registration_cert`, `credential_ids` is refused (RO-03, RO-14), each may
+  appear once, `registrar_dataset` data must be a non-empty object (RO-05) and
+  `registration_cert` data a string (RO-16). Failures raise
+  `SignedRequestBuildError` with the new code `invalid_verifier_info` (signed)
+  or `TypeError` (unsigned).
+- **`registrarDatasetVerifierInfo(dataset)`** builds the `registrar_dataset`
+  element that TS 119 472-2 V1.3.1 makes mandatory (RO-01 to RO-12), with the
+  TS 119 475 V1.2.1 Annex B member names: `identifier`, `srvDescription`,
+  `registryURI`, `intendedUseIdentifier`, `purpose`, `policyURI` and the
+  optional `credential`.
+- **`registrationCertVerifierInfo(wrprc)`** builds the `registration_cert`
+  element (RO-13 to RO-16) from a WRPRC: a compact JWS whose header `typ` is
+  `rc-wrp+jwt`, or CWT bytes. `data` is the base64url encoding of the
+  serialized certificate, as RO-16 requires.
+- Exported types `VerifierInfo`, `RegistrarDataset`, `RegistrarIdentifier`,
+  `RegistrarCredential`, `RegistrarClaim` and `MultiLangString`.
+
 ## [0.14.0] — 2026-10-21
 
 ### Security (library)

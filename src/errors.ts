@@ -178,7 +178,8 @@ export type SignedRequestBuildErrorCode =
     | 'empty_supported_enc_values'
     | 'missing_hostname'
     | 'self_signed_leaf'
-    | 'trust_anchor_in_chain';
+    | 'trust_anchor_in_chain'
+    | 'invalid_verifier_info';
 
 export class SignedRequestBuildError extends OpenID4VPError {
     readonly code: SignedRequestBuildErrorCode;

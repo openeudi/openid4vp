@@ -293,6 +293,50 @@ The emitted `client_metadata` carries the 1.0 Final shape: `encrypted_response_e
 - **`kid`.** OpenID4VP 1.0 §5.1 requires a `kid` on every JWK in `client_metadata.jwks`. A `publicJwk` without one is given its RFC 7638 SHA-256 thumbprint as `kid`; a `kid` you set is kept.
 - **No trust anchor in `x5c`.** "The X.509 certificate of the trust anchor MUST NOT be included in the x5c JOSE header." A `certificateChain` with more than one certificate whose last certificate is self-signed is rejected with `SignedRequestBuildError: trust_anchor_in_chain`. Pass the leaf and any intermediates only.
 
+### Verifier info and registration certificates (`verifier_info`)
+
+`verifierInfo` adds the OpenID4VP 1.0 §5.1 `verifier_info` parameter: attestations about the verifier, each `{ format, data, credential_ids? }`. ETSI TS 119 472-2 V1.3.1 (§6.3.2.2) makes it **mandatory** in an EUDI Wallet request object. It must hold a `registrar_dataset` element with the data the relying party registered with its national Registrar, plus a `registration_cert` element when the relying party holds a registration certificate (WRPRC, ETSI TS 119 475). Two helpers build these elements:
+
+```ts
+import {
+  createSignedAuthorizationRequest,
+  registrarDatasetVerifierInfo,
+  registrationCertVerifierInfo,
+} from "@openeudi/openid4vp";
+
+const verifierInfo = [
+  registrarDatasetVerifierInfo({
+    identifier: [{ type: "http://data.europa.eu/eudi/id/LEI", identifier: "LEIXG-529900T8BM49AURSDO55" }],
+    srvDescription: [{ lang: "en", content: "Age check at checkout" }],
+    registryURI: "https://registrar.example/api",
+    intendedUseIdentifier: registeredIntendedUseId,
+    purpose: [{ lang: "en", content: "Checking the legal minimum age" }],
+    policyURI: "https://shop.example/privacy",
+    // optional: the attestations and claims registered for this intended use
+    credential: [{ format: "dc+sd-jwt", meta: { vct_values: ["urn:eudi:pid:1"] }, claim: [{ path: ["birthdate"] }] }],
+  }),
+  // only when the relying party holds a WRPRC: compact JWS (typ rc-wrp+jwt) or CWT bytes
+  registrationCertVerifierInfo(wrprcJws),
+];
+
+const req = await createSignedAuthorizationRequest({ ...input, verifierInfo }, dcqlQuery);
+```
+
+Rules the builder enforces before signing (`SignedRequestBuildError: invalid_verifier_info`):
+
+- `verifierInfo` is a non-empty array, each `format` a non-empty string, and each `data` a non-empty string or an object.
+- `credential_ids`, when present, is non-empty and each entry matches the `id` of a Credential Query in the DCQL query.
+- `registrar_dataset` and `registration_cert` never carry `credential_ids` (TS 119 472-2 RO-03, RO-14), and each appears at most once. ARF RPRC_19 allows "a single registration certificate" per request.
+
+Other formats are passed through unchanged. The signed and unsigned builders emit only `format`, `data` and `credential_ids`.
+
+Notes:
+
+- **Encoding of `registration_cert`.** RO-16 requires `data` to be "the base64url encoding of the serialized RP registration certificate". For a JWT WRPRC, `registrationCertVerifierInfo` therefore base64url-encodes the compact JWS string itself, so the JWS is encoded twice.
+- **Intermediaries.** When you request on behalf of another relying party, `identifier` and the WRPRC are the **final** relying party's, not yours (TS 119 472-2 RO-12 NOTE 2, TS 119 475 §4.5), while the request is signed with the intermediary's access certificate.
+- **Data model inconsistencies.** TS 119 472-2 types `Credential.meta` and `Claim.path` as text, while the TS 119 475 Annex C example uses DCQL-style objects and arrays. The helper accepts both and passes them through unchanged.
+- `createAuthorizationRequest` (unsigned) accepts `verifierInfo` too and JSON-encodes it into the URI. Nothing binds it to the verifier, though, so profiles that rely on it expect a signed request object.
+
 ## Authorization responses (direct_post and direct_post.jwt)
 
 Wallets POST the Authorization Response to your `responseUri`. The library is stateless — you MUST compare the envelope's `state` against the value you issued before treating the response as trustworthy. The recommended pattern differs slightly between the unencrypted and encrypted modes.
@@ -558,7 +602,7 @@ Mobile Document credentials as defined in ISO 18013-5. The token is a CBOR-encod
 | `MissingAudienceError`     | An expected audience is required …      | A KB-JWT is verified without `audience` (or `clientId`) |
 | `WalletErrorResponseError` | Wallet returned an error response: `{code}` | The wallet sent an OpenID4VP §8.5 error response (`code`, `description`, `state`) |
 | `CertificateChainError`    | (per check)                             | Chain validation fails; see `reason` (e.g. `unrecognised_critical_extension`) |
-| `SignedRequestBuildError`  | (per check)                             | `createSignedAuthorizationRequest` input is invalid; see `code` (e.g. `trust_anchor_in_chain`) |
+| `SignedRequestBuildError`  | (per check)                             | `createSignedAuthorizationRequest` input is invalid; see `code` (e.g. `trust_anchor_in_chain`, `invalid_verifier_info`) |
 
 ```ts
 import { MalformedCredentialError, ExpiredCredentialError } from "@openeudi/openid4vp";
