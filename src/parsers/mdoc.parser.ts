@@ -299,6 +299,7 @@ export class MdocParser implements ICredentialParser {
             trustResult = await evaluateCredentialIssuer({
                 chain: cose.x5chain,
                 profile: 'iso18013-5',
+                documentSignerEkus: options.mdocDocumentSignerEkus,
                 issuedAt: peekMsoSigned(cose.payload),
                 trustStore: options.trustStore,
                 revocationPolicy: options.revocationPolicy ?? 'skip',

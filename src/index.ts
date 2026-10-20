@@ -57,6 +57,31 @@ export type {
     DcApiResponse,
     VerifyDcApiResponseOptions,
 } from './dc-api/types.js';
+// EU Age Verification (AV app) profile — OpenID4VP fallback (AV Annex A §A.6)
+export { createAvAuthorizationRequest } from './av/request.js';
+export { verifyAvPresentation } from './av/verify.js';
+export {
+    AV_DOCTYPE,
+    AV_NAMESPACE,
+    AV_DEFAULT_BASE_URI,
+    AV_DEFAULT_CREDENTIAL_ID,
+    AV_DOCUMENT_SIGNER_EKU,
+} from './av/constants.js';
+export {
+    AvRequestBuildError,
+    AvResponseError,
+    type AvRequestBuildErrorCode,
+    type AvResponseErrorCode,
+} from './av/errors.js';
+export type {
+    AvAuthorizationRequestInput,
+    AvAuthorizationRequest,
+    AvVerificationContext,
+    AvAuthorizationResponseInput,
+    VerifyAvPresentationOptions,
+    AvVerificationFailure,
+    AvVerificationResult,
+} from './av/types.js';
 export { SdJwtParser } from './parsers/sd-jwt.parser.js';
 export { MdocParser } from './parsers/mdoc.parser.js';
 export type { ICredentialParser, ParseOptions } from './parsers/parser.interface.js';
