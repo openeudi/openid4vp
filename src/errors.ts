@@ -320,3 +320,52 @@ export class GuardedFetchError extends OpenID4VPError {
         this.url = options.url;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Token Status List (draft-ietf-oauth-status-list-21)
+// ---------------------------------------------------------------------------
+
+export type StatusListErrorReason =
+    /** Resolver / policy misconfiguration (e.g. `statusPolicy` set without a resolver). */
+    | 'configuration'
+    /** The credential's `status` claim is malformed (HAIP 1.0 §6.1: it MUST contain `status_list`). */
+    | 'invalid_reference'
+    /** The Status List Token could not be retrieved (network, guard, non-2xx). */
+    | 'fetch_failed'
+    /** Not a well-formed `statuslist+jwt`: bad JWS, wrong `typ`, missing or invalid claims. */
+    | 'invalid_token'
+    /** The JWS signature does not verify with the `x5c` signer key. */
+    | 'signature_invalid'
+    /** The `x5c` signer does not chain to a configured status-list trust anchor. */
+    | 'untrusted_signer'
+    /** `sub` differs from the `uri` the credential references (§8.3 step 4a). */
+    | 'subject_mismatch'
+    /** `exp` has passed (§8.3 step 4c). */
+    | 'expired'
+    /** `iat`/`nbf` lies in the future, or `iat` is older than the configured freshness limit. */
+    | 'not_fresh'
+    /** `status_list` is not a valid `bits` / `lst` structure or does not decompress. */
+    | 'malformed_status_list'
+    /** The decompressed list exceeds the configured size cap. */
+    | 'list_too_large'
+    /** `idx` lies past the end of an authentic list (§8.3 step 6: MUST reject). */
+    | 'index_out_of_range';
+
+/**
+ * A Status List Token could not be resolved or validated, or a credential's
+ * status reference is unusable. `reason` tells a definitive answer about the
+ * credential (`invalid_reference`, `index_out_of_range`) apart from "no
+ * statement can be made" (everything else).
+ */
+export class StatusListError extends OpenID4VPError {
+    readonly code = 'status_list_error' as const;
+    readonly reason: StatusListErrorReason;
+    /** The Status List Token URI involved, when known. */
+    readonly uri?: string;
+
+    constructor(reason: StatusListErrorReason, message: string, options: { uri?: string; cause?: Error } = {}) {
+        super(message, { cause: options.cause });
+        this.reason = reason;
+        this.uri = options.uri;
+    }
+}

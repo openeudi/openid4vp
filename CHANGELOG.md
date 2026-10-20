@@ -33,6 +33,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   serialized certificate, as RO-16 requires.
 - Exported types `VerifierInfo`, `RegistrarDataset`, `RegistrarIdentifier`,
   `RegistrarCredential`, `RegistrarClaim` and `MultiLangString`.
+- **Credential status checking — IETF Token Status List
+  (draft-ietf-oauth-status-list-21) for SD-JWT VC.** A revoked or suspended
+  credential was previously accepted until its `exp`. New `StatusListResolver`
+  fetches the `statuslist+jwt` token at `status.status_list.uri`
+  (`Accept: application/statuslist+jwt`, HTTPS-only guarded fetcher), verifies
+  `typ`, the `x5c` signature and chain against its own `trustStore` (anchor
+  never taken from, nor allowed inside, `x5c`), `sub === uri`, `iat`, `nbf`,
+  `exp` and `ttl`, decompresses `lst` with a size cap and reads the entry at
+  `idx` (`bits` 1/2/4/8). Verified lists are cached in memory by `uri` for the
+  bounded `ttl`, never past `exp`; concurrent lookups share one fetch;
+  `prefetch(uri)` refreshes out of band. Decompression uses
+  `DecompressionStream('deflate')` with a `node:zlib` fallback — no new
+  dependency.
+- **`statusPolicy: 'skip' | 'prefer' | 'require'`** and
+  **`statusListResolver`** on `ParseOptions` / `VerifyOptions`, mirroring
+  `revocationPolicy`. A definitive INVALID / SUSPENDED / unrecognised status, an
+  out-of-range `idx`, or a malformed `status` claim (HAIP 1.0 §6.1: it MUST
+  contain `status_list`) yields `valid: false`. When no statement can be made
+  (list unreachable, untrusted, expired, malformed) `'prefer'` accepts with
+  `credentialStatus.outcome: 'unavailable'` and a `warning`; `'require'` throws
+  `StatusListError`. The status is checked only after the credential itself
+  validated (§8.3).
+- `PresentationResult.credentialStatus` exposes the outcome (`checked` /
+  `unavailable` / `absent` / `rejected`, status, raw value, `uri`, `idx`,
+  `fromCache`).
+- `StatusListError` (`code: 'status_list_error'`, `reason`, `uri`), plus
+  `decodeStatusList` / `readStatusValue` and the related types.
+
+### Notes
+
+- `statusPolicy` defaults to `'skip'`, so existing callers see no change. The
+  intent is to default to `'prefer'` in 1.0.
+- The mdoc MSO `status` (`statuslist+cwt`) is not evaluated yet;
+  `statusPolicy` applies to SD-JWT VC only.
 
 ## [0.14.0] — 2026-10-21
 

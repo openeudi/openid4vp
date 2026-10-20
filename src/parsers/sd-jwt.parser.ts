@@ -580,6 +580,19 @@ export class SdJwtParser implements ICredentialParser {
             throw new MalformedCredentialError('Failed to decode SD-JWT disclosures');
         }
 
+        // Step 10: Token Status List (draft-ietf-oauth-status-list-21 §8.3).
+        // Only reached once the credential itself has fully validated — the
+        // spec forbids fetching a status list for a token that is already invalid.
+        let credentialStatus: PresentationResult['credentialStatus'];
+        if ((options.statusPolicy ?? 'skip') !== 'skip') {
+            const { checkCredentialStatus } = await import('../status/credential-status.js');
+            const statusCheck = await checkCredentialStatus(payload, options);
+            if (statusCheck.rejection !== undefined) {
+                return { ...invalidResult(statusCheck.rejection), credentialStatus: statusCheck.result };
+            }
+            credentialStatus = statusCheck.result;
+        }
+
         const vct = typeof payload['vct'] === 'string' ? (payload['vct'] as string) : undefined;
         // `aka_vcts` is read from the issuer-signed payload only: draft-19 makes
         // it non-disclosable, so a selectively disclosed copy must not widen
@@ -597,6 +610,7 @@ export class SdJwtParser implements ICredentialParser {
             ...(akaVcts.length > 0 ? { akaVcts } : {}),
         };
         if (trustResult) result.trust = trustResult;
+        if (credentialStatus) result.credentialStatus = credentialStatus;
         return result;
     }
 }
