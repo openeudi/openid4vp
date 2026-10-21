@@ -23,7 +23,7 @@ This library verifies credentials for identity and age-assurance flows, so its p
 
 Both are fixed. Both were found externally rather than by this project's own testing — weigh that accordingly when deciding how much to rely on the library, and **always run the latest release**.
 
-**Pre-1.0.** While the version is below 1.0, minor bumps may contain breaking changes; see the [migration list](#migration). Full EUDI ARF 1.4+ profile compliance is a 1.0 goal, not a current claim.
+**Pre-1.0.** While the version is below 1.0, minor bumps may contain breaking changes; see the [migration list](#migration). Full EUDI ARF (v3.0.0 at the time of writing) profile compliance is a 1.0 goal, not a current claim.
 
 **What is independently exercised.** The OpenID Foundation conformance suite runs against this library in CI on every pull request, covering the 1.0-Final verifier happy flow for both `sd_jwt_vc` and `iso_mdl` plus the holder-binding negatives. Separately, a downstream deployment built on this library — [eudi-verify](https://github.com/eudi-verify/eudi-verify) 1.4.0 — is [OpenID Certified](https://openid.net/certification/certified-oid4vp-haip-final/) for the `OID4VP-1.0+HAIP-1.0 Verifier iso_mdl direct_post.jwt` profile (14 Aug 2026). That certification is the deployment's, not the library's, but it exercised this code.
 
@@ -34,23 +34,26 @@ Known functional gaps that bear on what you can rely on are listed under [Scope 
 Parse a Verifiable Presentation token and extract identity claims:
 
 ```ts
-import { parsePresentation } from "@openeudi/openid4vp";
+import { parsePresentation, StaticTrustStore } from "@openeudi/openid4vp";
 
 const result = await parsePresentation(vpToken, {
-  trustedCertificates: [issuerCertBytes],
+  // DER certificates of the PID providers you accept (e.g. from the PID-providers list)
+  trustStore: new StaticTrustStore(listedCertificates),
   nonce: "expected-nonce-value",
+  // Your client_id as sent in the request: the KB-JWT `aud` must equal it
+  audience: "x509_san_dns:verifier.example.com",
 });
 
 if (result.valid) {
   console.log(result.format); // 'sd-jwt-vc' | 'mdoc'
-  console.log(result.claims.age_over_18); // true
-  console.log(result.issuer.country); // 'DE'
+  console.log(result.vct); // 'urn:eudi:pid:1', or a national type such as 'urn:eudi:pid:de:1'
+  console.log(result.claims.birthdate); // '1990-01-01' — a PID has no age_over_18; derive the age from this
 } else {
   console.error(result.error);
 }
 ```
 
-`parsePresentation` automatically detects the credential format. String tokens with `~` separators are parsed as SD-JWT VC; binary `Uint8Array` tokens are parsed as CBOR-encoded mDOC.
+`parsePresentation` automatically detects the credential format. String tokens with `~` separators are parsed as SD-JWT VC; binary `Uint8Array` tokens are parsed as CBOR-encoded mDOC. It verifies one credential and does not know your DCQL query, so it cannot apply the query's holder-binding requirement — use `verifyAuthorizationResponse` (or `verifyPresentation`) in a real verifier.
 
 ## Authorization requests
 
@@ -62,8 +65,8 @@ import { buildHaipQuery, createAuthorizationRequest } from "@openeudi/openid4vp"
 const query = buildHaipQuery({
   credentialId: "pid",
   format: "dc+sd-jwt",
-  vctValues: ["https://pid.eu/v1"],
-  claims: ["age_over_18"],
+  vctValues: ["urn:eudi:pid:1"],
+  claims: ["birthdate"],
 });
 
 const request = createAuthorizationRequest(
@@ -107,8 +110,8 @@ import { buildHaipQuery, validateHaipQuery } from "@openeudi/openid4vp";
 const query = buildHaipQuery({
   credentialId: "pid",
   format: "dc+sd-jwt",
-  vctValues: ["https://pid.eu/v1"],
-  claims: ["age_over_18", "given_name"],
+  vctValues: ["urn:eudi:pid:1"],
+  claims: ["birthdate", "given_name"],
 });
 
 // Or validate a hand-built DCQL query:
@@ -124,8 +127,8 @@ Known EUDI doctypes auto-namespace their claim paths (e.g., `org.iso.18013.5.1.m
 Some questions can be answered by more than one credential. The clearest case is
 proof of age: a wallet may hold a **Proof-of-Age attestation** (`mso_mdoc`, with
 `age_over_18` in namespace `eu.europa.ec.av.1`) or only a **PID** (`dc+sd-jwt`,
-carrying `birth_date` — the PID has no age attribute, so the verifier computes the
-threshold). Asking for both in one request avoids a second wallet interaction:
+carrying `birthdate` — the PID has no age attribute, so the verifier computes the
+threshold; `birth_date` is the mdoc element name of the PID). Asking for both in one request avoids a second wallet interaction:
 
 ```ts
 import { buildCredentialSetQuery } from "@openeudi/openid4vp";
@@ -139,12 +142,12 @@ const query = buildCredentialSetQuery({
       doctypeValue: "eu.europa.ec.av.1",
       claims: ["age_over_18"],
     },
-    // Fallback — the verifier computes the threshold from birth_date.
+    // Fallback — the verifier computes the threshold from birthdate.
     {
       credentialId: "pid",
       format: "dc+sd-jwt",
-      vctValues: ["urn:eu.europa.ec.eudi:pid:1"],
-      claims: ["birth_date"],
+      vctValues: ["urn:eudi:pid:1"],
+      claims: ["birthdate"],
     },
   ],
 });
@@ -195,7 +198,8 @@ import { verifyPresentation } from "@openeudi/openid4vp";
 
 const result = await verifyPresentation(vpToken, query, {
   nonce,
-  trustedCertificates,
+  audience: verifierClientId, // expected KB-JWT `aud`
+  trustStore,
 });
 
 if (result.valid) {
@@ -208,7 +212,25 @@ if (result.valid) {
 }
 ```
 
-Mismatches return `valid: false` — they do not throw. Only crypto/structural failures (malformed VP tokens, invalid signatures, expired credentials) and malformed DCQL queries throw exceptions.
+Mismatches return `valid: false` — they do not throw. Only crypto/structural failures (malformed VP tokens, invalid signatures, expired credentials), configuration faults (`MissingAudienceError`) and malformed DCQL queries throw exceptions.
+
+**Holder binding follows the query.** OpenID4VP 1.0 §6.1 makes `require_cryptographic_holder_binding` default to `true`, so a bearer SD-JWT VC (no `cnf`, no KB-JWT) yields `valid: false` unless the matched credential query sets `require_cryptographic_holder_binding: false`. mDOC device authentication is always required.
+
+**National PID types.** A wallet may answer `vct_values: ["urn:eudi:pid:1"]` with a national PID such as `urn:eudi:pid:de:1` (PID Rulebook PID_14, OpenID4VP 1.0 Appendix B.3.5). Such a credential matches when its issuer-signed `aka_vcts` lists a requested type, or when you declare the inheritance out of band:
+
+```ts
+await verifyPresentation(vpToken, query, {
+  nonce,
+  audience: verifierClientId,
+  trustStore,
+  vctAncestors: { "urn:eudi:pid:de:1": ["urn:eudi:pid:1"] }, // walked transitively
+});
+// result.parsed.vct is still the credential's own type, 'urn:eudi:pid:de:1'
+```
+
+Type Metadata is never fetched to resolve `extends`.
+
+**`trusted_authorities`.** An `aki` value is the base64url (unpadded) KeyIdentifier of an AuthorityKeyIdentifier in the credential's certificate chain (OpenID4VP 1.0 §6.1.1.1); the library offers the AKI of every certificate in the validated chain plus the anchor's SKI. An `etsi_tl` value is a trusted-list URL — `LotlTrustStore` anchors offer their national TL and the LOTL. Each value only satisfies an entry of its own type. The hex SKI form used before 0.14.0 still matches `aki` for one release, with a one-time deprecation warning.
 
 The `else` branch above is the right place to read `unmatched` for an ordinary
 query. For a **`credential_sets` disjunction** it is not the whole story: the
@@ -231,9 +253,9 @@ const req = await createSignedAuthorizationRequest({
   responseUri: "https://verifier.example.com/response",
   nonce,
   signer: verifierKeyPair,          // CryptoKeyPair with public+private
-  certificateChain: [leafCertDer],  // DER-encoded, leaf SAN DNSName must include hostname when one is given
+  certificateChain: [leafCertDer],  // DER; leaf (+ intermediates), never the trust anchor; leaf SAN DNSName must include hostname when one is given
   encryptionKey: {
-    publicJwk: encryptionPublicJwk, // must include alg, e.g. "ECDH-ES"
+    publicJwk: encryptionPublicJwk, // a fresh key pair per request; must include alg, e.g. "ECDH-ES"
   },
   vpFormatsSupported: {
     "dc+sd-jwt": { "sd-jwt_alg_values": ["ES256"] },
@@ -264,6 +286,12 @@ await createSignedAuthorizationRequest({
 The check verifies the leaf's signature against its own public key rather than comparing Subject and Issuer DN strings. That distinction is deliberate: [GHSA-4c2f-96cf-f5fc](https://github.com/openeudi/openid4vp/security/advisories/GHSA-4c2f-96cf-f5fc) was a DN-string-equality bug, and a DN comparison here would both miss a re-signed certificate and wrongly reject a legitimate cross-signed one.
 
 The emitted `client_metadata` carries the 1.0 Final shape: `encrypted_response_enc_values_supported: ["A128GCM", ...]`.
+
+### Request keys and certificate chain (HAIP 1.0 §5)
+
+- **Ephemeral encryption key.** "Verifiers MUST supply ephemeral encryption public keys specific to each Authorization Request." Generate a new `encryptionKey` for every request and keep its private key only to decrypt that request's response. The library cannot tell whether a key was reused, so this is on you.
+- **`kid`.** OpenID4VP 1.0 §5.1 requires a `kid` on every JWK in `client_metadata.jwks`. A `publicJwk` without one is given its RFC 7638 SHA-256 thumbprint as `kid`; a `kid` you set is kept.
+- **No trust anchor in `x5c`.** "The X.509 certificate of the trust anchor MUST NOT be included in the x5c JOSE header." A `certificateChain` with more than one certificate whose last certificate is self-signed is rejected with `SignedRequestBuildError: trust_anchor_in_chain`. Pass the leaf and any intermediates only.
 
 ## Authorization responses (direct_post and direct_post.jwt)
 
@@ -327,10 +355,13 @@ if (decrypted.state !== submittedState) {
 }
 
 const result = await verifyAuthorizationResponse(decrypted, dcqlQuery, {
-  trustedCertificates: [issuerCertDer],
+  trustStore,
   nonce,
+  clientId: verifierClientId, // also the expected KB-JWT `aud`
 });
 ```
+
+If the wallet answered with an OpenID4VP 1.0 §8.5 error response (for example the user declined), `verifyAuthorizationResponse` throws `WalletErrorResponseError` with the wallet's `code` (`access_denied`, `wallet_unavailable`, …), `description` and `state` — encrypted or not.
 
 `verifyAuthorizationResponse` also accepts the JWE directly via `{ response: jwe }` together with `options.decryptionKey` — but that path makes the `state` check easy to skip, since the caller never holds the decrypted envelope. Prefer the explicit two-step pattern above.
 
@@ -384,11 +415,14 @@ Other algorithms throw `UnsupportedJweError`.
 Both `parsePresentation` and `verifyPresentation` accept:
 
 - `nonce` (required) — the nonce bound into the VP token at creation time.
-- `requireKeyBinding?` — force SD-JWT holder-binding verification even when the issuer JWT carries no `cnf` claim. When the credential **is** holder-bound (`cnf` present), a KB-JWT is **always** required regardless of this flag — fail-closed, not opt-in. This flag only extends the requirement to credentials that lack `cnf`. Default `false`. See [SD-JWT VC](#sd-jwt-vc).
+- `audience?` — the verifier's Client Identifier, which the KB-JWT `aud` must equal (OpenID4VP 1.0 Appendix B.3.6). **Required whenever a KB-JWT is verified** — `MissingAudienceError` is thrown otherwise. `verifyAuthorizationResponse` defaults it to `clientId`. An array `aud` is rejected.
+- `requireKeyBinding?` — force SD-JWT holder-binding verification even when the issuer JWT carries no `cnf` claim. When the credential **is** holder-bound (`cnf` present), a KB-JWT is **always** required regardless of this flag — fail-closed, not opt-in. Default `false` for the parsers; `verifyPresentation` / `verifyAuthorizationResponse` also require it whenever the matched query does not set `require_cryptographic_holder_binding: false`. See [SD-JWT VC](#sd-jwt-vc).
+- `kbJwtMaxAge?` — largest accepted KB-JWT age in seconds, judged by `iat` and widened by `clockSkewTolerance` on both sides. Default 300.
+- `vctAncestors?` — *(`verifyPresentation` / `verifyAuthorizationResponse`)* out-of-band SD-JWT VC type inheritance, e.g. `{ "urn:eudi:pid:de:1": ["urn:eudi:pid:1"] }`. See [Verifying presentations against a query](#verifying-presentations-against-a-query).
 - `mdocSessionTranscript?` — CBOR bytes of the ISO 18013-5 `SessionTranscript` for the current OpenID4VP exchange. **Required** to verify mDOC device authentication; the mDOC parser fails closed without it. For `direct_post.jwt`, `verifyAuthorizationResponse` can build this for you from `clientId`/`responseUri` — see [mDOC SessionTranscript on the encrypted path](#mdoc-sessiontranscript-on-the-encrypted-path). See [mDOC](#mdoc).
 - `sessionTranscriptProfile?` — *(`VerifyAuthorizationResponseOptions` only — the `direct_post`/`direct_post.jwt` auto-build described above)* which `SessionTranscript` shape to build from `clientId`/`responseUri`/`nonce`: `'iso-18013-7'` (default) builds the Annex B, `apu`-derived transcript for id2/id3-era wallets; `'openid4vp-1.0'` builds the OpenID4VP 1.0-Final `OpenID4VPHandover` transcript instead. See [mDOC SessionTranscript on the encrypted path](#mdoc-sessiontranscript-on-the-encrypted-path).
 - `verifierEncryptionJwk?` — *(`VerifyAuthorizationResponseOptions` only)* the verifier's response-encryption public JWK. Required on the encrypted path when `sessionTranscriptProfile: 'openid4vp-1.0'` is used, to derive the handover's JWK thumbprint; ignored for the `'iso-18013-7'` profile.
-- `trustedCertificates` (required when `trustStore` is unset) — DER-encoded issuer leaf certificates for the 0.4.x byte-equality trust check. Deprecated since 0.5.0 — pass an empty array and supply `trustStore` for production deployments.
+- `trustedCertificates?` — DER-encoded issuer leaf certificates for the 0.4.x byte-equality trust check, used only when `trustStore` is unset. Deprecated since 0.5.0 — supply `trustStore` instead. Optional since 0.14.0.
 - `trustStore?` — `TrustStore` instance for full RFC 5280 chain validation (e.g. `LotlTrustStore`, `StaticTrustStore`, or `CompositeTrustStore`). When set, takes precedence over `trustedCertificates`.
 
   The signer certificate (`x5c[0]` / `x5chain[0]`) is trusted when it **is** an anchor (byte-identical DER) or **chains to** one through verified signatures; the remaining `x5c` / `x5chain` entries are untrusted path candidates and never anchors. A list longer than 10 certificates, signer included, is rejected as malformed before any entry is parsed. Anchors may therefore be roots — such as the IACA certificates an ETSI TS 119 602 PID-providers list publishes — or the document-signer certificate itself:
@@ -399,10 +433,10 @@ Both `parsePresentation` and `verifyPresentation` accept:
   // DER bytes of every certificate listed for the PID providers you accept:
   // IACA roots and directly-listed signer certificates alike.
   const trustStore = new StaticTrustStore(listedCertificates);
-  await parsePresentation(vpToken, { trustedCertificates: [], trustStore, nonce, mdocSessionTranscript });
+  await parsePresentation(vpToken, { trustStore, nonce, mdocSessionTranscript });
   ```
 
-  Each link's signature, validity now **and** at issuance time (MSO `signed` / SD-JWT `iat`), `basicConstraints` cA + `keyUsage` keyCertSign on every CA, `digitalSignature` on the signer, `pathLenConstraint`, `nameConstraints` and a 5-certificate maximum are enforced. For `mso_mdoc`, built chains must also follow the ISO 18013-5 Annex B profile: the document signer carries EKU `1.0.18013.5.1.2` (`reason: 'extended_key_usage'` otherwise) and `keyUsage` is mandatory. A signer that is itself the listed anchor is trusted by presence and exempt from that profile. Anchors are never matched by Subject DN alone.
+  Each link's signature, validity now **and** at issuance time (MSO `signed` / SD-JWT `iat`), `basicConstraints` cA + `keyUsage` keyCertSign on every CA, `digitalSignature` on the signer, `pathLenConstraint`, `nameConstraints` and a 5-certificate maximum are enforced, and a path certificate with a critical extension the validator does not process (anything but basicConstraints, keyUsage, extKeyUsage, subjectAltName, nameConstraints, AKI/SKI, CRL distribution points, AIA and qcStatements) is rejected with `reason: 'unrecognised_critical_extension'` (RFC 5280 §4.2) — policy extensions included, since policy processing is not implemented. For `mso_mdoc`, built chains must also follow the ISO 18013-5 Annex B profile: the document signer carries EKU `1.0.18013.5.1.2` (`reason: 'extended_key_usage'` otherwise) and `keyUsage` is mandatory. A signer that is itself the listed anchor is trusted by presence and exempt from that profile. Anchors are never matched by Subject DN alone.
 
   > **`LotlTrustStore` requires an `xmldsigjs` crypto engine.** Trusted lists are
   > verified as signed XML, and this library does not pick a WebCrypto provider on
@@ -421,9 +455,8 @@ Both `parsePresentation` and `verifyPresentation` accept:
 - `revocationPolicy?` — `'skip'` (default) | `'prefer'` | `'require'`. Controls whether the chain validator consults OCSP / CRL.
 - `fetcher?` — HTTP transport for CRL/OCSP/LOTL fetches. Defaults to a guarded fetcher — see [Network access](#network-access). A fetcher you supply **replaces** the guards; wrap it with `createGuardedFetcher({ fetch: yourFetcher })` to keep them.
 - `cache?` — cache for CRL/OCSP/LOTL artefacts. Defaults to `new InMemoryCache()`.
-- `clockSkewTolerance?` — seconds of slack applied to certificate validity checks. Default 60.
+- `clockSkewTolerance?` — seconds of slack applied to certificate validity checks and to the KB-JWT `iat`/`exp`/`nbf` checks. Default 60.
 - `trustedIssuerJwks?` — opt-in alternate trust path for SD-JWT VCs whose issuer JWT lacks an `x5c` header. The library matches by `kid` (or iterates the array when no `kid` is present) and skips chain validation entirely. Intended for harness setups (e.g. OIDF conformance suite) where the wallet signs without `x5c` and the verifier knows the signing key out-of-band. **Not recommended for production verifiers** — `trustStore` is the secure path.
-- `audience?` — expected audience for key binding JWT verification.
 - `allowedAlgorithms?` — restrict signature algorithms. Defaults to `['ES256','ES384','ES512']`.
 - `skipTrustCheck?` — skip trust checks entirely (dev/test only).
 - `expectedDocType?` — for mDOC verification, lock the credential `docType` (or SD-JWT `vct`).
@@ -439,7 +472,7 @@ The library dereferences URLs only inside the trust module, and only when you op
 | CRL distribution points | `revocationPolicy` `'prefer'`/`'require'` | GET |
 | OCSP responders (AIA) | `revocationPolicy` `'prefer'`/`'require'` | POST |
 
-It does **not** fetch SD-JWT VC issuer metadata (`/.well-known/jwt-vc-issuer`), `jwks_uri`, Type Metadata (`vct` resolution), Token Status Lists, or `x5u`. Issuer keys come from `x5c` or `trustedIssuerJwks`. **If your application dereferences any of those itself, it is responsible for applying the SD-JWT VC draft-19 HTTP retrieval rules** — `createGuardedFetcher()` (HTTPS-only by default) is exported for exactly that.
+It does **not** fetch SD-JWT VC issuer metadata (`/.well-known/jwt-vc-issuer`), `jwks_uri`, Type Metadata (`vct` resolution — use `aka_vcts` or `vctAncestors`), Token Status Lists, or `x5u`. Issuer keys come from `x5c` or `trustedIssuerJwks`. **If your application dereferences any of those itself, it is responsible for applying the SD-JWT VC draft-19 HTTP retrieval rules** — `createGuardedFetcher()` (HTTPS-only by default) is exported for exactly that.
 
 All library fetches go through `createGuardedFetcher({ allowHttp: true })` unless you pass `fetcher`. It enforces:
 
@@ -470,8 +503,8 @@ Selective Disclosure JSON Web Token Verifiable Credentials. The token is a strin
 - Decodes the issuer JWT and extracts the `x5c` certificate chain
 - Verifies the issuer certificate against your trusted set
 - Checks credential expiry from the `exp` claim
-- Resolves selective disclosures using SHA-256
-- Enforces holder binding (key binding JWT / KB-JWT): **mandatory whenever the issuer JWT carries a `cnf` claim** — the credential is holder-bound and verification fails closed if the KB-JWT is missing. Set `requireKeyBinding: true` to extend this requirement to credentials without `cnf`. When a KB-JWT is required, the parser verifies its signature against the `cnf.jwk` holder key and validates its claims: a non-empty `nonce` (matched against `options.nonce`), `sd_hash` (over the SD-JWT + disclosures), `audience` (when `options.audience` is set), and standard JWT claims including `iat`.
+- Resolves selective disclosures with the issuer's `_sd_alg` (`sha-256` by default; `sha-384` and `sha-512` also supported, anything else rejected). Disclosures must be base64url; a disclosure sent twice, or a digest that appears more than once, is rejected (RFC 9901 §7.1)
+- Enforces holder binding (key binding JWT / KB-JWT): **mandatory whenever the issuer JWT carries a `cnf` claim** — the credential is holder-bound and verification fails closed if the KB-JWT is missing. Set `requireKeyBinding: true` to extend this requirement to credentials without `cnf` (the query-level default does this for you in `verifyPresentation`). When a KB-JWT is present, the parser verifies its signature against the `cnf.jwk` holder key and checks RFC 9901 §7.3: `typ` is `kb+jwt`; `iat`, `nonce`, `sd_hash` and `aud` are present; `nonce` equals `options.nonce`; `aud` is a single string equal to `options.audience`; `sd_hash` matches; and `iat` is no older than `kbJwtMaxAge` (300 s) nor in the future, give or take `clockSkewTolerance`.
 
 > **Breaking change (0.9.0):** prior releases only validated the KB-JWT's nonce when a KB-JWT happened to be present and silently accepted holder-bound credentials presented *without* one. As of 0.9.0, a holder-bound credential missing its KB-JWT is rejected outright — see [CHANGELOG](./CHANGELOG.md).
 
@@ -483,50 +516,32 @@ Mobile Document credentials as defined in ISO 18013-5. The token is a CBOR-encod
 - Extracts the issuer certificate from the COSE_Sign1 `issuerAuth` (x5chain label 33)
 - Verifies the certificate against your trusted set — with `trustStore`, by building a chain from the document signer to an anchor such as an IACA (see [`trustStore`](#parseoptions--verifyoptions))
 - Checks the validity period from `validityInfo`
-- Extracts claims from the `eu.europa.ec.eudi.pid.1` namespace
+- Extracts the claims of every namespace (into `claims`, and grouped by namespace into `namespacedClaims`)
 - Verifies each `IssuerSignedItem`'s digest against the MSO's `valueDigests`, computed over the full tag-24 `IssuerSignedItemBytes` (`#6.24(bstr .cbor IssuerSignedItem)`) per ISO 18013-5 §9.1.2.4 — not just the inner CBOR — matching how real wallets encode mdocs. mDOC verification, including this digest check and device authentication below, is validated against the OIDF conformance suite acting as an independent ISO 18013-5 mdl wallet.
 - Performs full ISO 18013-5 §9.1.3 device authentication: verifies the `DeviceSignature` (COSE_Sign1) over `DeviceAuthentication`, which binds the `SessionTranscript`/nonce, using the EC2 device key committed in the MSO's `deviceKeyInfo`. **`DeviceMac` (COSE_Mac0) is not supported and is rejected.** The parser fails closed if `deviceSigned`, the `SessionTranscript` (`options.mdocSessionTranscript`), or the device key is missing — a captured `issuerSigned` payload alone is no longer accepted as proof of presentation.
 
 > **Breaking change (0.9.0):** prior releases verified only the issuer-signed data (`issuerSigned`), so a replayed or intercepted mDOC device response — without any proof the presenting device held the credentialed key — was accepted. As of 0.9.0, device authentication is mandatory and fails closed; see [CHANGELOG](./CHANGELOG.md).
 
-## Custom parsers
+## Parsers
 
-Implement `ICredentialParser` to add support for additional credential formats:
-
-```ts
-import type { ICredentialParser, ParseOptions, CredentialFormat, PresentationResult } from "@openeudi/openid4vp";
-
-class MyCustomParser implements ICredentialParser {
-  readonly format: CredentialFormat = "sd-jwt-vc"; // or 'mdoc'
-
-  canParse(vpToken: unknown): boolean {
-    // Return true if this parser can handle the token
-    return typeof vpToken === "string" && vpToken.startsWith("custom:");
-  }
-
-  async parse(vpToken: unknown, options: ParseOptions): Promise<PresentationResult> {
-    // Validate trust using options.trustedCertificates
-    // Verify nonce using options.nonce
-    // Extract and return claims
-    return {
-      valid: true,
-      format: this.format,
-      claims: { age_over_18: true },
-      issuer: { certificate: new Uint8Array(), country: "DE" },
-    };
-  }
-}
-```
+`parsePresentation`, `verifyPresentation` and `verifyAuthorizationResponse` use a fixed pair of parsers — `SdJwtParser` and `MdocParser`, both exported for direct use. There is no API to register another format; `ICredentialParser` is exported as the type those two implement.
 
 ### PresentationResult
 
-| Field    | Type               | Description                                |
-| -------- | ------------------ | ------------------------------------------ |
-| `valid`  | `boolean`          | Whether the credential passed all checks   |
-| `format` | `CredentialFormat` | `'sd-jwt-vc'` or `'mdoc'`                  |
-| `claims` | `CredentialClaims` | Extracted identity claims                  |
-| `issuer` | `IssuerInfo`       | Issuer certificate and country             |
-| `error`  | `string?`          | Reason for failure when `valid` is `false` |
+| Field              | Type                    | Description                                                                 |
+| ------------------ | ----------------------- | --------------------------------------------------------------------------- |
+| `valid`            | `boolean`               | Whether the credential passed all checks                                    |
+| `format`           | `CredentialFormat`      | `'sd-jwt-vc'` or `'mdoc'`                                                   |
+| `claims`           | `CredentialClaims`      | Every disclosed claim by name; treat as `Record<string, unknown>`           |
+| `issuer`           | `IssuerInfo`            | Issuer certificate; `country` is a TLD guess for SD-JWT and `''` for mDOC   |
+| `vct`              | `string?`               | SD-JWT VC type                                                              |
+| `akaVcts`          | `string[]?`             | Issuer-signed `aka_vcts` (SD-JWT VC)                                        |
+| `docType`          | `string?`               | mDOC docType                                                                |
+| `namespacedClaims` | `Record<…>?`            | mDOC claims grouped by namespace                                            |
+| `trust`            | `TrustEvaluationResult?`| Chain, anchor, revocation, provenance, `trustedAuthorities` (with `trustStore`) |
+| `error`            | `string?`               | Reason for failure when `valid` is `false`                                  |
+
+`CredentialClaims` still declares `age_over_18`, `age_over_21`, `nationality`, `resident_country` and `family_name_birth`, deprecated: an EU PID has none of the age fields, and its SD-JWT VC form uses `nationalities` (an array). They go in 1.0.0.
 
 ## Error types
 
@@ -540,6 +555,10 @@ class MyCustomParser implements ICredentialParser {
 | `HaipValidationError`      | HAIP query constraint violated            | DCQL query fails `validateHaipQuery`               |
 | `LotlConfigurationError`   | No xmldsigjs crypto engine registered     | `LotlTrustStore` used without `Application.setEngine` |
 | `GuardedFetchError`        | refusing … / exceeds … / timed out      | A guarded fetch is refused or cut off (`reason`)   |
+| `MissingAudienceError`     | An expected audience is required …      | A KB-JWT is verified without `audience` (or `clientId`) |
+| `WalletErrorResponseError` | Wallet returned an error response: `{code}` | The wallet sent an OpenID4VP §8.5 error response (`code`, `description`, `state`) |
+| `CertificateChainError`    | (per check)                             | Chain validation fails; see `reason` (e.g. `unrecognised_critical_extension`) |
+| `SignedRequestBuildError`  | (per check)                             | `createSignedAuthorizationRequest` input is invalid; see `code` (e.g. `trust_anchor_in_chain`) |
 
 ```ts
 import { MalformedCredentialError, ExpiredCredentialError } from "@openeudi/openid4vp";
@@ -559,7 +578,7 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 
 **What is implemented:**
 
-- **SD-JWT VC** — full cryptographic verification (issuer JWT signature via `x5c`, transitive disclosure-hash check, key binding JWT signature + `sd_hash`, nonce check). Holder binding (KB-JWT) is **mandatory and fails closed** whenever the issuer JWT carries a `cnf` claim; `requireKeyBinding` extends the requirement to credentials without `cnf`. Optional `trustedIssuerJwks` alternate trust path for VCs without `x5c`.
+- **SD-JWT VC** — full cryptographic verification (issuer JWT signature via `x5c`, transitive disclosure-hash check with `_sd_alg`, key binding JWT signature, `typ`, `sd_hash`, `nonce`, `aud` and `iat` window). Holder binding (KB-JWT) is **mandatory and fails closed** whenever the issuer JWT carries a `cnf` claim, and whenever the matched DCQL query does not opt out with `require_cryptographic_holder_binding: false`. Optional `trustedIssuerJwks` alternate trust path for VCs without `x5c`.
 - **mDOC / ISO 18013-5** `mso_mdoc` format — CBOR decoding, claim extraction, COSE_Sign1 signature verification, MobileSecurityObject validity enforcement, IssuerSignedItem digest verification. Device authentication (ISO 18013-5 §9.1.3) is **mandatory and fails closed**: the `DeviceSignature` (COSE_Sign1) over `DeviceAuthentication`/`SessionTranscript` is verified against the MSO-committed device key. `DeviceMac` (COSE_Mac0) is **not supported and is rejected**.
 - **DCQL** — authorization request builder with DCQL query, matching via [@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql), `verifyPresentation` for combined crypto + match.
 - **HAIP** — `buildHaipQuery` / `validateHaipQuery` helpers for the High Assurance Interoperability Profile, plus `buildCredentialSetQuery` / `validateCredentialSetQuery` for `credential_sets` disjunctions.
@@ -568,7 +587,7 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 - **X.509 chain validation** — RFC 5280 chain building including `nameConstraints`, `StaticTrustStore`, `CompositeTrustStore`; IACA → document-signer chains for `mso_mdoc` with the ISO 18013-5 Annex B certificate profile.
 - **Revocation checking** — OCSP-first with CRL fallback (`revocationPolicy: 'skip' | 'prefer' | 'require'`).
 - **EU List of Trusted Lists** — `LotlTrustStore` resolves national trust lists via signed XML fetch + XAdES verification; populates `provenance` (LoA, qualified status, country, service name) on verified presentations.
-- **OIDF conformance** — automated against the OpenID Foundation conformance suite in CI (`oidf-pr.yml` happy-flow gate, `oidf-release.yml` full plan).
+- **OIDF conformance** — automated against the OpenID Foundation conformance suite in CI: `oidf-pr.yml` runs the OpenID4VP 1.0-Final verifier happy flow for `sd_jwt_vc` and `iso_mdl` (`x509_san_dns`, signed request); `oidf-release.yml` adds that plan's negative modules (session transcript, KB-JWT nonce / aud / signature / `iat` past and future, `sd_hash`, credential signature). There is no HAIP plan run and no `x509_hash` run yet; `--profile=full` is a single ID3 happy-flow module.
 - **Algorithm allowlist** — ES256/384/512 (ECDSA only per EUDI policy); configurable via `allowedAlgorithms`.
 
 **What is NOT yet implemented** (planned for follow-up releases):
@@ -576,7 +595,7 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 - Multi-credential DCQL queries (multiple query ids) and multi-presentation arrays per query id — currently rejected with `MultipleCredentialsNotSupportedError`.
 - SIOPv2 (Self-Issued OpenID Provider) identity flows.
 
-EUDI Architecture Reference Framework (ARF) alignment: tracks OpenID4VP 1.0 final. Full ARF 1.4+ profile compliance will be added before a stable 1.0.
+EUDI Architecture Reference Framework (ARF) alignment: tracks OpenID4VP 1.0 final. Full ARF profile compliance (ARF v3.0.0, 2026-07-23, at the time of writing) is a goal for a stable 1.0.
 
 ## OIDF Conformance Testing
 
@@ -586,7 +605,7 @@ Verifier-side conformance is automated against a self-hosted OpenID Foundation c
 
 - **[@openeudi/core](https://www.npmjs.com/package/@openeudi/core)** -- Framework-agnostic EUDI Wallet verification protocol engine with session management and QR code generation.
 - **[@openeudi/dcql](https://www.npmjs.com/package/@openeudi/dcql)** -- DCQL query matching engine used internally by `verifyPresentation`.
-- **[eIDAS Pro](https://eidas-pro.eu)** -- Managed verification service with admin dashboard, webhook integrations, and plugin support for WooCommerce and Shopify.
+- **[eIDAS Pro](https://eidas-pro.com)** -- Managed verification service with admin dashboard, webhook integrations, and plugin support for WooCommerce and Shopify.
 
 ## Community integrations
 
@@ -609,6 +628,8 @@ See [CHANGELOG.md](./CHANGELOG.md) for per-release changes. Key migration moment
 - **0.11.0** — **BREAKING:** `createSignedAuthorizationRequest` now rejects a self-signed leaf certificate with `SignedRequestBuildError: self_signed_leaf`, per HAIP 1.0 Final. Verifiers using a self-signed certificate for their own identity must either move to a CA-issued certificate (the correct fix) or pass `allowSelfSignedCertificate: true` to keep the previous behaviour. Verification of wallet presentations is unaffected — this concerns only the verifier's own request-signing certificate.
 - **0.10.0** — `createSignedAuthorizationRequest` gains `clientIdPrefix` (`x509_san_dns` default, or `x509_hash`), and `hostname` becomes optional — required only for `x509_san_dns`, but still validated against the leaf SAN whenever supplied. **Wire change for existing callers:** the emitted `client_metadata` no longer carries the singular ID3 `authorization_encrypted_response_alg` / `authorization_encrypted_response_enc` fields added in 0.8.0. Verifiers that read the 1.0 Final `encrypted_response_enc_values_supported` array (and `alg` from `client_metadata.jwks`) are unaffected; anything still reading the singular fields needs updating.
 - **0.13.0** — **BREAKING:** SD-JWT VC issuer JWTs must carry `typ: dc+sd-jwt` (draft-ietf-oauth-sd-jwt-vc-19); `vc+sd-jwt` is rejected unless you pass `allowLegacyVcSdJwtTyp: true`, which is already deprecated and goes in 1.0.0. **BREAKING:** trust-module fetches (LOTL / national TL, CRL, OCSP) are SSRF-guarded by default — a CA, OCSP responder or trusted list on a private network now needs `fetcher: createGuardedFetcher({ allowHttp: true, allowPrivateNetworks: true })`. IACA → document-signer chain building only applies on the `trustStore` path: `trustedCertificates` is still byte-equality, so pass `trustStore: new StaticTrustStore([...])` to accept PIDs whose list publishes the IACA rather than the signer.
+
+- **Unreleased (next minor)** — **BREAKING:** a KB-JWT needs an expected audience (`audience`, or `clientId` on `verifyAuthorizationResponse`; `MissingAudienceError` otherwise), its `aud` must be one string equal to it, and `typ: kb+jwt`, `iat` (within `kbJwtMaxAge`, default 300 s) and `sd_hash` are required. **BREAKING:** `verifyPresentation` / `verifyAuthorizationResponse` reject a bearer SD-JWT VC unless the query sets `require_cryptographic_holder_binding: false`. **BREAKING:** `trusted_authorities` `aki` values are base64url AKI key ids (hex still matches for one release, with a warning), and each value only matches its own type. **BREAKING:** certificates with unrecognised critical extensions are rejected; `createSignedAuthorizationRequest` rejects a `certificateChain` ending in the trust anchor. See [CHANGELOG](./CHANGELOG.md).
 
 ## License
 

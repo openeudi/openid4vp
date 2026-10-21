@@ -7,6 +7,7 @@ import {
     createLotlSigner,
 } from './helpers/lotl-fixtures.js';
 import { createCa } from './helpers/synthetic-ca.js';
+import { getSkiBase64Url, getSkiHex } from '../../src/trust/x509-utils.js';
 
 describe('LotlTrustStore — basic resolution', () => {
     it('returns LOTL-sourced anchors matching the issuer DN', async () => {
@@ -62,7 +63,15 @@ describe('LotlTrustStore — basic resolution', () => {
         expect(anchors[0].source).toBe('lotl');
         expect(anchors[0].metadata?.country).toBe('FR');
         expect(anchors[0].metadata?.qualified).toBe(true);
-        expect(anchors[0].trustedAuthorityIds).toHaveLength(1);
+        expect(anchors[0].trustedAuthorities).toEqual([
+            { type: 'aki', value: getSkiBase64Url(tspRoot.certificate) },
+            { type: 'etsi_tl', value: 'http://fr.test/tl.xml' },
+            { type: 'etsi_tl', value: 'http://ec.test/eu-lotl.xml' },
+        ]);
+        expect(anchors[0].trustedAuthorityIds).toEqual([
+            getSkiBase64Url(tspRoot.certificate),
+            getSkiHex(tspRoot.certificate),
+        ]);
     });
 
     it('returns empty when no service matches the hint', async () => {

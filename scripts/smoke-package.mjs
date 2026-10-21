@@ -186,7 +186,8 @@ await check('createSignedAuthorizationRequest exercises @peculiar/x509 + tsyring
         responseUri: `https://${hostname}/response`,
         nonce: 'smoke-nonce',
         signer,
-        certificateChain: [new Uint8Array(cert.rawData), new Uint8Array(caCert.rawData)],
+        // Leaf only: HAIP 1.0 §5 forbids the trust anchor in x5c.
+        certificateChain: [new Uint8Array(cert.rawData)],
         encryptionKey: { publicJwk },
         vpFormatsSupported: { 'dc+sd-jwt': { 'sd-jwt_alg_values': ['ES256'] } },
     };

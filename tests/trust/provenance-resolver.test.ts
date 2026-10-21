@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ProvenanceResolver } from '../../src/trust/ProvenanceResolver.js';
 import type { NationalTlSnapshot } from '../../src/trust/lotl-types.js';
 import { createCa } from './helpers/synthetic-ca.js';
+import { getSkiBase64Url, getSkiHex } from '../../src/trust/x509-utils.js';
 
 describe('ProvenanceResolver — LOTL match', () => {
     it('maps a CA/QC + granted service to qualified=true', async () => {
@@ -31,7 +32,10 @@ describe('ProvenanceResolver — LOTL match', () => {
         expect(out!.provenance.country).toBe('FR');
         expect(out!.provenance.serviceName).toBe('ANTS Qualified CA');
         expect(out!.provenance.loa).toBeUndefined();
-        expect(out!.trustedAuthorityIds).toHaveLength(1);
+        expect(out!.trustedAuthorityIds).toEqual([
+            getSkiBase64Url(anchor.certificate),
+            getSkiHex(anchor.certificate),
+        ]);
     });
 
     it('maps eIDAS-high URI to loa=high', async () => {

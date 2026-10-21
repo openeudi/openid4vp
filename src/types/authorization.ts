@@ -34,7 +34,14 @@ export interface SignedAuthorizationRequestInput {
     responseMode?: 'direct_post' | 'direct_post.jwt';
     signer: CryptoKeyPair;
     signingAlgorithm?: 'ES256' | 'ES384' | 'RS256';
+    /** DER certificates for `x5c`: the leaf, then intermediates — never the trust anchor (HAIP 1.0 §5). */
     certificateChain: Uint8Array[];
+    /**
+     * Response-encryption key for `direct_post.jwt`. Generate a fresh,
+     * ephemeral key pair for every request (HAIP 1.0 §5) and keep the private
+     * key only for decrypting that request's response. `publicJwk` must carry
+     * `alg`; without `kid`, its RFC 7638 thumbprint is used as `kid`.
+     */
     encryptionKey?: {
         publicJwk: JsonWebKey;
         supportedEncValues?: string[];

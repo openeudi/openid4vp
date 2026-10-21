@@ -11,22 +11,46 @@ export interface ParseOptions {
      * this path — use `trustStore` for that.
      * @deprecated since 0.5.0. Use `trustStore: new StaticTrustStore([...])`
      * with root/intermediate CAs for RFC 5280 chain validation. Scheduled
-     * for removal in 1.0.0.
+     * for removal in 1.0.0. Optional since 0.14.0: it is ignored whenever
+     * `trustStore` is set, and an omitted value counts as empty.
      */
-    trustedCertificates: Uint8Array[];
+    trustedCertificates?: Uint8Array[];
 
     nonce: string;
 
-    /** Expected audience for key binding JWT verification. Optional. */
+    /**
+     * Expected audience of the key binding JWT: the verifier's Client
+     * Identifier as sent in the request (OpenID4VP 1.0 Appendix B.3.6), e.g.
+     * `x509_hash:…` or `x509_san_dns:verifier.example`.
+     *
+     * Required whenever a KB-JWT is verified — the parser throws
+     * `MissingAudienceError` otherwise. `verifyAuthorizationResponse` defaults
+     * it to `clientId`. The KB-JWT `aud` must be a single string equal to this
+     * value; a missing `aud` or an array `aud` is rejected.
+     */
     audience?: string;
 
     /**
      * Force holder-binding verification even when the issuer JWT carries no
      * `cnf` claim. When the credential IS holder-bound (`cnf` present), a
      * KB-JWT is ALWAYS required regardless of this flag — this flag only
-     * extends the requirement to credentials that lack `cnf`. Default: false.
+     * extends the requirement to credentials that lack `cnf`. Default: false
+     * for the parsers.
+     *
+     * `verifyPresentation` / `verifyAuthorizationResponse` additionally
+     * require holder binding whenever the matched DCQL credential query does
+     * not set `require_cryptographic_holder_binding: false` (OpenID4VP 1.0
+     * §6.1 — the default is `true`).
      */
     requireKeyBinding?: boolean;
+
+    /**
+     * Largest accepted age, in seconds, of a key binding JWT judged by its
+     * `iat` (RFC 9901 §7.3 step 5e). `clockSkewTolerance` is added on both
+     * sides, so an `iat` up to that many seconds in the future is also
+     * accepted. Default 300.
+     */
+    kbJwtMaxAge?: number;
 
     /** Allowed JWT signature algorithms. Defaults to ['ES256', 'ES384', 'ES512']. */
     allowedAlgorithms?: string[];
@@ -35,8 +59,14 @@ export interface ParseOptions {
      * CBOR bytes of the ISO 18013-5 `SessionTranscript` data item for the current
      * OpenID4VP exchange. REQUIRED to verify mDOC device authentication — the
      * mDOC parser fails closed without it, since device proof-of-possession and
-     * replay/nonce binding cannot otherwise be checked. Construct it from the
-     * OpenID4VP handover (client_id, response_uri, nonce, mdoc-generated-nonce).
+     * replay/nonce binding cannot otherwise be checked.
+     *
+     * Which handover to build depends on the wallet: OpenID4VP 1.0 wallets use
+     * the 1.0 `OpenID4VPHandover` (Appendix B.2.6: client_id, nonce, the JWK
+     * thumbprint of the verifier's encryption key, response_uri) — see
+     * `buildOpenID4VPHandoverSessionTranscript`. Draft-era wallets use the
+     * ISO 18013-7 Annex B `OID4VPHandover` with the `mdoc-generated-nonce` —
+     * see `buildOid4vpSessionTranscript`.
      */
     mdocSessionTranscript?: Uint8Array;
 
@@ -72,8 +102,12 @@ export interface ParseOptions {
     trustStore?: TrustStore;
 
     /**
-     * Revocation checking policy. Default `'skip'`. `'prefer'` and `'require'`
-     * ship in 0.5.0 workstream A.2 — passing them today throws.
+     * Certificate revocation (CRL / OCSP) policy for the issuer chain built
+     * from `trustStore`. Default `'skip'`.
+     * - `'prefer'`: check; a revoked certificate fails, an unreachable
+     *   responder yields `revocationStatus: 'unknown'`.
+     * - `'require'`: check; a revoked certificate fails and so does a check
+     *   that cannot complete.
      */
     revocationPolicy?: 'skip' | 'prefer' | 'require';
 
@@ -89,7 +123,10 @@ export interface ParseOptions {
     /** Cache for CRL/OCSP/LOTL artefacts. Defaults to `new InMemoryCache()`. */
     cache?: Cache;
 
-    /** Clock-skew tolerance in seconds for certificate validity checks. Default 60. */
+    /**
+     * Clock-skew tolerance in seconds for certificate validity checks and for
+     * the key binding JWT `iat` / `exp` / `nbf` checks. Default 60.
+     */
     clockSkewTolerance?: number;
 
     /**

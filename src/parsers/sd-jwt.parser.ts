@@ -1,7 +1,8 @@
 import { splitSdJwt, decodeSdJwt, getClaims } from '@sd-jwt/decode';
 import { decodeProtectedHeader, jwtVerify, importX509, importJWK } from 'jose';
 
-import { MalformedCredentialError } from '../errors.js';
+import { base64UrlToBytes, bytesToBase64Url } from '../encoding/base64url.js';
+import { MalformedCredentialError, MissingAudienceError } from '../errors.js';
 import type { TrustEvaluationResult } from '../trust/TrustEvaluator.js';
 import type { IssuerInfo } from '../types/issuer.js';
 import type { CredentialFormat, CredentialClaims, PresentationResult } from '../types/presentation.js';
@@ -30,15 +31,36 @@ function normalizeTyp(typ: unknown): string | undefined {
     return lower.startsWith('application/') ? lower.slice('application/'.length) : lower;
 }
 
+const KB_JWT_TYP = 'kb+jwt';
+const DEFAULT_KB_JWT_MAX_AGE_SECONDS = 300;
+const DEFAULT_CLOCK_SKEW_SECONDS = 60;
+
+/** Default `_sd_alg` when the claim is absent (RFC 9901 §4.1.1). */
+const DEFAULT_SD_ALG = 'sha-256';
+
 /**
- * SHA-256 hasher implementation using the Web Crypto API.
- * Compatible with the @sd-jwt/decode Hasher signature.
+ * `_sd_alg` values (IANA Named Information Hash Algorithm names) this parser
+ * supports, mapped to their Web Crypto names. Any other value is rejected
+ * explicitly rather than silently hashed with SHA-256.
  */
-const sha256Hasher: SdJwtHasher = async (data: string | ArrayBuffer, _alg: string): Promise<Uint8Array> => {
-    const encoder = new TextEncoder();
-    const input = typeof data === 'string' ? encoder.encode(data) : data;
-    const hashBuffer = await crypto.subtle.digest('SHA-256', input);
-    return new Uint8Array(hashBuffer);
+const SD_HASH_ALGORITHMS: ReadonlyMap<string, 'SHA-256' | 'SHA-384' | 'SHA-512'> = new Map([
+    ['sha-256', 'SHA-256'],
+    ['sha-384', 'SHA-384'],
+    ['sha-512', 'SHA-512'],
+]);
+
+/**
+ * Disclosure / `sd_hash` hasher using the Web Crypto API. Honours the
+ * `_sd_alg` name it is called with. Compatible with the @sd-jwt/decode
+ * Hasher signature, which passes the credential's `_sd_alg`.
+ */
+const sdJwtHasher: SdJwtHasher = async (data: string | ArrayBuffer, alg: string): Promise<Uint8Array> => {
+    const webCryptoAlg = SD_HASH_ALGORITHMS.get(alg);
+    if (!webCryptoAlg) {
+        throw new MalformedCredentialError(`Unsupported _sd_alg: ${alg}`);
+    }
+    const input = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+    return new Uint8Array(await crypto.subtle.digest(webCryptoAlg, input));
 };
 
 // Standard base64 alphabet for decoding x5c certificate entries
@@ -86,18 +108,6 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 function derToPem(base64Der: string): string {
     const lines = base64Der.match(/.{1,64}/g) || [];
     return `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----`;
-}
-
-/**
- * Encodes a Uint8Array to base64url (no padding).
- * Used by disclosure hash verification (Task 5) and KB-JWT verification (Task 6).
- */
-function bytesToBase64url(bytes: Uint8Array): string {
-    let binary = '';
-    for (const byte of bytes) {
-        binary += String.fromCharCode(byte);
-    }
-    return globalThis.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 /**
@@ -349,14 +359,15 @@ export class SdJwtParser implements ICredentialParser {
             });
         } else {
             // 0.4.0 byte-equality path — preserved verbatim for backward compatibility.
-            if (options.trustedCertificates.length === 0) {
+            const trustedCertificates = options.trustedCertificates ?? [];
+            if (trustedCertificates.length === 0) {
                 if (options.skipTrustCheck !== true) {
                     throw new MalformedCredentialError(
                         'trustedCertificates must not be empty unless skipTrustCheck is true'
                     );
                 }
             } else {
-                const isTrusted = options.trustedCertificates.some((trusted) =>
+                const isTrusted = trustedCertificates.some((trusted) =>
                     bytesEqual(trusted, issuerCertBytes!)
                 );
                 if (!isTrusted) {
@@ -374,6 +385,20 @@ export class SdJwtParser implements ICredentialParser {
         // `nationalities`). The check is therefore transitive — once a disclosure is
         // anchored, any anchor hashes found inside its disclosed value become valid
         // anchors for OTHER disclosures.
+        //
+        // RFC 9901 §7.1 also requires rejecting a digest that occurs more than
+        // once (in the payload or in disclosed values) and, by §4.2, a
+        // Disclosure sent more than once. Digests use the issuer's `_sd_alg`.
+        const sdAlgClaim = payload['_sd_alg'];
+        const sdAlg = sdAlgClaim === undefined ? DEFAULT_SD_ALG : sdAlgClaim;
+        if (typeof sdAlg !== 'string' || !SD_HASH_ALGORITHMS.has(sdAlg)) {
+            return invalidResult(`Unsupported _sd_alg: ${String(sdAlg)}`);
+        }
+        const seenDigests = new Set<string>();
+        const seed = collectAnchorHashes(payload, seenDigests);
+        if (seed.duplicate !== undefined) {
+            return invalidResult('A disclosure digest appears more than once in the SD-JWT');
+        }
         if (parts.disclosures.length > 0) {
             // Pre-decode disclosures so we can do the transitive closure.
             type DecodedDisclosure = {
@@ -383,27 +408,31 @@ export class SdJwtParser implements ICredentialParser {
                 value: unknown;
             };
             const decodedDisclosures: DecodedDisclosure[] = [];
+            const presented = new Set<string>();
             for (const disclosure of parts.disclosures) {
+                if (presented.has(disclosure)) {
+                    return invalidResult('Disclosure presented more than once');
+                }
+                presented.add(disclosure);
                 let parsed: unknown;
                 try {
-                    parsed = JSON.parse(new TextDecoder().decode(base64ToBytes(disclosure)));
+                    parsed = JSON.parse(new TextDecoder().decode(base64UrlToBytes(disclosure)));
                 } catch {
                     return invalidResult('Disclosure is not valid base64url-encoded JSON');
                 }
                 if (!Array.isArray(parsed) || (parsed.length !== 2 && parsed.length !== 3)) {
                     return invalidResult('Disclosure must be a 2- or 3-element array');
                 }
-                const hashBytes = await sha256Hasher(disclosure, 'sha-256');
+                const hashBytes = await sdJwtHasher(disclosure, sdAlg);
                 decodedDisclosures.push({
                     raw: disclosure,
-                    hash: bytesToBase64url(hashBytes),
+                    hash: bytesToBase64Url(hashBytes),
                     length: parsed.length as 2 | 3,
                     value: parsed.length === 3 ? parsed[2] : parsed[1],
                 });
             }
 
             // Seed the anchor sets from the issuer JWT payload itself.
-            const seed = collectAnchorHashes(payload);
             const kvHashes = seed.kvHashes;
             const arrayElemHashes = seed.arrayElemHashes;
 
@@ -420,7 +449,10 @@ export class SdJwtParser implements ICredentialParser {
                 }
                 if (anchored.length === 0) break;
                 for (const a of anchored) {
-                    const sub = collectAnchorHashes(a.value);
+                    const sub = collectAnchorHashes(a.value, seenDigests);
+                    if (sub.duplicate !== undefined) {
+                        return invalidResult('A disclosure digest appears more than once in the SD-JWT');
+                    }
                     for (const h of sub.kvHashes) kvHashes.add(h);
                     for (const h of sub.arrayElemHashes) arrayElemHashes.add(h);
                     const idx = remaining.indexOf(a);
@@ -461,6 +493,11 @@ export class SdJwtParser implements ICredentialParser {
             if (typeof options.nonce !== 'string' || options.nonce.length === 0) {
                 return invalidResult('A nonce is required to verify the key binding JWT');
             }
+            // Likewise the audience: without it a KB-JWT made out to another
+            // verifier would pass (OpenID4VP 1.0 Appendix B.3.6, RFC 9901 §7.3).
+            if (typeof options.audience !== 'string' || options.audience.length === 0) {
+                throw new MissingAudienceError();
+            }
 
             let holderKey: Awaited<ReturnType<typeof importJWK>>;
             try {
@@ -469,22 +506,49 @@ export class SdJwtParser implements ICredentialParser {
                 if (typeof kbAlg !== 'string' || !allowedAlgorithms.includes(kbAlg)) {
                     return invalidResult(`Unsupported KB-JWT algorithm: ${kbAlg}`);
                 }
+                // RFC 9901 §7.3 step 5d: the KB-JWT `typ` MUST be `kb+jwt`.
+                if (normalizeTyp(kbHeader.typ) !== KB_JWT_TYP) {
+                    return invalidResult(
+                        `Unsupported KB-JWT typ: ${kbHeader.typ === undefined ? '(missing)' : String(kbHeader.typ)} ` +
+                            `(expected '${KB_JWT_TYP}')`
+                    );
+                }
                 holderKey = await importJWK(cnf!['jwk'] as Record<string, unknown>, kbAlg);
             } catch (err) {
                 if (err instanceof MalformedCredentialError) throw err;
                 throw new MalformedCredentialError('Failed to import holder key from cnf.jwk');
             }
 
-            // Verify KB-JWT signature
+            // Verify the KB-JWT signature and its claims: RFC 9901 §4.3 makes
+            // iat, nonce, sd_hash and aud REQUIRED, and §7.3 step 5e bounds iat.
             let kbPayload: Record<string, unknown>;
             try {
                 const kbResult = await jwtVerify(parts.kbJwt, holderKey, {
                     algorithms: allowedAlgorithms,
-                    ...(options.audience ? { audience: options.audience } : {}),
+                    typ: KB_JWT_TYP,
+                    requiredClaims: ['iat', 'nonce', 'sd_hash', 'aud'],
+                    maxTokenAge: options.kbJwtMaxAge ?? DEFAULT_KB_JWT_MAX_AGE_SECONDS,
+                    clockTolerance: options.clockSkewTolerance ?? DEFAULT_CLOCK_SKEW_SECONDS,
                 });
                 kbPayload = kbResult.payload as unknown as Record<string, unknown>;
-            } catch {
+            } catch (err) {
+                // jose verifies the signature before the claims, so a claim
+                // failure means the signature itself was good.
+                const code = (err as { code?: unknown }).code;
+                if (code === 'ERR_JWT_CLAIM_VALIDATION_FAILED' || code === 'ERR_JWT_EXPIRED') {
+                    return invalidResult(`Key binding JWT claim validation failed: ${(err as Error).message}`);
+                }
                 return invalidResult('Key binding JWT signature verification failed');
+            }
+
+            // OpenID4VP 1.0 Appendix B.3.6: `aud` MUST be the Client Identifier —
+            // a single value, so an array `aud` is not accepted even when it
+            // contains the expected audience.
+            if (typeof kbPayload['aud'] !== 'string') {
+                return invalidResult('Key binding JWT aud must be a single string');
+            }
+            if (kbPayload['aud'] !== options.audience) {
+                return invalidResult('Key binding JWT aud does not match the expected audience');
             }
 
             // Validate nonce — must be present and match when KB-JWT is used
@@ -495,8 +559,9 @@ export class SdJwtParser implements ICredentialParser {
             // Verify sd_hash — hash of the SD-JWT content before the KB-JWT
             const disclosurePart = parts.disclosures.length > 0 ? parts.disclosures.join('~') + '~' : '';
             const sdJwtForHash = parts.jwt + '~' + disclosurePart;
-            const sdHashBytes = await sha256Hasher(sdJwtForHash, 'sha-256');
-            const expectedSdHash = bytesToBase64url(sdHashBytes);
+            // RFC 9901 §4.3.1: sd_hash uses the same hash algorithm as the disclosures.
+            const sdHashBytes = await sdJwtHasher(sdJwtForHash, sdAlg);
+            const expectedSdHash = bytesToBase64Url(sdHashBytes);
             if (kbPayload['sd_hash'] !== expectedSdHash) {
                 return invalidResult('Key binding JWT sd_hash does not match');
             }
@@ -505,17 +570,23 @@ export class SdJwtParser implements ICredentialParser {
         // Step 9: Decode disclosures and extract claims
         let resolvedClaims: Record<string, unknown>;
         try {
-            const decoded = await decodeSdJwt(vpToken, sha256Hasher);
+            const decoded = await decodeSdJwt(vpToken, sdJwtHasher);
             resolvedClaims = await getClaims<Record<string, unknown>>(
                 decoded.jwt.payload,
                 decoded.disclosures,
-                sha256Hasher
+                sdJwtHasher
             );
         } catch {
             throw new MalformedCredentialError('Failed to decode SD-JWT disclosures');
         }
 
         const vct = typeof payload['vct'] === 'string' ? (payload['vct'] as string) : undefined;
+        // `aka_vcts` is read from the issuer-signed payload only: draft-19 makes
+        // it non-disclosable, so a selectively disclosed copy must not widen
+        // the credential's types.
+        const akaVcts = Array.isArray(payload['aka_vcts'])
+            ? (payload['aka_vcts'] as unknown[]).filter((v): v is string => typeof v === 'string')
+            : [];
 
         const result: PresentationResult = {
             valid: true,
@@ -523,6 +594,7 @@ export class SdJwtParser implements ICredentialParser {
             claims: mapToCredentialClaims(resolvedClaims),
             issuer: issuerInfo,
             ...(vct !== undefined ? { vct } : {}),
+            ...(akaVcts.length > 0 ? { akaVcts } : {}),
         };
         if (trustResult) result.trust = trustResult;
         return result;
@@ -538,9 +610,19 @@ export class SdJwtParser implements ICredentialParser {
  * the full transitive set, otherwise nested disclosures (e.g. PID's
  * `place_of_birth.country`, `nationalities` array) false-reject.
  */
-function collectAnchorHashes(node: unknown): { kvHashes: Set<string>; arrayElemHashes: Set<string> } {
+function collectAnchorHashes(
+    node: unknown,
+    seen: Set<string>
+): { kvHashes: Set<string>; arrayElemHashes: Set<string>; duplicate?: string } {
     const kvHashes = new Set<string>();
     const arrayElemHashes = new Set<string>();
+    let duplicate: string | undefined;
+    // `seen` spans the whole SD-JWT (payload plus every disclosed value), so a
+    // digest repeated anywhere — even once as `_sd` and once as `...` — is found.
+    const record = (digest: string): void => {
+        if (seen.has(digest)) duplicate ??= digest;
+        seen.add(digest);
+    };
     const visit = (value: unknown): void => {
         if (Array.isArray(value)) {
             for (const item of value) {
@@ -548,6 +630,7 @@ function collectAnchorHashes(node: unknown): { kvHashes: Set<string>; arrayElemH
                     const obj = item as Record<string, unknown>;
                     const keys = Object.keys(obj);
                     if (keys.length === 1 && keys[0] === '...' && typeof obj['...'] === 'string') {
+                        record(obj['...']);
                         arrayElemHashes.add(obj['...']);
                         continue;
                     }
@@ -557,7 +640,11 @@ function collectAnchorHashes(node: unknown): { kvHashes: Set<string>; arrayElemH
         } else if (value && typeof value === 'object') {
             for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
                 if (k === '_sd' && Array.isArray(v)) {
-                    for (const h of v) if (typeof h === 'string') kvHashes.add(h);
+                    for (const h of v) {
+                        if (typeof h !== 'string') continue;
+                        record(h);
+                        kvHashes.add(h);
+                    }
                     continue;
                 }
                 visit(v);
@@ -565,5 +652,5 @@ function collectAnchorHashes(node: unknown): { kvHashes: Set<string>; arrayElemH
         }
     };
     visit(node);
-    return { kvHashes, arrayElemHashes };
+    return { kvHashes, arrayElemHashes, ...(duplicate !== undefined ? { duplicate } : {}) };
 }

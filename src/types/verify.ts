@@ -2,7 +2,17 @@ import type { DcqlMatchResult, DcqlSubmission } from '@openeudi/dcql';
 import type { ParseOptions } from '../parsers/parser.interface.js';
 import type { PresentationResult } from './presentation.js';
 
-export type VerifyOptions = ParseOptions;
+export type VerifyOptions = ParseOptions & {
+    /**
+     * Out-of-band SD-JWT VC type inheritance: maps a `vct` to the types it
+     * extends, e.g. `{ 'urn:eudi:pid:de:1': ['urn:eudi:pid:1'] }`. Walked
+     * transitively. A credential then matches a DCQL `vct_values` entry naming
+     * any of its types (OpenID4VP 1.0 Appendix B.3.5); `parsed.vct` still
+     * reports the credential's own `vct`. The issuer-signed `aka_vcts` claim
+     * is honoured without configuration. Type Metadata is never fetched.
+     */
+    vctAncestors?: Readonly<Record<string, readonly string[]>>;
+};
 
 export interface VerifyResult {
     parsed: PresentationResult;

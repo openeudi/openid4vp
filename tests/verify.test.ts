@@ -5,7 +5,7 @@ import type { DcqlQuery } from '@openeudi/dcql';
 import { MalformedCredentialError } from '../src/errors.js';
 import { verifyPresentation } from '../src/verify.js';
 import { StaticTrustStore } from '../src/trust/TrustStore.js';
-import { getSkiHex } from '../src/trust/x509-utils.js';
+import { getSkiBase64Url } from '../src/trust/x509-utils.js';
 
 import {
     pidSdJwtQuery,
@@ -25,13 +25,20 @@ let issuerKey: TestKeyMaterial;
 let signedSdJwtVp: BuildSdJwtResult;
 let signedMdocVp: BuildSignedMdocResult;
 let vpNonce: string;
+let vpAudience: string;
 
 beforeAll(async () => {
     issuerKey = await generateTestKeyMaterial();
     vpNonce = crypto.randomUUID();
+    vpAudience = `x509_san_dns:${crypto.randomUUID()}.example`;
 
+    // Holder-bound with a KB-JWT: DCQL queries require holder binding by default.
     signedSdJwtVp = await buildSignedSdJwt({
         issuerKey,
+        holderKey: await generateTestKeyMaterial(),
+        nonce: vpNonce,
+        audience: vpAudience,
+        audience: vpAudience,
         claims: { vct: 'urn:eu.europa.ec.eudi:pid:1' },
         disclosureClaims: [
             ['age_over_18', true],
@@ -52,6 +59,7 @@ describe('verifyPresentation — happy paths', () => {
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, pidAgeOnlyQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
         });
 
         expect(result.parsed.valid).toBe(true);
@@ -64,6 +72,7 @@ describe('verifyPresentation — happy paths', () => {
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, pidSdJwtQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
         });
 
         expect(result.valid).toBe(true);
@@ -75,6 +84,7 @@ describe('verifyPresentation — happy paths', () => {
         const result = await verifyPresentation(signedMdocVp.mdocBytes, mdlMdocQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
             mdocSessionTranscript: signedMdocVp.sessionTranscript,
         });
 
@@ -89,6 +99,7 @@ describe('verifyPresentation — mismatch paths (valid: false)', () => {
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, mdlMdocQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
         });
 
         expect(result.valid).toBe(false);
@@ -117,6 +128,7 @@ describe('verifyPresentation — mismatch paths (valid: false)', () => {
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, missingClaimQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
         });
 
         expect(result.valid).toBe(false);
@@ -146,6 +158,7 @@ describe('verifyPresentation — mismatch paths (valid: false)', () => {
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, valueMismatchQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
         });
 
         expect(result.valid).toBe(false);
@@ -163,6 +176,7 @@ describe('verifyPresentation — mismatch paths (valid: false)', () => {
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, pidWithTrustedAuthorities, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
         });
 
         expect(result.valid).toBe(false);
@@ -198,6 +212,7 @@ describe('verifyPresentation — error paths (throws)', () => {
             verifyPresentation('bad~thing~', pidAgeOnlyQuery, {
                 trustedCertificates: [issuerKey.certDerBytes],
                 nonce: vpNonce,
+                audience: vpAudience,
             })
         ).rejects.toBeInstanceOf(MalformedCredentialError);
     });
@@ -210,6 +225,7 @@ describe('verifyPresentation — error paths (throws)', () => {
         const result = await verifyPresentation('not-a-real-vp-token', pidAgeOnlyQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
         });
 
         expect(result.valid).toBe(false);
@@ -249,10 +265,10 @@ describe('verifyPresentation — trusted_authority_ids wiring (Task 17)', () => 
         const root = await createCa({ name: 'CN=Test Root CA' });
         const leaf = await createLeaf(root, { name: 'CN=Test Issuer' });
 
-        // Derive the root's SKI hex — TrustEvaluator will place this in
-        // trustedAuthorityIds for a static-store anchor.
-        const rootSkiHex = getSkiHex(root.certificate);
-        expect(rootSkiHex).not.toBeNull();
+        // OpenID4VP 1.0 §6.1.1.1: an aki value is the base64url KeyIdentifier
+        // of an AuthorityKeyIdentifier in the chain — here the root's key id.
+        const rootAki = getSkiBase64Url(root.certificate);
+        expect(rootAki).not.toBeNull();
 
         const leafDerBytes = new Uint8Array(leaf.certificate.rawData);
         const rootDerBytes = new Uint8Array(root.certificate.rawData);
@@ -280,7 +296,8 @@ describe('verifyPresentation — trusted_authority_ids wiring (Task 17)', () => 
         });
 
         // Build a DCQL query that requires the credential to be issued under
-        // the root CA identified by its SKI hex (aki type).
+        // the root CA identified by its key id (aki type). The credential is a
+        // bearer credential, so the query opts out of holder binding.
         const queryWithAki: DcqlQuery = {
             credentials: [
                 {
@@ -289,8 +306,9 @@ describe('verifyPresentation — trusted_authority_ids wiring (Task 17)', () => 
                     meta: { vct_values: ['urn:eu.europa.ec.eudi:pid:1'] },
                     claims: [{ path: ['age_over_18'] }],
                     trusted_authorities: [
-                        { type: 'aki', values: [rootSkiHex!] },
+                        { type: 'aki', values: [rootAki!] },
                     ],
+                    require_cryptographic_holder_binding: false,
                 },
             ],
         };
@@ -298,7 +316,7 @@ describe('verifyPresentation — trusted_authority_ids wiring (Task 17)', () => 
         // StaticTrustStore holds both leaf and root so ChainBuilder can
         // validate the chain. SdJwtParser sends an AKI hint (= root's SKI),
         // the store resolves it to the root anchor, TrustEvaluator derives
-        // trustedAuthorityIds = [rootSkiHex].
+        // the root's aki id.
         const trustStore = new StaticTrustStore([rootDerBytes, leafDerBytes]);
 
         // Rebuild the issuer JWT with a full x5c chain [leaf, root] so that
@@ -313,7 +331,7 @@ describe('verifyPresentation — trusted_authority_ids wiring (Task 17)', () => 
         });
 
         // Task 17: trusted_authority_ids must be populated from the trust result.
-        expect(result.parsed.trust?.trustedAuthorityIds).toContain(rootSkiHex);
+        expect(result.parsed.trust?.trustedAuthorities).toContainEqual({ type: 'aki', value: rootAki });
 
         // The DCQL match must now succeed because trusted_authority_ids
         // includes the root SKI that the query's aki filter specifies.
@@ -331,7 +349,7 @@ describe('verifyPresentation — trusted_authority_ids wiring (Task 17)', () => 
         const otherRoot = await createCa({ name: 'CN=Root B' });
         const leaf = await createLeaf(root, { name: 'CN=Issuer A' });
 
-        const otherSkiHex = getSkiHex(otherRoot.certificate)!;
+        const otherAki = getSkiBase64Url(otherRoot.certificate)!;
 
         const leafDerBytes = new Uint8Array(leaf.certificate.rawData);
         const rootDerBytes = new Uint8Array(root.certificate.rawData);
@@ -361,10 +379,11 @@ describe('verifyPresentation — trusted_authority_ids wiring (Task 17)', () => 
                     format: 'dc+sd-jwt',
                     meta: { vct_values: ['urn:eu.europa.ec.eudi:pid:1'] },
                     claims: [{ path: ['age_over_18'] }],
-                    // Points to Root B's SKI, but credential is under Root A.
+                    // Points to Root B's key id, but credential is under Root A.
                     trusted_authorities: [
-                        { type: 'aki', values: [otherSkiHex] },
+                        { type: 'aki', values: [otherAki] },
                     ],
+                    require_cryptographic_holder_binding: false,
                 },
             ],
         };
@@ -416,6 +435,7 @@ describe('verifyPresentation — dual-format credential_sets query: id labeled b
         const result = await verifyPresentation(signedMdocVp.mdocBytes, dualFormatQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
             mdocSessionTranscript: signedMdocVp.sessionTranscript,
         });
 
@@ -433,6 +453,7 @@ describe('verifyPresentation — dual-format credential_sets query: id labeled b
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, reorderedQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
         });
 
         expect(result.valid).toBe(true);
@@ -468,6 +489,7 @@ describe('verifyPresentation — same-format multi-credential queries (#41)', ()
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, sameFormatQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
         });
 
         expect(result.valid).toBe(true);
@@ -479,6 +501,7 @@ describe('verifyPresentation — same-format multi-credential queries (#41)', ()
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, sameFormatQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
         });
 
         const matched = result.match.matches.map((m) => m.credentialId);
@@ -494,6 +517,7 @@ describe('verifyPresentation — same-format multi-credential queries (#41)', ()
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, reordered, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
         });
         expect(result.match.matches[0].credentialId).toBe('pid-sd-jwt');
     });
@@ -522,6 +546,7 @@ describe('verifyPresentation — same-format multi-credential queries (#41)', ()
         const result = await verifyPresentation(signedMdocVp.mdocBytes, twoMdocQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
             mdocSessionTranscript: signedMdocVp.sessionTranscript,
         });
 
@@ -542,6 +567,7 @@ describe('verifyPresentation — same-format multi-credential queries (#41)', ()
         const result = await verifyPresentation(signedSdJwtVp.sdJwt, unconstrained, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            audience: vpAudience,
         });
         expect(result.match.matches[0]?.credentialId ?? 'any-a').toBe('any-a');
     });

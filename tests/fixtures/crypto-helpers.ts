@@ -222,7 +222,10 @@ import { CompactEncrypt } from 'jose';
 
 export interface VerifierKeyMaterial {
     signer: CryptoKeyPair;
+    /** The `x5c` chain: the leaf only (HAIP 1.0 §5 keeps the trust anchor out of `x5c`). */
     certificateChain: Uint8Array[];
+    /** DER of the self-signed CA that issued the leaf; absent for a self-signed leaf. */
+    anchorCertDer?: Uint8Array;
     hostname: string;
 }
 
@@ -292,7 +295,8 @@ export async function createVerifierKeypairAndCert(
 
     return {
         signer,
-        certificateChain: [new Uint8Array(leafCert.rawData), new Uint8Array(caCert.rawData)],
+        certificateChain: [new Uint8Array(leafCert.rawData)],
+        anchorCertDer: new Uint8Array(caCert.rawData),
         hostname,
     };
 }

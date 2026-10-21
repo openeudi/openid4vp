@@ -67,7 +67,8 @@ export function buildHaipQuery(input: HaipQueryInput): DcqlQuery {
  *
  * The motivating case is a proof-of-age check: ask for a Proof-of-Age
  * attestation (`mso_mdoc`, `age_over_18` in namespace `eu.europa.ec.av.1`) OR a
- * PID (`dc+sd-jwt`, `birth_date`), because the PID carries no age attribute and
+ * PID (`dc+sd-jwt`, `vct` `urn:eudi:pid:1`, claim `birthdate` — `birth_date` is
+ * the mdoc element name), because the PID carries no age attribute and
  * proof-of-age attestations have almost no issuer coverage yet. The wallet
  * satisfies ONE option and returns ONE presentation.
  *

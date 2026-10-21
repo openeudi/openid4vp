@@ -4,8 +4,8 @@
 
 | Version  | Supported |
 | -------- | --------- |
-| 0.11.x   | Yes       |
-| < 0.11   | No        |
+| 0.13.x   | Yes       |
+| < 0.13   | No        |
 
 Only the latest minor receives security updates. While this package is pre-1.0
 there are no maintained backport branches: a fix ships in the next release from

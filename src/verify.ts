@@ -3,6 +3,13 @@ import type { DcqlQuery, DecodedCredential } from '@openeudi/dcql';
 import { decodeProtectedHeader } from 'jose';
 
 import { parsePresentation } from './presentation.js';
+import {
+    credentialTypes,
+    hasKeyBindingJwt,
+    requiresHolderBinding,
+    vctForQuery,
+} from './credential-types.js';
+import { prepareTrustedAuthorityMatching } from './trusted-authorities.js';
 import { decryptAuthorizationResponse } from './decrypt-response.js';
 import {
     buildOid4vpSessionTranscript,
@@ -12,6 +19,7 @@ import {
     MissingDecryptionKeyError,
     MissingVerifierEncryptionKeyError,
     MultipleCredentialsNotSupportedError,
+    WalletErrorResponseError,
 } from './errors.js';
 import type { CredentialFormat, PresentationResult } from './types/presentation.js';
 import type { AuthorizationResponse } from './types/authorization.js';
@@ -49,7 +57,8 @@ export async function verifyPresentation(
     query: DcqlQuery,
     options: VerifyOptions
 ): Promise<VerifyResult> {
-    const parsed = await parsePresentation(vpToken, options);
+    let parsed = await parsePresentation(vpToken, options);
+    const types = credentialTypes(parsed, options.vctAncestors);
 
     const dcqlFormat = INTERNAL_TO_DCQL_FORMAT[parsed.format] ?? parsed.format;
 
@@ -72,7 +81,7 @@ export async function verifyPresentation(
     // back to first-listed when nothing identifies it.
     const sameFormat = query.credentials.filter((c) => c.format === dcqlFormat);
     const presentedCredentialQuery =
-        sameFormat.find((c) => matchesCredentialType(c, parsed)) ??
+        sameFormat.find((c) => matchesCredentialType(c, parsed, types)) ??
         sameFormat[0] ??
         query.credentials[0];
 
@@ -82,24 +91,42 @@ export async function verifyPresentation(
         claims: decodedClaims,
     };
 
+    // OpenID4VP 1.0 §6.1: holder binding is required unless the query entry
+    // opts out. mdoc DeviceAuth is always verified; an SD-JWT VC without a
+    // KB-JWT passed the parser only because it has no `cnf`.
+    if (
+        parsed.valid &&
+        parsed.format === 'sd-jwt-vc' &&
+        requiresHolderBinding(presentedCredentialQuery) &&
+        !hasKeyBindingJwt(vpToken)
+    ) {
+        parsed = {
+            ...parsed,
+            valid: false,
+            error:
+                `Cryptographic holder binding is required by credential query "${presentedCredentialQuery?.id}" ` +
+                'but the presentation has no key binding JWT',
+        };
+    }
+
     if (parsed.format === 'sd-jwt-vc' && typeof parsed.vct === 'string') {
-        decoded.vct = parsed.vct;
+        // The real vct stays on `parsed`; DCQL sees the inherited type it asked for.
+        decoded.vct = vctForQuery(types, parsed.vct, presentedCredentialQuery);
     }
     if (parsed.format === 'mdoc' && typeof parsed.docType === 'string') {
         decoded.doctype = parsed.docType;
     }
 
     // Forward trust-evaluation authority ids into the decoded credential so
-    // DCQL's trusted_authorities filter can match them. Populated by
-    // TrustEvaluator when a trustStore is provided (Task 16/17).
-    if (
-        parsed.trust?.trustedAuthorityIds &&
-        parsed.trust.trustedAuthorityIds.length > 0
-    ) {
-        decoded.trusted_authority_ids = [...parsed.trust.trustedAuthorityIds];
+    // DCQL's trusted_authorities filter can match them, type-tagged on both
+    // sides (see trusted-authorities.ts). Populated by TrustEvaluator when a
+    // trustStore is provided.
+    const authorities = prepareTrustedAuthorityMatching(query, parsed.trust);
+    if (authorities.ids) {
+        decoded.trusted_authority_ids = authorities.ids;
     }
 
-    const match = matchQuery(query, [decoded]);
+    const match = matchQuery(authorities.query, [decoded]);
     const submission = match.satisfied ? buildSubmission(query, match) : null;
 
     return {
@@ -121,15 +148,12 @@ export async function verifyPresentation(
  */
 function matchesCredentialType(
     credentialQuery: DcqlQuery['credentials'][number],
-    parsed: PresentationResult
+    parsed: PresentationResult,
+    types: readonly string[]
 ): boolean {
     if (parsed.format === 'sd-jwt-vc') {
         const vctValues = credentialQuery.meta?.vct_values;
-        return (
-            typeof parsed.vct === 'string' &&
-            Array.isArray(vctValues) &&
-            vctValues.includes(parsed.vct)
-        );
+        return Array.isArray(vctValues) && types.some((t) => vctValues.includes(t));
     }
     if (parsed.format === 'mdoc') {
         const doctype = credentialQuery.meta?.doctype_value;
@@ -292,6 +316,12 @@ export async function verifyAuthorizationResponse(
         return verifyAuthorizationResponse(decrypted, query, nextOptions);
     }
 
+    // OpenID4VP 1.0 §8.5 error response (also reachable decrypted, §8.3.1).
+    const walletResponse = envelope as unknown as Record<string, unknown> | null;
+    if (typeof walletResponse === 'object' && walletResponse !== null && typeof walletResponse.error === 'string') {
+        throw new WalletErrorResponseError({ ...walletResponse, error: walletResponse.error });
+    }
+
     if (!isAuthorizationResponse(envelope)) {
         throw new TypeError('envelope must contain vp_token as a JSON object per OpenID4VP 1.0 §8.1');
     }
@@ -339,5 +369,9 @@ export async function verifyAuthorizationResponse(
             ? base64UrlToBytes(presentation)
             : presentation;
 
-    return verifyPresentation(decodedPresentation, query, options);
+    // OpenID4VP 1.0 Appendix B.3.6: the KB-JWT `aud` is the Client Identifier.
+    return verifyPresentation(decodedPresentation, query, {
+        ...options,
+        audience: options.audience ?? options.clientId,
+    });
 }

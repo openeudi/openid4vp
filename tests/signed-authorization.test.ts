@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decodeJwt, decodeProtectedHeader } from 'jose';
+import { calculateJwkThumbprint, decodeJwt, decodeProtectedHeader, type JWK } from 'jose';
 import * as x509 from '@peculiar/x509';
 
 import { createSignedAuthorizationRequest } from '../src/signed-authorization.js';
@@ -448,10 +448,7 @@ describe('createSignedAuthorizationRequest', () => {
         const req = await createSignedAuthorizationRequest(
             await baseInput({
                 signer: leafKeys,
-                certificateChain: [
-                    new Uint8Array(leafCert.rawData),
-                    new Uint8Array(caCert.rawData),
-                ],
+                certificateChain: [new Uint8Array(leafCert.rawData)],
             }),
             pidQuery
         );
@@ -512,5 +509,60 @@ describe('createSignedAuthorizationRequest — credential_sets disjunction', () 
         expect(payload.dcql_query.credential_sets).toEqual([
             { options: [['age-attestation'], ['pid']] },
         ]);
+    });
+});
+
+describe('createSignedAuthorizationRequest — HAIP 1.0 §5 key and chain rules', () => {
+    const hostname = `verifier-${crypto.randomUUID()}.example`;
+
+    async function input(overrides: Record<string, unknown> = {}) {
+        const material = await createVerifierKeypairAndCert(hostname);
+        const { publicJwk } = await createEncryptionKeypair();
+        return {
+            material,
+            input: {
+                hostname,
+                requestUri: `https://${hostname}/request.jwt`,
+                responseUri: `https://${hostname}/response`,
+                nonce: crypto.randomUUID(),
+                signer: material.signer,
+                certificateChain: material.certificateChain,
+                encryptionKey: { publicJwk },
+                vpFormatsSupported: createVpFormatsSupported(),
+                ...overrides,
+            },
+        };
+    }
+
+    function encryptionJwk(requestObject: string): Record<string, unknown> {
+        const cm = decodeJwt(requestObject).client_metadata as { jwks: { keys: Record<string, unknown>[] } };
+        return cm.jwks.keys[0];
+    }
+
+    it('rejects a certificateChain that ends in the self-signed trust anchor', async () => {
+        const { material, input: base } = await input();
+        const err = await createSignedAuthorizationRequest(
+            { ...base, certificateChain: [...material.certificateChain, material.anchorCertDer!] },
+            pidQuery
+        ).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(SignedRequestBuildError);
+        expect((err as SignedRequestBuildError).code).toBe('trust_anchor_in_chain');
+    });
+
+    it('assigns the RFC 7638 thumbprint as kid when the encryption JWK has none', async () => {
+        const { input: base } = await input();
+        const req = await createSignedAuthorizationRequest(base, pidQuery);
+        const jwk = encryptionJwk(req.requestObject);
+        expect(jwk.kid).toBe(await calculateJwkThumbprint(base.encryptionKey.publicJwk as JWK, 'sha256'));
+    });
+
+    it('keeps a caller-supplied kid', async () => {
+        const { input: base } = await input();
+        const kid = crypto.randomUUID();
+        const req = await createSignedAuthorizationRequest(
+            { ...base, encryptionKey: { publicJwk: { ...base.encryptionKey.publicJwk, kid } as JsonWebKey } },
+            pidQuery
+        );
+        expect(encryptionJwk(req.requestObject).kid).toBe(kid);
     });
 });

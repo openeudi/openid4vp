@@ -9,12 +9,32 @@ export interface TrustAnchor {
     readonly source: 'static' | 'lotl';
     readonly metadata?: LotlAnchorMetadata;
     /**
-     * Authority identifiers this anchor stands for. Populated by
-     * `LotlTrustStore` from `ServiceDigitalIdentity`'s SKI; synthesized by
-     * `TrustEvaluator` from the anchor SKI for static stores. Used by
-     * `verifyPresentation` to populate `DecodedCredential.trusted_authority_ids`.
+     * Typed authority identifiers this anchor stands for, matched against a
+     * DCQL `trusted_authorities` entry of the same `type` only. Populated by
+     * `LotlTrustStore` (`aki` from the service certificate's SKI, `etsi_tl`
+     * from the national TL and LOTL URLs). `TrustEvaluator` always adds the
+     * `aki` ids of the validated chain itself, so static anchors need none.
+     */
+    readonly trustedAuthorities?: readonly TrustedAuthorityId[];
+    /**
+     * Untyped authority identifiers.
+     *
+     * @deprecated since 0.14.0 — set {@link trustedAuthorities} instead. When an
+     * anchor has no `trustedAuthorities`, these values still match a DCQL
+     * `trusted_authorities` entry of any type, as before. Removed in 1.0.0.
      */
     readonly trustedAuthorityIds?: readonly string[];
+}
+
+/**
+ * One identifier usable in DCQL `trusted_authorities` (OpenID4VP 1.0
+ * §6.1.1). For `aki`, `value` is the base64url (unpadded) KeyIdentifier of an
+ * AuthorityKeyIdentifier in the credential's certificate chain; for
+ * `etsi_tl`, the URL of an ETSI TS 119 612 trusted list.
+ */
+export interface TrustedAuthorityId {
+    readonly type: 'aki' | 'etsi_tl' | 'openid_federation';
+    readonly value: string;
 }
 
 /**

@@ -58,6 +58,8 @@ export interface TspService {
 /** One national TL, parsed + verified. */
 export interface NationalTlSnapshot {
     readonly country: string;
+    /** URL the TL was fetched from (`TSLLocation` in the LOTL pointer). */
+    readonly tslLocation?: string;
     readonly issueDate: Date;
     readonly nextUpdate: Date | null;
     readonly services: readonly TspService[];

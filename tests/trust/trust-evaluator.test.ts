@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TrustEvaluator } from '../../src/trust/TrustEvaluator.js';
+import { getAkiKeyIdBase64Url, getSkiBase64Url, getSkiHex } from '../../src/trust/x509-utils.js';
 import { CompositeTrustStore, StaticTrustStore } from '../../src/trust/TrustStore.js';
 import {
     TrustAnchorNotFoundError,
@@ -244,7 +245,12 @@ describe('TrustEvaluator — LOTL provenance', () => {
         expect(result.provenance?.qualified).toBe(true);
         expect(result.provenance?.country).toBe('FR');
         expect(result.provenance?.loa).toBe('high');
-        expect(result.trustedAuthorityIds).toHaveLength(1);
+        // aki: the leaf's AKI (= the TSP root's key id); etsi_tl: national TL + LOTL.
+        expect(result.trustedAuthorities).toEqual([
+            { type: 'aki', value: getSkiBase64Url(tspRoot.certificate) },
+            { type: 'etsi_tl', value: 'http://fr.test/tl.xml' },
+            { type: 'etsi_tl', value: 'http://ec.test/eu-lotl.xml' },
+        ]);
     });
 
     it('populates provenance when LotlTrustStore is wrapped in CompositeTrustStore', async () => {
@@ -298,7 +304,7 @@ describe('TrustEvaluator — LOTL provenance', () => {
         expect(result.provenance?.qualified).toBe(true);
     });
 
-    it('populates trustedAuthorityIds from SKI for static-store anchors', async () => {
+    it('derives base64url aki ids from the chain for static-store anchors', async () => {
         const root = await createCa();
         const leaf = await createLeaf(root);
         const evaluator = new TrustEvaluator({
@@ -307,6 +313,46 @@ describe('TrustEvaluator — LOTL provenance', () => {
         const result = await evaluator.evaluate(leaf.certificate);
         expect(result.anchor.source).toBe('static');
         expect(result.provenance).toBeUndefined();
-        expect(result.trustedAuthorityIds).toHaveLength(1);
+        const rootAki = getSkiBase64Url(root.certificate)!;
+        expect(rootAki).toMatch(/^[A-Za-z0-9_-]+$/);
+        // OpenID4VP 1.0 §6.1.1.1: the leaf's AKI keyIdentifier, base64url.
+        expect(getAkiKeyIdBase64Url(leaf.certificate)).toBe(rootAki);
+        expect(result.trustedAuthorities).toEqual([{ type: 'aki', value: rootAki }]);
+        // Deprecated untyped list keeps the hex SKI for one release.
+        expect(result.trustedAuthorityIds).toEqual([rootAki, getSkiHex(root.certificate)]);
+    });
+
+    it('includes every AuthorityKeyIdentifier in a three-certificate chain', async () => {
+        const root = await createCa({ name: `CN=Root ${crypto.randomUUID()}` });
+        const inter = await createIntermediate(root, { name: `CN=Intermediate ${crypto.randomUUID()}` });
+        const leaf = await createLeaf(inter);
+        const evaluator = new TrustEvaluator({ trustStore: new StaticTrustStore([root.certificate]) });
+        const result = await evaluator.evaluate(leaf.certificate, { intermediates: [inter.certificate] });
+        expect(result.chain).toHaveLength(3);
+        expect(result.trustedAuthorities).toEqual([
+            { type: 'aki', value: getSkiBase64Url(inter.certificate) },
+            { type: 'aki', value: getSkiBase64Url(root.certificate) },
+        ]);
+    });
+
+    it('lets untyped ids from a custom store match every trusted_authorities type', async () => {
+        const root = await createCa();
+        const leaf = await createLeaf(root);
+        const customId = `custom-${crypto.randomUUID()}`;
+        const evaluator = new TrustEvaluator({
+            trustStore: {
+                getAnchors: async () => [
+                    { certificate: root.certificate, source: 'static', trustedAuthorityIds: [customId] },
+                ],
+            },
+        });
+        const result = await evaluator.evaluate(leaf.certificate);
+        expect(result.trustedAuthorities).toEqual(
+            expect.arrayContaining([
+                { type: 'aki', value: customId },
+                { type: 'etsi_tl', value: customId },
+                { type: 'openid_federation', value: customId },
+            ])
+        );
     });
 });

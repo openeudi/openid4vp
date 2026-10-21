@@ -22,6 +22,8 @@ import { generateTestKeyMaterial, buildSignedSdJwt } from './fixtures/crypto-hel
 import { buildSignedMdoc, DEFAULT_TEST_SESSION_TRANSCRIPT } from './fixtures/mdoc-helpers.js';
 
 describe('SD-JWT VC holder binding is enforced (GHSA-h548-cr7v-4v97)', () => {
+    const audience = `x509_san_dns:${crypto.randomUUID()}.example`;
+
     it('A1: rejects a holder-bound credential presented WITHOUT a KB-JWT (strip attack)', async () => {
         const issuerKey = await generateTestKeyMaterial();
         const holderKey = await generateTestKeyMaterial();
@@ -31,6 +33,7 @@ describe('SD-JWT VC holder binding is enforced (GHSA-h548-cr7v-4v97)', () => {
             holderKey, // -> issuer JWT carries cnf.jwk (holder-bound)
             disclosureClaims: [['age_over_18', true]],
             nonce: 'verifier-A-nonce',
+            audience,
             typ: 'dc+sd-jwt',
         });
 
@@ -54,12 +57,14 @@ describe('SD-JWT VC holder binding is enforced (GHSA-h548-cr7v-4v97)', () => {
             holderKey,
             disclosureClaims: [['age_over_18', true]],
             nonce: 'verifier-A-nonce',
+            audience,
             typ: 'dc+sd-jwt',
         });
 
         const res = await new SdJwtParser().parse(built.sdJwt, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: 'verifier-A-nonce',
+            audience,
         } as ParseOptions);
 
         expect(res.valid).toBe(true);
@@ -76,6 +81,7 @@ describe('SD-JWT VC holder binding is enforced (GHSA-h548-cr7v-4v97)', () => {
             holderKey,
             disclosureClaims: [['age_over_18', true]],
             nonce: 'verifier-A-nonce',
+            audience,
             typ: 'dc+sd-jwt',
         });
 
@@ -83,6 +89,7 @@ describe('SD-JWT VC holder binding is enforced (GHSA-h548-cr7v-4v97)', () => {
         const res = await new SdJwtParser().parse(built.sdJwt, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: 'verifier-B-nonce',
+            audience,
         } as ParseOptions);
 
         expect(res.valid).toBe(false);

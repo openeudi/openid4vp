@@ -31,7 +31,11 @@ export class NationalTlResolver {
                     pointer.tslLocation,
                     pointer.signingCertificates
                 );
-                return parseNationalTl(doc, pointer.country);
+                const tl: NationalTlSnapshot = {
+                    ...parseNationalTl(doc, pointer.country),
+                    tslLocation: pointer.tslLocation,
+                };
+                return tl;
             } catch (err) {
                 // §8.4 graceful degradation covers a country whose list is
                 // unreachable or badly signed. A configuration fault is not

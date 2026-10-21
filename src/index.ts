@@ -74,7 +74,7 @@ export type {
 // TrustEvaluator, ChainBuilder, and EU_LOTL_SIGNING_ANCHORS are
 // intentionally NOT exported — they are internal.
 // -------------------------------------------------------------------
-export type { TrustAnchor, LotlAnchorMetadata } from './trust/TrustAnchor.js';
+export type { TrustAnchor, LotlAnchorMetadata, TrustedAuthorityId } from './trust/TrustAnchor.js';
 export type { Fetcher } from './trust/Fetcher.js';
 export { InMemoryCache, type Cache } from './trust/Cache.js';
 export {
@@ -109,6 +109,8 @@ export {
     MissingDecryptionKeyError,
     MissingVerifierEncryptionKeyError,
     MultipleCredentialsNotSupportedError,
+    MissingAudienceError,
+    WalletErrorResponseError,
     GuardedFetchError,
     type GuardedFetchRejectReason,
     type ChainErrorReason,

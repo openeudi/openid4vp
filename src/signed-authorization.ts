@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { SignJWT } from 'jose';
+import { SignJWT, calculateJwkThumbprint, type JWK } from 'jose';
 import { X509Certificate } from '@peculiar/x509';
 import type { DcqlQuery } from '@openeudi/dcql';
 
@@ -24,6 +24,15 @@ const SUPPORTED_SIGNING_ALGS = new Set(['ES256', 'ES384', 'RS256']);
  * `clientIdPrefix: 'x509_hash'` to use the leaf certificate's SHA-256 hash
  * instead (OpenID4VP 1.0 §5.9.3). `hostname` is required only for
  * `x509_san_dns`.
+ *
+ * `certificateChain` is the leaf followed by any intermediates. It MUST NOT
+ * end in the trust anchor (HAIP 1.0 §5): a multi-certificate chain whose last
+ * certificate is self-signed is refused with `trust_anchor_in_chain`.
+ *
+ * `encryptionKey` MUST be a fresh, ephemeral key pair generated for this one
+ * request (HAIP 1.0 §5) — never reuse it across requests. Its JWK goes into
+ * `client_metadata.jwks`; a JWK without `kid` gets its RFC 7638 SHA-256
+ * thumbprint as `kid` (OpenID4VP 1.0 §5.1 requires one).
  */
 export async function createSignedAuthorizationRequest(
     input: SignedAuthorizationRequestInput,
@@ -109,6 +118,22 @@ export async function createSignedAuthorizationRequest(
         );
     }
 
+    // HAIP 1.0 §5: "The X.509 certificate of the trust anchor MUST NOT be
+    // included in the x5c JOSE header". A single self-signed certificate is the
+    // leaf case handled above.
+    if (input.certificateChain.length > 1) {
+        const last = new X509Certificate(
+            toArrayBuffer(input.certificateChain[input.certificateChain.length - 1]),
+        );
+        if (await last.isSelfSigned()) {
+            throw new SignedRequestBuildError(
+                'trust_anchor_in_chain',
+                'certificateChain ends in a self-signed (trust anchor) certificate; HAIP 1.0 ' +
+                    'forbids the trust anchor in x5c. Pass the leaf and intermediates only.',
+            );
+        }
+    }
+
     const responseMode = input.responseMode ?? 'direct_post.jwt';
 
     if (responseMode === 'direct_post.jwt') {
@@ -145,7 +170,9 @@ export async function createSignedAuthorizationRequest(
                 'encryptionKey.supportedEncValues must not be empty (omit to use defaults [A128GCM, A256GCM])',
             );
         }
-        const jwk = { ...input.encryptionKey.publicJwk, use: 'enc' };
+        const publicJwk = input.encryptionKey.publicJwk as JWK;
+        const kid = publicJwk.kid ?? (await calculateJwkThumbprint(publicJwk, 'sha256'));
+        const jwk = { ...publicJwk, kid, use: 'enc' };
         clientMetadata.jwks = { keys: [jwk] };
         const encValues = enc ?? [...DEFAULT_SUPPORTED_ENC_VALUES];
         clientMetadata.encrypted_response_enc_values_supported = encValues;

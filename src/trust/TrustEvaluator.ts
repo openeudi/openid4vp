@@ -11,10 +11,15 @@ import type { Cache } from './Cache.js';
 import { ChainBuilder, type ChainBuilderOptions } from './ChainBuilder.js';
 import type { Fetcher } from './Fetcher.js';
 import { RevocationChecker } from './RevocationChecker.js';
-import type { TrustAnchor } from './TrustAnchor.js';
+import type { TrustAnchor, TrustedAuthorityId } from './TrustAnchor.js';
 import type { TrustStore } from './TrustStore.js';
 import type { NationalTlSnapshot } from './lotl-types.js';
-import { certificatesEqual, getSkiHex } from './x509-utils.js';
+import {
+    certificatesEqual,
+    getAkiKeyIdBase64Url,
+    getSkiBase64Url,
+    getSkiHex,
+} from './x509-utils.js';
 
 export type RevocationPolicy = 'skip' | 'prefer' | 'require';
 
@@ -39,6 +44,21 @@ export interface TrustEvaluationResult {
     revocationCheckedAt?: Date;
     revokedAt?: Date;
     revocationReason?: string;
+    /**
+     * Typed identifiers for DCQL `trusted_authorities` matching: `aki` ids
+     * (base64url of every AuthorityKeyIdentifier keyIdentifier in the
+     * validated chain, plus the anchor's SKI) and whatever typed ids the
+     * anchor carries (e.g. `etsi_tl` from `LotlTrustStore`).
+     */
+    trustedAuthorities?: readonly TrustedAuthorityId[];
+    /**
+     * Untyped form of the authority identifiers: the values of
+     * {@link trustedAuthorities}, the anchor's SKI in hex and any untyped ids
+     * the anchor carries.
+     *
+     * @deprecated since 0.14.0 — use {@link trustedAuthorities}. The hex SKI
+     * form is kept for one release only.
+     */
     trustedAuthorityIds?: readonly string[];
     provenance?: {
         loa?: 'substantial' | 'high';
@@ -143,7 +163,7 @@ export class TrustEvaluator {
             );
         }
 
-        const trustedAuthorityIds = deriveAuthorityIds(anchor);
+        const { trustedAuthorities, trustedAuthorityIds } = deriveAuthorityIds(anchor, chain);
         const provenance = await resolveProvenance(this.trustStore, anchor);
 
         return {
@@ -156,6 +176,7 @@ export class TrustEvaluator {
                     ? 'skipped'
                     : revocation.status,
             revocationCheckedAt: revocation.checkedAt,
+            trustedAuthorities,
             trustedAuthorityIds,
             ...(provenance ? { provenance } : {}),
         };
@@ -189,13 +210,46 @@ function hexToBytes(s: string): Uint8Array {
     return out;
 }
 
-function deriveAuthorityIds(anchor: TrustAnchor): readonly string[] {
-    if (anchor.trustedAuthorityIds && anchor.trustedAuthorityIds.length > 0) {
-        return anchor.trustedAuthorityIds;
+/** Every `trusted_authorities` type; untyped legacy anchor ids match all of them. */
+const TRUSTED_AUTHORITY_TYPES: readonly TrustedAuthorityId['type'][] = ['aki', 'etsi_tl', 'openid_federation'];
+
+/**
+ * OpenID4VP 1.0 §6.1.1.1: an `aki` value is the base64url KeyIdentifier of
+ * the AuthorityKeyIdentifier "of an X.509 certificate in the certificate
+ * chain". So every certificate's AKI counts, plus the anchor's own SKI (a
+ * self-signed root often has no AKI).
+ */
+function deriveAuthorityIds(
+    anchor: TrustAnchor,
+    chain: readonly X509Certificate[]
+): { trustedAuthorities: TrustedAuthorityId[]; trustedAuthorityIds: string[] } {
+    const typed: TrustedAuthorityId[] = [];
+    const push = (id: TrustedAuthorityId) => {
+        if (!typed.some((t) => t.type === id.type && t.value === id.value)) typed.push(id);
+    };
+    for (const cert of chain) {
+        const aki = getAkiKeyIdBase64Url(cert);
+        if (aki) push({ type: 'aki', value: aki });
     }
-    // Static-store fallback: synthesize from the anchor's SKI.
-    const ski = getSkiHex(anchor.certificate);
-    return ski ? [ski] : [];
+    const anchorSki = getSkiBase64Url(anchor.certificate);
+    if (anchorSki) push({ type: 'aki', value: anchorSki });
+
+    const legacy: string[] = [];
+    if (anchor.trustedAuthorities) {
+        for (const id of anchor.trustedAuthorities) push(id);
+    } else if (anchor.trustedAuthorityIds) {
+        // A custom store's untyped ids: keep matching every type, as before.
+        for (const value of anchor.trustedAuthorityIds) {
+            legacy.push(value);
+            for (const type of TRUSTED_AUTHORITY_TYPES) push({ type, value });
+        }
+    }
+
+    const ids = new Set<string>(typed.map((t) => t.value));
+    for (const value of legacy) ids.add(value);
+    const skiHex = getSkiHex(anchor.certificate);
+    if (skiHex) ids.add(skiHex); // deprecated hex alias, kept for one release
+    return { trustedAuthorities: typed, trustedAuthorityIds: [...ids] };
 }
 
 async function resolveProvenance(

@@ -125,20 +125,13 @@ function oneFinalProfile(
   };
 }
 
-/**
- * KB-JWT `iat` recency/freshness is intentionally NOT enforced by the verifier (no
- * `maxTokenAge` check): replay is already bound by the mandatory `nonce` check, so an
- * implausible `iat` alone isn't a security gap. This is a Plan A decision, documented
- * in CHANGELOG/README, and out of scope for GHSA-h548 — a future hardening candidate,
- * not a regression. The two `1final-neg-iat-*` profiles below therefore make the
- * verifier ACCEPT where the suite's `EnsureHttpStatusCodeIs4xx` check expects a 4xx,
- * which is why they're flagged as known divergences rather than left to fail the gate.
+/*
+ * The two `1final-neg-iat-*` profiles below used to carry a `knownDivergence`
+ * flag because KB-JWT `iat` was not bounded. Since 0.14.0 the verifier enforces
+ * `kbJwtMaxAge` (default 300 s) plus `clockSkewTolerance`; the suite's modules
+ * (CreateSdJwtKbCredentialWithIatInPast / -InFuture in release-v5.1.42) shift
+ * `iat` by 365 days, so both must now be rejected like every other negative.
  */
-const KB_JWT_IAT_KNOWN_DIVERGENCE = {
-  reason:
-    "KB-JWT `iat` recency/freshness is not enforced (no maxTokenAge); replay is bound by the mandatory " +
-    "nonce check. Documented in CHANGELOG/README. Out of scope for GHSA-h548; future hardening candidate.",
-};
 
 /** Registry of every profile name resolvable via `--profile`. */
 export const PROFILE_REGISTRY: Record<string, ProfileDescriptor> = {
@@ -200,15 +193,13 @@ export const PROFILE_REGISTRY: Record<string, ProfileDescriptor> = {
     "1final-neg-iat-future",
     "oid4vp-1final-verifier-kb-jwt-iat-in-future",
     "sd_jwt_vc",
-    "reject",
-    KB_JWT_IAT_KNOWN_DIVERGENCE
+    "reject"
   ),
   "1final-neg-iat-past": oneFinalProfile(
     "1final-neg-iat-past",
     "oid4vp-1final-verifier-kb-jwt-iat-in-past",
     "sd_jwt_vc",
-    "reject",
-    KB_JWT_IAT_KNOWN_DIVERGENCE
+    "reject"
   ),
 };
 

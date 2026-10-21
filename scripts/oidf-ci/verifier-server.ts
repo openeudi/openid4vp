@@ -171,9 +171,9 @@ export async function startVerifierServer(input: StartVerifierServerInput): Prom
                 await verifyAuthorizationResponse(reshaped, fx.dcqlQuery, {
                   nonce,
                   // OID4VP: the KB-JWT `aud` MUST equal the Verifier's client_id.
-                  // The library only enforces it when `audience` is supplied, so a
-                  // conformant verifier must pass it — without this the OIDF
-                  // invalid-kb-jwt-aud negative is (wrongly) accepted.
+                  // verifyAuthorizationResponse defaults `audience` to `clientId`;
+                  // passing it explicitly keeps the invalid-kb-jwt-aud negative
+                  // independent of that default.
                   audience: clientId,
                   trustedCertificates: [],
                   trustedIssuerJwks: [fx.issuerSigningJwkPublic],

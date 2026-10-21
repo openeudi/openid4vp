@@ -95,7 +95,8 @@ export type ChainErrorReason =
     | 'basic_constraints'
     | 'path_length'
     | 'algorithm_disallowed'
-    | 'aki_ski_mismatch';
+    | 'aki_ski_mismatch'
+    | 'unrecognised_critical_extension';
 
 export class CertificateChainError extends OpenID4VPError {
     readonly code = 'chain_invalid' as const;
@@ -176,7 +177,8 @@ export type SignedRequestBuildErrorCode =
     | 'unsupported_signing_alg'
     | 'empty_supported_enc_values'
     | 'missing_hostname'
-    | 'self_signed_leaf';
+    | 'self_signed_leaf'
+    | 'trust_anchor_in_chain';
 
 export class SignedRequestBuildError extends OpenID4VPError {
     readonly code: SignedRequestBuildErrorCode;
@@ -231,6 +233,56 @@ export class MultipleCredentialsNotSupportedError extends OpenID4VPError {
         );
         this.entryCount = entryCount;
         this.presentationCount = presentationCount;
+    }
+}
+
+/**
+ * A Key Binding JWT has to be checked against the verifier's own identifier,
+ * but none was configured.
+ *
+ * OpenID4VP 1.0 Appendix B.3.6 requires the KB-JWT `aud` to equal the
+ * verifier's Client Identifier, and RFC 9901 §7.3 makes checking it part of
+ * holder-binding verification. Without an expected audience, a presentation
+ * made out to a different verifier would be accepted. This is a configuration
+ * fault, so it is thrown rather than reported as `valid: false`.
+ *
+ * Pass `audience` (or `clientId` to `verifyAuthorizationResponse`, which uses
+ * it as the default audience).
+ */
+export class MissingAudienceError extends OpenID4VPError {
+    readonly code = 'missing_audience' as const;
+    constructor(
+        message = 'An expected audience is required to verify a key binding JWT: pass `audience` ' +
+            '(or `clientId` to verifyAuthorizationResponse)'
+    ) {
+        super(message);
+    }
+}
+
+/** Longest wallet-supplied string copied into an error message. */
+const MAX_WALLET_ERROR_TEXT = 200;
+
+/**
+ * The wallet answered with an OpenID4VP 1.0 §8.5 error response (for example
+ * `access_denied` when the user declined) instead of a `vp_token`.
+ *
+ * `code` is the wallet's `error` value as sent, so callers can tell a declined
+ * request from a malformed response without parsing the message. `description`
+ * and `state` are the wallet's `error_description` and `state`, when present.
+ * The library does not check `state`; compare it with the value you issued.
+ */
+export class WalletErrorResponseError extends OpenID4VPError {
+    readonly code: string;
+    readonly description?: string;
+    readonly state?: string;
+    readonly uri?: string;
+
+    constructor(response: { error: string; error_description?: unknown; error_uri?: unknown; state?: unknown }) {
+        super(`Wallet returned an error response: ${response.error.slice(0, MAX_WALLET_ERROR_TEXT)}`);
+        this.code = response.error;
+        if (typeof response.error_description === 'string') this.description = response.error_description;
+        if (typeof response.error_uri === 'string') this.uri = response.error_uri;
+        if (typeof response.state === 'string') this.state = response.state;
     }
 }
 

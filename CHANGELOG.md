@@ -7,6 +7,161 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security (library)
+
+- KB-JWT audience is now bound to the verifier by default
+  ([GHSA-3v3j-fghh-r2gg](https://github.com/openeudi/openid4vp/security/advisories/GHSA-3v3j-fghh-r2gg)).
+  `aud` was previously checked only when the optional `audience` option was passed, so a
+  presentation could be relayed from one verifier to another.
+- The DCQL `require_cryptographic_holder_binding` requirement (default `true`) is now
+  enforced ([GHSA-r8q4-fcxm-v42q](https://github.com/openeudi/openid4vp/security/advisories/GHSA-r8q4-fcxm-v42q)).
+  A bearer SD-JWT VC without `cnf` and without a KB-JWT was previously accepted with
+  default options.
+
+### Changed — BREAKING
+
+- **A key binding JWT is now always checked against the verifier's
+  identifier.** OpenID4VP 1.0 Appendix B.3.6 requires the KB-JWT `aud` to be
+  the Client Identifier, and RFC 9901 §7.3 makes checking it part of holder
+  binding. `aud` was previously compared only when `audience` was passed, so a
+  presentation made out to another verifier — or with no `aud` at all — was
+  accepted. Now:
+  - `verifyAuthorizationResponse` uses `clientId` as the default `audience`.
+  - Verifying a KB-JWT with no `audience` available throws the new
+    `MissingAudienceError`.
+  - `aud` must be a single string equal to `audience`. A missing `aud`, a
+    foreign one, and an array `aud` (even one containing the audience) yield
+    `valid: false` — B.3.6 names one value.
+
+  **Migration:** pass `clientId` to `verifyAuthorizationResponse` (most
+  callers already do for mDOC), or `audience` to `verifyPresentation` /
+  `parsePresentation` / the parsers — the `client_id` you put in the request.
+
+- **KB-JWT `typ`, `iat`, `nonce`, `sd_hash` and `aud` are required, and `iat`
+  is bounded** (RFC 9901 §4.3, §7.3 steps 5d–5e). `typ` must be `kb+jwt`
+  (`application/kb+jwt` accepted). `iat` may be at most `kbJwtMaxAge` seconds
+  old (new option, default 300) and not in the future, each widened by
+  `clockSkewTolerance` (default 60). KB-JWT claim failures now report
+  `Key binding JWT claim validation failed: …` instead of the signature
+  message. The OIDF `1final-neg-iat-past` / `-future` profiles, previously
+  flagged as a known divergence, are now expected to reject like every other
+  negative profile.
+
+  **Migration:** none for conformant wallets. Raise `kbJwtMaxAge` if your flow
+  holds a presentation longer than five minutes before verifying it.
+
+- **The DCQL query's `require_cryptographic_holder_binding` is enforced.**
+  OpenID4VP 1.0 §6.1 makes it default to `true`, but the library only required
+  a KB-JWT when the credential carried `cnf`, so a bearer SD-JWT VC (no `cnf`,
+  no KB-JWT) verified with default options — and could be replayed, since the
+  nonce never entered the check. `verifyPresentation` and
+  `verifyAuthorizationResponse` now return `valid: false` for such a
+  presentation unless the credential query it matched opts out. mDOC is
+  unchanged (device authentication was already mandatory). The parsers and
+  `parsePresentation`, which do not see the query, keep their behaviour.
+
+  **Migration:** to accept bearer credentials on purpose, set
+  `require_cryptographic_holder_binding: false` on that credential query.
+
+- **`trusted_authorities` `aki` values are base64url AuthorityKeyIdentifier
+  key ids, and each value matches only its own type.** OpenID4VP 1.0 §6.1.1.1
+  defines an `aki` value as the base64url KeyIdentifier of an
+  AuthorityKeyIdentifier in the credential's chain; the library offered the
+  anchor's SKI in hex, so a conformant query never matched. Ids are now
+  derived from the AKI of every certificate in the validated chain plus the
+  anchor SKI, all base64url. dcql 0.2.0 pools the values of all
+  `trusted_authorities` entries, so an `etsi_tl` entry could be satisfied by an
+  `aki` id; matching now tags both sides with their type. `LotlTrustStore`
+  anchors also offer `etsi_tl` ids (the national TL URL and the LOTL URL).
+
+  **Migration:** send base64url `aki` values. For one release a hex value that
+  denotes the same key id still matches, with a one-time `console.warn`.
+  `TrustEvaluationResult.trustedAuthorityIds` and
+  `TrustAnchor.trustedAuthorityIds` are deprecated in favour of the typed
+  `trustedAuthorities`; untyped ids set by a custom `TrustStore` keep matching
+  every type, as before.
+
+- **Certificates with unrecognised critical extensions are rejected**
+  (RFC 5280 §4.2), with `CertificateChainError` reason
+  `unrecognised_critical_extension`, on every certificate of the path (the
+  configured trust anchor itself is exempt, as RFC 5280 §6.1 treats it as
+  input). Recognised: basicConstraints, keyUsage, extKeyUsage, subjectAltName,
+  nameConstraints, AKI, SKI, CRL distribution points, authorityInfoAccess and
+  qcStatements. Policy processing is not implemented, so a critical
+  certificatePolicies, policyConstraints, policyMappings or inhibitAnyPolicy is
+  refused instead of ignored. Checked against the certificates in the
+  2026-04-23 LOTL snapshot and the EU acceptance PID-providers list: critical
+  extensions there are basicConstraints, keyUsage, extKeyUsage and (one
+  Norwegian PID provider) qcStatements, all accepted.
+
+  **Migration:** none expected for EU trusted-list certificates. A private CA
+  that marks another extension critical has to stop doing so.
+
+- **`createSignedAuthorizationRequest` rejects a `certificateChain` that ends
+  in the trust anchor.** HAIP 1.0 §5: "The X.509 certificate of the trust
+  anchor MUST NOT be included in the x5c JOSE header". A chain of more than one
+  certificate whose last certificate is self-signed now throws
+  `SignedRequestBuildError` with the new code `trust_anchor_in_chain`.
+
+  **Migration:** pass the leaf and intermediates only.
+
+### Added
+
+- `WalletErrorResponseError` (`code`, `description`, `state`, `uri`): thrown by
+  `verifyAuthorizationResponse` for an OpenID4VP 1.0 §8.5 error response
+  (`access_denied`, `wallet_unavailable`, …), encrypted or not, instead of a
+  bare `TypeError`.
+- SD-JWT VC type inheritance for DCQL `vct_values` (OpenID4VP 1.0 Appendix
+  B.3.5): a credential also matches through its issuer-signed `aka_vcts`
+  (draft-ietf-oauth-sd-jwt-vc-19 §2.2.2.2) and through the new
+  `vctAncestors` option, e.g. `{ 'urn:eudi:pid:de:1': ['urn:eudi:pid:1'] }`
+  (walked transitively). `parsed.vct` still reports the credential's own type;
+  the new `PresentationResult.akaVcts` carries the issuer-signed aliases. Type
+  Metadata is not fetched. Built on dcql 0.2.0's exact `vct` match until dcql
+  gains alias support.
+- `_sd_alg` support: `sha-384` and `sha-512` in addition to the default
+  `sha-256`, for disclosure digests and the KB-JWT `sd_hash`. Any other value
+  is rejected (it was previously ignored and SHA-256 used).
+- `createSignedAuthorizationRequest` gives an encryption JWK without `kid` its
+  RFC 7638 thumbprint as `kid` (OpenID4VP 1.0 §5.1 requires one); a `kid` you
+  set is kept. The JSDoc and README now state HAIP's per-request ephemeral
+  encryption key rule.
+- `TrustEvaluationResult.trustedAuthorities` / `TrustAnchor.trustedAuthorities`
+  (typed `{ type, value }` ids) and the `TrustedAuthorityId` type.
+- `"engines": { "node": ">=22" }`. CI runs on Node 22 and 24 (it ran only on
+  Node 20, which reached end of life on 2026-04-30); the release-time OIDF run
+  uses Node 24, like `release.yml`.
+
+### Fixed
+
+- A disclosure presented twice and a digest that appears more than once (in
+  the payload or a disclosed value) are rejected (RFC 9901 §4.2, §7.1).
+- Disclosures are decoded as strict base64url. The standard-alphabet decoder
+  used before silently mis-decoded `-` / `_`; a standard-alphabet disclosure is
+  now rejected.
+- `trustedCertificates` is optional in `ParseOptions`. It was `@deprecated`
+  but still required, even alongside `trustStore`.
+
+### Documentation
+
+- README: the quick start and query examples used `age_over_18`,
+  `issuer.country` and `vctValues: ["https://pid.eu/v1"]`; they now use
+  `vct` `urn:eudi:pid:1` with `birthdate` (the SD-JWT VC PID name;
+  `birth_date` is the mdoc element). The `credential_sets` example used
+  `urn:eu.europa.ec.eudi:pid:1`. "Custom parsers" implied a registration API
+  that does not exist and is replaced by a description of the fixed parsers.
+  The mDOC section claimed only the `eu.europa.ec.eudi.pid.1` namespace is
+  extracted. The OIDF coverage statement now lists what the workflows run.
+  ARF references point at v3.0.0. The eIDAS Pro link is `eidas-pro.com`.
+- `CredentialClaims`' named `age_over_18`, `age_over_21`, `nationality`,
+  `resident_country` and `family_name_birth` fields are `@deprecated` (not PID
+  claims; the PID has `nationalities`). The type is otherwise unchanged and
+  stays assignable to `Record<string, unknown>`.
+- JSDoc: `revocationPolicy` (`'prefer'` / `'require'` are implemented), the
+  `mdocSessionTranscript` handover choice, `buildCredentialSetQuery`'s PID
+  identifiers.
+- SECURITY.md: supported versions are 0.13.x.
+
 ## [0.13.0] — 2026-10-02
 
 ### Changed — BREAKING

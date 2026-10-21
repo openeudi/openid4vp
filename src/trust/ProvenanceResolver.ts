@@ -1,7 +1,7 @@
 import { X509Certificate } from '@peculiar/x509';
 import type { NationalTlSnapshot, TspService } from './lotl-types.js';
 import { deriveServiceMetadata } from './service-metadata.js';
-import { getSkiHex } from './x509-utils.js';
+import { getSkiBase64Url, getSkiHex } from './x509-utils.js';
 
 export interface ResolvedProvenance {
     readonly provenance: {
@@ -10,6 +10,7 @@ export interface ResolvedProvenance {
         readonly country: string;
         readonly serviceName: string;
     };
+    /** Base64url SKI of the anchor, then (deprecated, one release) its hex SKI. */
     readonly trustedAuthorityIds: readonly string[];
 }
 
@@ -30,7 +31,7 @@ export class ProvenanceResolver {
         for (const tl of nationalTls) {
             for (const service of tl.services) {
                 if (serviceMatches(service, anchorSki)) {
-                    return buildProvenance(service, anchorSki);
+                    return buildProvenance(service, anchor, anchorSki);
                 }
             }
         }
@@ -48,6 +49,7 @@ function serviceMatches(service: TspService, anchorSki: string): boolean {
 
 function buildProvenance(
     service: TspService,
+    anchor: X509Certificate,
     anchorSki: string
 ): ResolvedProvenance {
     const derived = deriveServiceMetadata(service);
@@ -56,8 +58,9 @@ function buildProvenance(
         serviceName: service.serviceName,
         ...derived,
     };
+    const anchorSkiB64u = getSkiBase64Url(anchor);
     return {
         provenance,
-        trustedAuthorityIds: [anchorSki],
+        trustedAuthorityIds: [...(anchorSkiB64u ? [anchorSkiB64u] : []), anchorSki],
     };
 }

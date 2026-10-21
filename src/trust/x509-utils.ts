@@ -1,7 +1,9 @@
 import {
+    AuthorityKeyIdentifierExtension,
     SubjectKeyIdentifierExtension,
     X509Certificate,
 } from '@peculiar/x509';
+import { bytesToBase64Url, hexToBytes } from '../encoding/base64url.js';
 
 /**
  * Return the hex-encoded Subject Key Identifier of the given cert, or
@@ -43,4 +45,22 @@ export function getSkiBytes(cert: X509Certificate): Uint8Array | null {
         out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
     }
     return out;
+}
+
+/**
+ * The Subject Key Identifier as unpadded base64url — the encoding DCQL
+ * `trusted_authorities` uses for `aki` values (OpenID4VP 1.0 §6.1.1.1).
+ */
+export function getSkiBase64Url(cert: X509Certificate): string | null {
+    const ext = cert.getExtension(SubjectKeyIdentifierExtension);
+    return ext ? bytesToBase64Url(hexToBytes(ext.keyId)) : null;
+}
+
+/**
+ * The keyIdentifier of the Authority Key Identifier as unpadded base64url, or
+ * null when the certificate has no AKI or the AKI carries no keyIdentifier.
+ */
+export function getAkiKeyIdBase64Url(cert: X509Certificate): string | null {
+    const ext = cert.getExtension(AuthorityKeyIdentifierExtension);
+    return ext?.keyId ? bytesToBase64Url(hexToBytes(ext.keyId)) : null;
 }

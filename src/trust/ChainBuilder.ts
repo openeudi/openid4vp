@@ -1,5 +1,6 @@
 import { AsnConvert } from "@peculiar/asn1-schema";
 import {
+  Certificate as AsnCertificate,
   GeneralName as Asn1GeneralName,
   GeneralSubtree,
   Name as AsnName,
@@ -23,6 +24,38 @@ const NAME_CONSTRAINTS_OID = "2.5.29.30";
 
 /** ISO/IEC 18013-5 Annex B `id-mdl-kp-mdlDS` — Document Signer extended key usage. */
 export const ISO_18013_5_DS_EKU = "1.0.18013.5.1.2";
+
+/**
+ * Extensions this validator recognises when they are marked critical
+ * (RFC 5280 §4.2: a certificate with any other critical extension MUST be
+ * rejected). Each is either enforced here or carries no constraint on
+ * signature verification:
+ *
+ * - basicConstraints, keyUsage, extKeyUsage, nameConstraints, AKI / SKI:
+ *   enforced by this class.
+ * - subjectAltName: read for nameConstraints.
+ * - cRLDistributionPoints, authorityInfoAccess: used for revocation.
+ * - qcStatements (RFC 3739, ETSI EN 319 412-5): statements about the
+ *   certificate (QC compliance, QSCD, type, PDS) that do not restrict how its
+ *   key may be used to verify signatures. At least one EU PID provider
+ *   certificate in the PID-providers trusted list marks it critical.
+ *
+ * certificatePolicies, policyConstraints, policyMappings and inhibitAnyPolicy
+ * are deliberately absent: policy processing is not implemented, so a CA that
+ * relies on them by marking them critical is rejected rather than ignored.
+ */
+export const RECOGNISED_CRITICAL_EXTENSIONS: ReadonlySet<string> = new Set([
+  "2.5.29.19", // basicConstraints
+  "2.5.29.15", // keyUsage
+  "2.5.29.37", // extKeyUsage
+  "2.5.29.17", // subjectAltName
+  "2.5.29.30", // nameConstraints
+  "2.5.29.35", // authorityKeyIdentifier
+  "2.5.29.14", // subjectKeyIdentifier
+  "2.5.29.31", // cRLDistributionPoints
+  "1.3.6.1.5.5.7.1.1", // authorityInfoAccess
+  "1.3.6.1.5.5.7.1.3", // qcStatements
+]);
 
 /** Default ceiling on chain length, leaf and anchor included. */
 export const DEFAULT_MAX_CHAIN_LENGTH = 5;
@@ -119,8 +152,11 @@ const DEFAULT_ALGORITHMS = [
  * `TrustEvaluator`. Not exported from the package root.
  *
  * Scope: signature, validity period, algorithm allowlist, DN chaining,
- * AKI/SKI match, basicConstraints, keyUsage, nameConstraints. Explicitly
- * omits policy mapping / policy constraints / anyPolicy handling.
+ * AKI/SKI match, basicConstraints, keyUsage, nameConstraints, and rejection
+ * of unrecognised critical extensions on every certificate of the path (the
+ * trust anchor itself is configuration, not part of the path, RFC 5280 §6.1).
+ * Explicitly omits policy mapping / policy constraints / anyPolicy handling —
+ * which is why those extensions are refused when critical.
  */
 export class ChainBuilder {
   constructor(private readonly opts: ChainBuilderOptions = {}) {}
@@ -187,6 +223,7 @@ export class ChainBuilder {
     search: PathSearch
   ): Promise<X509Certificate[] | undefined> {
     this.checkPerCert(leaf, context);
+    this.checkCriticalExtensions(leaf);
 
     // Direct match: the presented signer IS the listed anchor. The anchor is
     // trusted by presence, so no issuer is needed and the CA/profile rules
@@ -256,6 +293,7 @@ export class ChainBuilder {
       verified++;
       try {
         this.checkPerCert(candidate, context);
+        this.checkCriticalExtensions(candidate);
         this.checkCaAndPathLen(candidate, nonLeafDepth);
         this.checkAkiSkiMatch(current, candidate);
       } catch (err) {
@@ -425,6 +463,25 @@ export class ChainBuilder {
         `CA ${cert.subject} does not assert keyCertSign key usage`,
         { reason: "key_usage" }
       );
+    }
+  }
+
+  /**
+   * RFC 5280 §4.2: reject a certificate carrying a critical extension this
+   * validator does not process. Read from the raw ASN.1 rather than
+   * `cert.extensions`, whose typed decoding throws on some malformed
+   * non-critical extensions found in real certificates.
+   */
+  private checkCriticalExtensions(cert: X509Certificate): void {
+    const extensions =
+      AsnConvert.parse(cert.rawData, AsnCertificate).tbsCertificate.extensions ?? [];
+    for (const ext of extensions) {
+      if (ext.critical && !RECOGNISED_CRITICAL_EXTENSIONS.has(ext.extnID)) {
+        throw new CertificateChainError(
+          `certificate ${cert.subject} has unrecognised critical extension ${ext.extnID}`,
+          { reason: "unrecognised_critical_extension" }
+        );
+      }
     }
   }
 

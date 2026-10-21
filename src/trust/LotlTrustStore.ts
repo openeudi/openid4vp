@@ -11,10 +11,10 @@ import type {
 import { LotlFetcher } from './LotlFetcher.js';
 import { LotlParser } from './LotlParser.js';
 import { NationalTlResolver } from './NationalTlResolver.js';
-import type { LotlAnchorMetadata, TrustAnchor } from './TrustAnchor.js';
+import type { LotlAnchorMetadata, TrustAnchor, TrustedAuthorityId } from './TrustAnchor.js';
 import type { TrustStore, TrustStoreHint } from './TrustStore.js';
 import { deriveServiceMetadata } from './service-metadata.js';
-import { getSkiBytes, getSkiHex } from './x509-utils.js';
+import { getSkiBase64Url, getSkiBytes, getSkiHex } from './x509-utils.js';
 
 const DEFAULT_LOTL_URL = 'https://ec.europa.eu/tools/lotl/eu-lotl.xml';
 const DEFAULT_REFRESH_INTERVAL_MS = 24 * 3600 * 1000;
@@ -79,7 +79,7 @@ export class LotlTrustStore implements TrustStore {
             for (const service of tl.services) {
                 for (const cert of service.certificates) {
                     if (!matchesHint(cert, hint)) continue;
-                    out.push(buildAnchor(service, cert));
+                    out.push(buildAnchor(service, cert, [tl.tslLocation, this.lotlUrl]));
                 }
             }
         }
@@ -152,7 +152,11 @@ function matchesHint(cert: X509Certificate, hint: TrustStoreHint): boolean {
     return false;
 }
 
-function buildAnchor(service: TspService, cert: X509Certificate): TrustAnchor {
+function buildAnchor(
+    service: TspService,
+    cert: X509Certificate,
+    trustedListUrls: readonly (string | undefined)[]
+): TrustAnchor {
     const derived = deriveServiceMetadata(service);
     const metadata: LotlAnchorMetadata = {
         country: service.country,
@@ -161,12 +165,22 @@ function buildAnchor(service: TspService, cert: X509Certificate): TrustAnchor {
         serviceStatus: service.serviceStatus,
         ...derived,
     };
-    const ski = getSkiHex(cert);
+    const trustedAuthorities: TrustedAuthorityId[] = [];
+    const ski = getSkiBase64Url(cert);
+    if (ski) trustedAuthorities.push({ type: 'aki', value: ski });
+    // `etsi_tl`: the national TL the service is listed in and the LOTL that
+    // points to it ("its cascading Trusted Lists", OpenID4VP 1.0 §6.1.1.2).
+    for (const url of new Set(trustedListUrls)) {
+        if (url) trustedAuthorities.push({ type: 'etsi_tl', value: url });
+    }
+    const skiHex = getSkiHex(cert);
     return {
         certificate: cert,
         source: 'lotl',
         metadata,
-        trustedAuthorityIds: ski ? [ski] : [],
+        trustedAuthorities,
+        // Deprecated untyped form: the base64url and (for one release) hex SKI.
+        trustedAuthorityIds: [...(ski ? [ski] : []), ...(skiHex ? [skiHex] : [])],
     };
 }
 

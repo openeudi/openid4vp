@@ -308,14 +308,15 @@ export class MdocParser implements ICredentialParser {
             });
         } else {
             // 0.4.0 byte-equality path — preserved verbatim for backward compatibility.
-            if (options.trustedCertificates.length === 0) {
+            const trustedCertificates = options.trustedCertificates ?? [];
+            if (trustedCertificates.length === 0) {
                 if (options.skipTrustCheck !== true) {
                     throw new MalformedCredentialError(
                         'trustedCertificates must not be empty unless skipTrustCheck is true'
                     );
                 }
             } else {
-                const trusted = options.trustedCertificates.some((t) => bytesEqual(t, issuerCertBytes));
+                const trusted = trustedCertificates.some((t) => bytesEqual(t, issuerCertBytes));
                 if (!trusted) {
                     return {
                         valid: false,

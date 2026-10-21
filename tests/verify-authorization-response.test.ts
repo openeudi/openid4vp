@@ -37,12 +37,20 @@ const pidQuery: DcqlQuery = buildHaipQuery({
 let issuerKey: TestKeyMaterial;
 let signedSdJwtVp: BuildSdJwtResult;
 let vpNonce: string;
+let vpClientId: string;
 
 beforeAll(async () => {
     issuerKey = await generateTestKeyMaterial('ES256');
     vpNonce = crypto.randomUUID();
+    vpClientId = `x509_san_dns:verifier.${crypto.randomUUID()}.example`;
+    // Holder-bound, KB-JWT made out to vpClientId — verifyAuthorizationResponse
+    // checks its aud against `clientId` when no `audience` is given.
     signedSdJwtVp = await buildSignedSdJwt({
         issuerKey,
+        holderKey: await generateTestKeyMaterial('ES256'),
+        nonce: vpNonce,
+        clientId: vpClientId,
+        audience: vpClientId,
         claims: { vct: 'urn:eu.europa.ec.eudi:pid:1' },
         disclosureClaims: [['given_name', 'Ada']],
     });
@@ -54,6 +62,7 @@ describe('verifyAuthorizationResponse', () => {
         const result = await verifyAuthorizationResponse(envelope, pidQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            clientId: vpClientId,
         });
         expect(result.valid).toBe(true);
     });
@@ -65,6 +74,7 @@ describe('verifyAuthorizationResponse', () => {
         const result = await verifyAuthorizationResponse({ response: jwe }, pidQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            clientId: vpClientId,
             decryptionKey: privateKey,
         });
         expect(result.valid).toBe(true);
@@ -292,6 +302,7 @@ describe('verifyAuthorizationResponse', () => {
             verifyAuthorizationResponse({ response: jwe }, pidQuery, {
                 trustedCertificates: [issuerKey.certDerBytes],
                 nonce: vpNonce,
+                clientId: vpClientId,
             }),
         ).rejects.toBeInstanceOf(MissingDecryptionKeyError);
     });
@@ -308,6 +319,7 @@ describe('verifyAuthorizationResponse', () => {
             verifyAuthorizationResponse({ response: parts.join('.') }, pidQuery, {
                 trustedCertificates: [issuerKey.certDerBytes],
                 nonce: vpNonce,
+                clientId: vpClientId,
                 decryptionKey: privateKey,
             }),
         ).rejects.toBeInstanceOf(DecryptionFailedError);
@@ -324,6 +336,7 @@ describe('verifyAuthorizationResponse', () => {
             verifyAuthorizationResponse(envelope, pidQuery, {
                 trustedCertificates: [issuerKey.certDerBytes],
                 nonce: vpNonce,
+                clientId: vpClientId,
             }),
         ).rejects.toMatchObject({
             name: 'MultipleCredentialsNotSupportedError',
@@ -339,6 +352,7 @@ describe('verifyAuthorizationResponse', () => {
             verifyAuthorizationResponse(envelope, pidQuery, {
                 trustedCertificates: [issuerKey.certDerBytes],
                 nonce: vpNonce,
+                clientId: vpClientId,
             }),
         ).rejects.toMatchObject({
             name: 'MultipleCredentialsNotSupportedError',
@@ -352,7 +366,7 @@ describe('verifyAuthorizationResponse', () => {
             verifyAuthorizationResponse(
                 { state: 's' } as unknown as { vp_token: Record<string, string[]> },
                 pidQuery,
-                { trustedCertificates: [issuerKey.certDerBytes], nonce: vpNonce },
+                { trustedCertificates: [issuerKey.certDerBytes], nonce: vpNonce, clientId: vpClientId },
             ),
         ).rejects.toThrow();
     });
@@ -365,6 +379,7 @@ describe('verifyAuthorizationResponse', () => {
             verifyAuthorizationResponse(malformed, pidQuery, {
                 trustedCertificates: [issuerKey.certDerBytes],
                 nonce: vpNonce,
+                clientId: vpClientId,
             }),
         ).rejects.toThrow(/must be an array/i);
     });
@@ -374,6 +389,7 @@ describe('verifyAuthorizationResponse', () => {
             verifyAuthorizationResponse({ vp_token: {} }, pidQuery, {
                 trustedCertificates: [issuerKey.certDerBytes],
                 nonce: vpNonce,
+                clientId: vpClientId,
             }),
         ).rejects.toThrow(/empty|no presentations/i);
     });
@@ -449,6 +465,7 @@ describe('verifyAuthorizationResponse', () => {
             const result = await verifyAuthorizationResponse(envelope, reorderedQuery, {
                 trustedCertificates: [issuerKey.certDerBytes],
                 nonce: vpNonce,
+                clientId: vpClientId,
             });
 
             expect(result.parsed.valid).toBe(true);
@@ -537,6 +554,9 @@ describe('age-attestation OR PID disjunction — verifyAuthorizationResponse', (
     it('verifies a wallet that satisfies the PID option instead', async () => {
         const pidVp = await buildSignedSdJwt({
             issuerKey,
+            holderKey: await generateTestKeyMaterial('ES256'),
+            nonce: vpNonce,
+            audience: vpClientId,
             claims: { vct: 'urn:eu.europa.ec.eudi:pid:1' },
             disclosureClaims: [['birth_date', '1990-01-01']],
         });
@@ -546,6 +566,7 @@ describe('age-attestation OR PID disjunction — verifyAuthorizationResponse', (
         const result = await verifyAuthorizationResponse(envelope, ageOrPidQuery, {
             trustedCertificates: [issuerKey.certDerBytes],
             nonce: vpNonce,
+            clientId: vpClientId,
         });
 
         expect(result.valid).toBe(true);
@@ -555,6 +576,9 @@ describe('age-attestation OR PID disjunction — verifyAuthorizationResponse', (
     it('still rejects a wallet that presents BOTH options', async () => {
         const pidVp = await buildSignedSdJwt({
             issuerKey,
+            holderKey: await generateTestKeyMaterial('ES256'),
+            nonce: vpNonce,
+            audience: vpClientId,
             claims: { vct: 'urn:eu.europa.ec.eudi:pid:1' },
             disclosureClaims: [['birth_date', '1990-01-01']],
         });
@@ -575,6 +599,7 @@ describe('age-attestation OR PID disjunction — verifyAuthorizationResponse', (
             verifyAuthorizationResponse(envelope, ageOrPidQuery, {
                 trustedCertificates: [issuerKey.certDerBytes],
                 nonce: vpNonce,
+                clientId: vpClientId,
             }),
         ).rejects.toThrow(MultipleCredentialsNotSupportedError);
     });
