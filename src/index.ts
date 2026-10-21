@@ -30,7 +30,33 @@ export { decryptAuthorizationResponse } from './decrypt-response.js';
 export {
     buildOid4vpSessionTranscript,
     buildOpenID4VPHandoverSessionTranscript,
+    buildOpenID4VPDCAPIHandoverSessionTranscript,
 } from './crypto/session-transcript.js';
+
+// W3C Digital Credentials API (OpenID4VP 1.0 Appendix A)
+export { createDcApiRequest } from './dc-api/request.js';
+export { verifyDcApiResponse } from './dc-api/response.js';
+export { DC_API_PRESENTATION_PROTOCOLS } from './dc-api/protocols.js';
+export {
+    DcApiRequestBuildError,
+    DcApiResponseError,
+    type DcApiRequestBuildErrorCode,
+    type DcApiResponseErrorCode,
+} from './dc-api/errors.js';
+export type {
+    DcApiPresentationProtocol,
+    DcApiOpenId4VpProtocol,
+} from './dc-api/protocols.js';
+export type {
+    DcApiResponseMode,
+    DcApiRequestInput,
+    DcApiUnsignedRequestInput,
+    DcApiSignedRequestInput,
+    DcApiCredentialRequest,
+    DcApiRequest,
+    DcApiResponse,
+    VerifyDcApiResponseOptions,
+} from './dc-api/types.js';
 export { SdJwtParser } from './parsers/sd-jwt.parser.js';
 export { MdocParser } from './parsers/mdoc.parser.js';
 export type { ICredentialParser, ParseOptions } from './parsers/parser.interface.js';
@@ -65,6 +91,7 @@ export type {
     EncryptedResponse,
     VerifyOptions,
     VerifyAuthorizationResponseOptions,
+    SessionTranscriptProfile,
     VerifyResult,
     HaipQueryInput,
     CredentialSetQueryInput,

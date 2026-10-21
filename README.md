@@ -345,13 +345,10 @@ Wallets POST the Authorization Response to your `responseUri`. The library is st
 
 The envelope arrives as form-encoded JSON; parse it, check `state`, then verify.
 
-**mDOC SessionTranscript wall:** plain `direct_post` has no JWE, so there is no `apu` header and `verifyAuthorizationResponse` cannot auto-build the mDOC `SessionTranscript`. You must pass `options.mdocSessionTranscript` yourself. For wallets that use the OpenID4VP 1.0 Final unencrypted handover, omit `verifierEncryptionJwk` so the handover's `jwkThumbprint` is CBOR `null`:
+**mDOC SessionTranscript:** pass `clientId` and `responseUri` (exactly as sent in the request) and `verifyAuthorizationResponse` auto-builds the OpenID4VP 1.0 Final `OpenID4VPHandover` transcript with a `null` JWK thumbprint, as §B.2.6.1 requires for unencrypted responses:
 
 ```ts
-import {
-  buildOpenID4VPHandoverSessionTranscript,
-  verifyAuthorizationResponse,
-} from "@openeudi/openid4vp";
+import { verifyAuthorizationResponse } from "@openeudi/openid4vp";
 
 const envelope = parsedVpTokenObject; // { vp_token, state, ... }
 
@@ -359,25 +356,20 @@ if (envelope.state !== submittedState) {
   throw new Error("state mismatch — possible CSRF / replay");
 }
 
-const mdocSessionTranscript = await buildOpenID4VPHandoverSessionTranscript({
-  clientId: verifierClientId,
-  nonce,
-  responseUri: verifierResponseUri,
-  // omit verifierEncryptionJwk → jwkThumbprint = null (unencrypted handover)
-});
-
 const result = await verifyAuthorizationResponse(envelope, dcqlQuery, {
   trustedCertificates: [issuerCertDer],
   nonce,
   clientId: verifierClientId,
   responseUri: verifierResponseUri,
-  mdocSessionTranscript,
+  // auto-builds OpenID4VPHandover [client_id, nonce, null, response_uri]
 });
 ```
 
+Draft-era (Annex B) wallets have no unencrypted transcript the library can derive (there is no JWE `apu`); pass `mdocSessionTranscript` explicitly for them.
+
 Without a transcript, the mDOC parser fails closed (`claims: {}`, no `docType` on the failure result). DCQL matching against that doctype-less parse can then surface a misleading `doctype_mismatch` even when the wallet sent the correct credential — prefer `parsed.error` when diagnosing.
 
-For `direct_post.jwt` auto-build (Annex B / `openid4vp-1.0`), see [mDOC SessionTranscript on the encrypted path](#mdoc-sessiontranscript-on-the-encrypted-path).
+For `direct_post.jwt` auto-build (`openid4vp-1.0` / legacy Annex B), see [mDOC SessionTranscript on the encrypted path](#mdoc-sessiontranscript-on-the-encrypted-path).
 
 ### Encrypted (`direct_post.jwt`)
 
@@ -413,21 +405,9 @@ If the wallet answered with an OpenID4VP 1.0 §8.5 error response (for example t
 
 #### mDOC SessionTranscript on the encrypted path
 
-Verifying an mDOC credential requires the ISO 18013-5 `SessionTranscript` the device signed over (see [mDOC](#mdoc) below). For **unencrypted** `direct_post` (no JWE / no `apu`), auto-build does not run — pass `mdocSessionTranscript` explicitly as shown in [Unencrypted (`direct_post`)](#unencrypted-direct_post). For `direct_post.jwt`, `verifyAuthorizationResponse` can auto-build the `SessionTranscript` for you, in one of two profiles selected via `options.sessionTranscriptProfile`:
+Verifying an mDOC credential requires the ISO 18013-5 `SessionTranscript` the device signed over (see [mDOC](#mdoc) below). When the presented credential is `mso_mdoc` and `clientId`, `responseUri` and `nonce` are passed, `verifyAuthorizationResponse` auto-builds it in the profile selected by `options.sessionTranscriptProfile`:
 
-- **`'iso-18013-7'` (default)** — the ISO 18013-7 Annex B OID4VP transcript, matching id2/id3-era wallets. Pass `options.clientId` and `options.responseUri` alongside the usual `options.nonce`, and the library derives the `mdoc-generated-nonce` from the JWE's `apu` header to construct the transcript before verification runs.
-
-  ```ts
-  const result = await verifyAuthorizationResponse(envelope, dcqlQuery, {
-    trustedCertificates: [issuerCertDer],
-    nonce,
-    decryptionKey: verifierEncryptionPrivateKey,
-    clientId: verifierClientId,
-    responseUri: verifierResponseUri,
-  });
-  ```
-
-- **`'openid4vp-1.0'`** — the OpenID4VP 1.0-Final `OpenID4VPHandover` transcript, for wallets that implement the final spec's SessionTranscript shape instead of the Annex B one. Pass `sessionTranscriptProfile: 'openid4vp-1.0'` together with `clientId`, `responseUri`, `nonce`, and — for the encrypted path — `verifierEncryptionJwk` (the verifier's response-encryption public JWK, used to derive the handover's JWK thumbprint). This profile does **not** read the JWE `apu` header.
+- **`'openid4vp-1.0'` (default)** — the OpenID4VP 1.0 Final `OpenID4VPHandover` transcript (§B.2.6.1). For `direct_post.jwt` also pass `verifierEncryptionJwk` (the response-encryption public JWK you sent in the request); its thumbprint is part of the transcript, and an encrypted mDOC response without it throws `MissingVerifierEncryptionKeyError`. For unencrypted `direct_post` the thumbprint is `null` and `verifierEncryptionJwk` is ignored. This profile does **not** read the JWE `apu` header.
 
   ```ts
   const result = await verifyAuthorizationResponse(envelope, dcqlQuery, {
@@ -436,12 +416,24 @@ Verifying an mDOC credential requires the ISO 18013-5 `SessionTranscript` the de
     decryptionKey: verifierEncryptionPrivateKey,
     clientId: verifierClientId,
     responseUri: verifierResponseUri,
-    sessionTranscriptProfile: 'openid4vp-1.0',
     verifierEncryptionJwk, // verifier's response-encryption public JWK
   });
   ```
 
-  The transcript is `[null, null, ["OpenID4VPHandover", SHA-256(cbor([client_id, nonce, jwk_thumbprint | null, response_uri]))]]`, where `jwk_thumbprint` is the RFC 7638 SHA-256 thumbprint of `verifierEncryptionJwk` (or `null` when the response is unencrypted). Callers who need this transcript outside `verifyAuthorizationResponse` can use the exported `buildOpenID4VPHandoverSessionTranscript({ clientId, nonce, responseUri, verifierEncryptionJwk? })`.
+- **`'oid4vp-draft-annex-b'`** — the legacy ISO 18013-7 Annex B `OID4VPHandover`, for draft-era (ID2/ID3) wallets. The library derives the `mdoc-generated-nonce` from the JWE `apu` header, so this works for `direct_post.jwt` only. `'iso-18013-7'` is a deprecated alias (it was the default up to 0.13.0).
+
+  ```ts
+  const result = await verifyAuthorizationResponse(envelope, dcqlQuery, {
+    trustedCertificates: [issuerCertDer],
+    nonce,
+    decryptionKey: verifierEncryptionPrivateKey,
+    clientId: verifierClientId,
+    responseUri: verifierResponseUri,
+    sessionTranscriptProfile: 'oid4vp-draft-annex-b',
+  });
+  ```
+
+  The 1.0 transcript is `[null, null, ["OpenID4VPHandover", SHA-256(cbor([client_id, nonce, jwk_thumbprint | null, response_uri]))]]`, where `jwk_thumbprint` is the RFC 7638 SHA-256 thumbprint of `verifierEncryptionJwk` (or `null` when the response is unencrypted). Callers who need this transcript outside `verifyAuthorizationResponse` can use the exported `buildOpenID4VPHandoverSessionTranscript({ clientId, nonce, responseUri, verifierEncryptionJwk? })`.
 
 If you already have the transcript bytes (or are verifying an mDOC outside either auto-build path), pass `options.mdocSessionTranscript: Uint8Array` explicitly — it always takes precedence over either auto-built value. `buildOid4vpSessionTranscript({ clientId, responseUri, nonce, mdocGeneratedNonce })` (Annex B) and `buildOpenID4VPHandoverSessionTranscript({ clientId, nonce, responseUri, verifierEncryptionJwk? })` (1.0-Final) are both exported for callers who need to construct a transcript themselves. Without a transcript, the mDOC parser fails closed — see [mDOC](#mdoc). For the plain `direct_post` pattern, see [Unencrypted (`direct_post`)](#unencrypted-direct_post).
 
@@ -459,13 +451,13 @@ Other algorithms throw `UnsupportedJweError`.
 Both `parsePresentation` and `verifyPresentation` accept:
 
 - `nonce` (required) — the nonce bound into the VP token at creation time.
-- `audience?` — the verifier's Client Identifier, which the KB-JWT `aud` must equal (OpenID4VP 1.0 Appendix B.3.6). **Required whenever a KB-JWT is verified** — `MissingAudienceError` is thrown otherwise. `verifyAuthorizationResponse` defaults it to `clientId`. An array `aud` is rejected.
+- `audience?` — the verifier's Client Identifier, which the KB-JWT `aud` must equal (OpenID4VP 1.0 Appendix B.3.6). **Required whenever a KB-JWT is verified** — `MissingAudienceError` is thrown otherwise. `verifyAuthorizationResponse` defaults it to `clientId`. An array `aud` is rejected. `verifyDcApiResponse` always uses `origin:<origin>` instead (see [Digital Credentials API](#digital-credentials-api)).
 - `requireKeyBinding?` — force SD-JWT holder-binding verification even when the issuer JWT carries no `cnf` claim. When the credential **is** holder-bound (`cnf` present), a KB-JWT is **always** required regardless of this flag — fail-closed, not opt-in. Default `false` for the parsers; `verifyPresentation` / `verifyAuthorizationResponse` also require it whenever the matched query does not set `require_cryptographic_holder_binding: false`. See [SD-JWT VC](#sd-jwt-vc).
 - `kbJwtMaxAge?` — largest accepted KB-JWT age in seconds, judged by `iat` and widened by `clockSkewTolerance` on both sides. Default 300.
 - `vctAncestors?` — *(`verifyPresentation` / `verifyAuthorizationResponse`)* out-of-band SD-JWT VC type inheritance, e.g. `{ "urn:eudi:pid:de:1": ["urn:eudi:pid:1"] }`. See [Verifying presentations against a query](#verifying-presentations-against-a-query).
-- `mdocSessionTranscript?` — CBOR bytes of the ISO 18013-5 `SessionTranscript` for the current OpenID4VP exchange. **Required** to verify mDOC device authentication; the mDOC parser fails closed without it. For `direct_post.jwt`, `verifyAuthorizationResponse` can build this for you from `clientId`/`responseUri` — see [mDOC SessionTranscript on the encrypted path](#mdoc-sessiontranscript-on-the-encrypted-path). See [mDOC](#mdoc).
-- `sessionTranscriptProfile?` — *(`VerifyAuthorizationResponseOptions` only — the `direct_post`/`direct_post.jwt` auto-build described above)* which `SessionTranscript` shape to build from `clientId`/`responseUri`/`nonce`: `'iso-18013-7'` (default) builds the Annex B, `apu`-derived transcript for id2/id3-era wallets; `'openid4vp-1.0'` builds the OpenID4VP 1.0-Final `OpenID4VPHandover` transcript instead. See [mDOC SessionTranscript on the encrypted path](#mdoc-sessiontranscript-on-the-encrypted-path).
-- `verifierEncryptionJwk?` — *(`VerifyAuthorizationResponseOptions` only)* the verifier's response-encryption public JWK. Required on the encrypted path when `sessionTranscriptProfile: 'openid4vp-1.0'` is used, to derive the handover's JWK thumbprint; ignored for the `'iso-18013-7'` profile.
+- `mdocSessionTranscript?` — CBOR bytes of the ISO 18013-5 `SessionTranscript` for the current OpenID4VP exchange. **Required** to verify mDOC device authentication; the mDOC parser fails closed without it. `verifyAuthorizationResponse` can build this for you from `clientId`/`responseUri` — see [mDOC SessionTranscript on the encrypted path](#mdoc-sessiontranscript-on-the-encrypted-path). See [mDOC](#mdoc).
+- `sessionTranscriptProfile?` — *(`VerifyAuthorizationResponseOptions` only — the `direct_post`/`direct_post.jwt` auto-build described above)* which `SessionTranscript` shape to build from `clientId`/`responseUri`/`nonce`: `'openid4vp-1.0'` (default) builds the OpenID4VP 1.0 Final `OpenID4VPHandover`; `'oid4vp-draft-annex-b'` (deprecated alias `'iso-18013-7'`) builds the Annex B, `apu`-derived transcript for draft-era wallets. See [mDOC SessionTranscript on the encrypted path](#mdoc-sessiontranscript-on-the-encrypted-path).
+- `verifierEncryptionJwk?` — *(`VerifyAuthorizationResponseOptions` only)* the verifier's response-encryption public JWK. Required for an encrypted `mso_mdoc` response under the default `'openid4vp-1.0'` profile, to derive the handover's JWK thumbprint; ignored for unencrypted responses and for the Annex B profile.
 - `trustedCertificates?` — DER-encoded issuer leaf certificates for the 0.4.x byte-equality trust check, used only when `trustStore` is unset. Deprecated since 0.5.0 — supply `trustStore` instead. Optional since 0.14.0.
 - `trustStore?` — `TrustStore` instance for full RFC 5280 chain validation (e.g. `LotlTrustStore`, `StaticTrustStore`, or `CompositeTrustStore`). When set, takes precedence over `trustedCertificates`.
 
@@ -591,6 +583,111 @@ The status check runs only after the credential itself has fully validated (sign
 
 **Not yet covered:** the mdoc MSO `status` (`statuslist+cwt`, §5.2 / §6.3) is not evaluated — `statusPolicy` currently applies to SD-JWT VC only; Status List Aggregation (§9) and historical resolution (§8.4, `time` parameter) are not implemented; status-list keys must come from `x5c` (no `kid` / `jwks` resolution).
 
+## Digital Credentials API
+
+`createDcApiRequest` and `verifyDcApiResponse` implement **OpenID4VP over the W3C Digital Credentials API** (OpenID4VP 1.0 Final Appendix A, HAIP 1.0 §5.2). The browser mediates the wallet call, so there is no QR code, no `request_uri` and no `response_uri`: the server builds a request, the frontend passes it to `navigator.credentials.get()`, and the frontend posts the result back to the server for verification. This library only runs on the server side.
+
+Supported protocols (`DigitalCredentialGetRequest.protocol`):
+
+| Protocol | Built by | Notes |
+| --- | --- | --- |
+| `openid4vp-v1-unsigned` | `protocol: 'openid4vp-v1-unsigned'` | §A.3.1. Parameters in clear; `client_id` omitted. The browser's origin authenticates the verifier. |
+| `openid4vp-v1-signed` | `protocol: 'openid4vp-v1-signed'` | §A.3.2.1. JWS Request Object in `data.request`, with `client_id` (`x509_hash` by default, as HAIP requires) and the REQUIRED `expected_origins`. Same certificate checks as `createSignedAuthorizationRequest`, including `trust_anchor_in_chain`. |
+| `openid4vp-v1-multisigned` | — | Not supported (JWS JSON Serialization). Rejected with `unsupported_protocol`. |
+| `org-iso-mdoc` | — | Not supported yet (ISO/IEC 18013-7 Annex C). See below. |
+
+Both variants accept `verifierInfo` (validated as for `createSignedAuthorizationRequest`, `DcApiRequestBuildError('invalid_verifier_info')`) and emit it as `verifier_info`: inside the Request Object when signed, as a plain `data` member when unsigned. Wallets enforcing ETSI TS 119 472-2 or HAIP expect it in a signed request.
+
+The library only emits protocol strings from the W3C closed `DigitalCredentialPresentationProtocol` set (exported as `DC_API_PRESENTATION_PROTOCOLS`). Browsers reject other strings.
+
+**Server: build the request**
+
+```ts
+import { createDcApiRequest, buildHaipQuery } from "@openeudi/openid4vp";
+
+// Ephemeral response-encryption key per request (dc_api.jwt is the default and HAIP's requirement).
+const encKeys = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+const encryptionJwk = { ...(await crypto.subtle.exportKey("jwk", encKeys.publicKey)), alg: "ECDH-ES" };
+
+const dcRequest = await createDcApiRequest(
+  {
+    protocol: "openid4vp-v1-unsigned", // or 'openid4vp-v1-signed' + expectedOrigins, signer, certificateChain
+    nonce: crypto.randomUUID(),
+    encryptionKey: { publicJwk: encryptionJwk },
+    vpFormatsSupported: { "dc+sd-jwt": { "sd-jwt_alg_values": ["ES256"], "kb-jwt_alg_values": ["ES256"] } },
+  },
+  buildHaipQuery({ credentialId: "pid", format: "dc+sd-jwt", vctValues: ["urn:eudi:pid:1"], claims: ["birthdate"] }),
+);
+
+// Keep nonce, the encryption key pair and the query in the server-side session.
+// Send dcRequest.request (JSON) to the browser.
+```
+
+**Browser: call the wallet** (integrator code; not part of this package)
+
+```ts
+const request = await fetch("/dc-api/request").then((r) => r.json()); // = dcRequest.request
+const credential = await navigator.credentials.get({
+  mediation: "required",
+  digital: { requests: [request] },
+});
+await fetch("/dc-api/response", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ protocol: credential.protocol, data: credential.data }),
+});
+```
+
+Feature-detect with `typeof DigitalCredential !== "undefined"` and, where available, `DigitalCredential.userAgentAllowsProtocol("openid4vp-v1-unsigned")`. Fall back to the redirect / QR flow otherwise.
+
+**Server: verify the response**
+
+```ts
+import { verifyDcApiResponse, WalletErrorResponseError } from "@openeudi/openid4vp";
+
+try {
+  const result = await verifyDcApiResponse(body, session.dcqlQuery, {
+    origin: "https://shop.example", // from configuration, never from the request
+    nonce: session.nonce,
+    responseMode: "dc_api.jwt",
+    protocol: "openid4vp-v1-unsigned",
+    decryptionKey: session.encKeys.privateKey,
+    verifierEncryptionJwk: session.encryptionJwk, // needed for mso_mdoc
+    trustStore,
+    trustedCertificates: [],
+  });
+  if (!result.valid) throw new Error(result.parsed.error ?? "presentation rejected");
+} catch (err) {
+  if (err instanceof WalletErrorResponseError) {
+    // e.g. err.code === 'access_denied' — the user declined in the wallet
+  }
+  throw err;
+}
+```
+
+What `verifyDcApiResponse` enforces:
+
+- `protocol` is one of the two supported values, and equals `options.protocol` when set (`DcApiResponseError`: `unsupported_protocol`, `protocol_mismatch`).
+- A wallet error object (`data: { error }`, §A.4, or `{ error }` inside a decrypted `dc_api.jwt` payload) throws `WalletErrorResponseError` (`code`, `description`, `state`, `uri`) — the same class as `verifyAuthorizationResponse`.
+- The envelope matches `responseMode` (default `dc_api.jwt`): an unencrypted `vp_token` in reply to a `dc_api.jwt` request throws `unencrypted_response`; a JWE in reply to `dc_api` throws `unexpected_encrypted_response`. Decryption uses the same ECDH-ES + A128GCM/A256GCM allow-list as `direct_post.jwt`.
+- SD-JWT VC: the KB-JWT `aud` must be `origin:<origin>` (§A.4, also for **signed** requests: the `client_id` is never the audience over the DC API) and `nonce` must match. A KB-JWT is required by default (`requireKeyBinding` defaults to `true` here), because it is the only thing that binds an SD-JWT presentation to the origin.
+- mDOC: the device signature must cover the `OpenID4VPDCAPIHandover` SessionTranscript `[null, null, ["OpenID4VPDCAPIHandover", sha256(cbor([origin, nonce, jwkThumbprint | null]))]]` (§B.2.6.2), built automatically. The thumbprint is that of `verifierEncryptionJwk` for `dc_api.jwt` and `null` for `dc_api`. `buildOpenID4VPDCAPIHandoverSessionTranscript` is exported.
+- There is no `state` over the DC API (§A.2). Bind the response to your session with the `nonce`, and use each nonce once.
+- The other `VerifyOptions` (`trustStore`, `statusPolicy` / `statusListResolver`, `vctAncestors`, …) apply as for `verifyAuthorizationResponse`; `audience` is derived from `origin`, and a conflicting value throws `audience_conflict`.
+
+`origin` must be the serialized origin exactly as the browser sends it (`https://shop.example`, no path or trailing slash). `http:` is accepted only for `localhost` / loopback, since the API needs a secure context. For a signed request listing several `expected_origins`, pass the origin the page was actually served from.
+
+**Not in this release:**
+
+- `org-iso-mdoc` (ISO/IEC 18013-7 Annex C, phase 2). The EU age-verification profile uses this protocol as its default DC API transport.
+- Zero-knowledge proofs of age (for example Longfellow, phase 3). They are only available over that transport and probably belong in a separate package.
+- `openid4vp-v1-multisigned`, `transaction_data` and multi-credential responses.
+
+**Browser status** (checked 2026-10-20; re-check before relying on it):
+
+- Chromium plans to stop passing unregistered protocol strings to the platform. Its [Intent to Ship](https://groups.google.com/a/chromium.org/g/blink-dev/c/fc7awi_7hYo/m/M0K1zP7IBQAJ) holds the removal until the start of 2027. Requests built by this library already use registered strings only.
+- WebKit renamed the IDL dictionary `DigitalCredentialRequest` to `DigitalCredentialGetRequest` to follow the spec ([WebKit bug 304311](https://bugs.webkit.org/show_bug.cgi?id=304311)). The JavaScript object shape (`{ protocol, data }`) is unchanged.
+
 ## Supported formats
 
 ### SD-JWT VC
@@ -657,9 +754,10 @@ Mobile Document credentials as defined in ISO 18013-5. The token is a CBOR-encod
 | `MissingAudienceError`     | An expected audience is required …      | A KB-JWT is verified without `audience` (or `clientId`) |
 | `WalletErrorResponseError` | Wallet returned an error response: `{code}` | The wallet sent an OpenID4VP §8.5 error response (`code`, `description`, `state`) |
 | `CertificateChainError`    | (per check)                             | Chain validation fails; see `reason` (e.g. `unrecognised_critical_extension`) |
-| `SignedRequestBuildError`  | (per check)                             | `createSignedAuthorizationRequest` input is invalid; see `code` (e.g. `trust_anchor_in_chain`, `invalid_verifier_info`) |
-
+| `SignedRequestBuildError`  | (per check)                             | `createSignedAuthorizationRequest` (or a signed `createDcApiRequest`) input is invalid; see `code` (e.g. `trust_anchor_in_chain`, `invalid_verifier_info`) |
 | `StatusListError`          | Status List Token … / status_list …     | Token Status List unusable under `statusPolicy: 'require'`, or misconfiguration (`reason`) |
+| `DcApiRequestBuildError`   | (per `code`)                              | `createDcApiRequest` refuses its input             |
+| `DcApiResponseError`       | (per `code`)                              | DC API response has the wrong protocol or envelope, or `origin` is misconfigured |
 
 ```ts
 import { MalformedCredentialError, ExpiredCredentialError } from "@openeudi/openid4vp";
@@ -685,6 +783,7 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 - **HAIP** — `buildHaipQuery` / `validateHaipQuery` helpers for the High Assurance Interoperability Profile, plus `buildCredentialSetQuery` / `validateCredentialSetQuery` for `credential_sets` disjunctions.
 - **Signed authorization requests (JAR)** — `createSignedAuthorizationRequest` per RFC 9101 / OpenID4VP 1.0 §5.10 with `x509_san_dns` or `x509_hash` client-id binding. Emits the OpenID4VP 1.0 Final `client_metadata` shape. Self-signed verifier leaf certificates are rejected by default per HAIP 1.0 Final.
 - **Encrypted responses** — `decryptAuthorizationResponse` for `direct_post.jwt` (ECDH-ES + A128GCM/A256GCM), `verifyAuthorizationResponse` for the 1.0 §8.1 object-keyed `vp_token` envelope.
+- **W3C Digital Credentials API** — `createDcApiRequest` / `verifyDcApiResponse` for `openid4vp-v1-unsigned` and `openid4vp-v1-signed`, with `dc_api` and `dc_api.jwt` (OpenID4VP 1.0 Appendix A). See [Digital Credentials API](#digital-credentials-api).
 - **X.509 chain validation** — RFC 5280 chain building including `nameConstraints`, `StaticTrustStore`, `CompositeTrustStore`; IACA → document-signer chains for `mso_mdoc` with the ISO 18013-5 Annex B certificate profile.
 - **Revocation checking** — OCSP-first with CRL fallback (`revocationPolicy: 'skip' | 'prefer' | 'require'`).
 - **Credential status** — IETF Token Status List (`statuslist+jwt`) for SD-JWT VC via `StatusListResolver` and `statusPolicy: 'skip' | 'prefer' | 'require'`.
@@ -696,6 +795,7 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 
 - Multi-credential DCQL queries (multiple query ids) and multi-presentation arrays per query id — currently rejected with `MultipleCredentialsNotSupportedError`.
 - SIOPv2 (Self-Issued OpenID Provider) identity flows.
+- Digital Credentials API: `org-iso-mdoc` (ISO/IEC 18013-7 Annex C), ZKP proofs of age, and `openid4vp-v1-multisigned`.
 
 EUDI Architecture Reference Framework (ARF) alignment: tracks OpenID4VP 1.0 final. Full ARF profile compliance (ARF v3.0.0, 2026-07-23, at the time of writing) is a goal for a stable 1.0.
 
@@ -730,6 +830,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for per-release changes. Key migration moment
 - **0.11.0** — **BREAKING:** `createSignedAuthorizationRequest` now rejects a self-signed leaf certificate with `SignedRequestBuildError: self_signed_leaf`, per HAIP 1.0 Final. Verifiers using a self-signed certificate for their own identity must either move to a CA-issued certificate (the correct fix) or pass `allowSelfSignedCertificate: true` to keep the previous behaviour. Verification of wallet presentations is unaffected — this concerns only the verifier's own request-signing certificate.
 - **0.10.0** — `createSignedAuthorizationRequest` gains `clientIdPrefix` (`x509_san_dns` default, or `x509_hash`), and `hostname` becomes optional — required only for `x509_san_dns`, but still validated against the leaf SAN whenever supplied. **Wire change for existing callers:** the emitted `client_metadata` no longer carries the singular ID3 `authorization_encrypted_response_alg` / `authorization_encrypted_response_enc` fields added in 0.8.0. Verifiers that read the 1.0 Final `encrypted_response_enc_values_supported` array (and `alg` from `client_metadata.jwks`) are unaffected; anything still reading the singular fields needs updating.
 - **0.13.0** — **BREAKING:** SD-JWT VC issuer JWTs must carry `typ: dc+sd-jwt` (draft-ietf-oauth-sd-jwt-vc-19); `vc+sd-jwt` is rejected unless you pass `allowLegacyVcSdJwtTyp: true`, which is already deprecated and goes in 1.0.0. **BREAKING:** trust-module fetches (LOTL / national TL, CRL, OCSP) are SSRF-guarded by default — a CA, OCSP responder or trusted list on a private network now needs `fetcher: createGuardedFetcher({ allowHttp: true, allowPrivateNetworks: true })`. IACA → document-signer chain building only applies on the `trustStore` path: `trustedCertificates` is still byte-equality, so pass `trustStore: new StaticTrustStore([...])` to accept PIDs whose list publishes the IACA rather than the signer.
+- **Unreleased** — **BREAKING:** the default mDOC `sessionTranscriptProfile` is now `'openid4vp-1.0'` (OpenID4VP 1.0 Final `OpenID4VPHandover`), and it is also auto-built for unencrypted `direct_post`. Verifiers that relied on the old Annex B default for draft-era wallets must pass `sessionTranscriptProfile: 'oid4vp-draft-annex-b'` (`'iso-18013-7'` still works as a deprecated alias). Encrypted `mso_mdoc` responses under the new default need `verifierEncryptionJwk`. New: [Digital Credentials API](#digital-credentials-api) support.
 
 - **Unreleased (next minor)** — **BREAKING:** a KB-JWT needs an expected audience (`audience`, or `clientId` on `verifyAuthorizationResponse`; `MissingAudienceError` otherwise), its `aud` must be one string equal to it, and `typ: kb+jwt`, `iat` (within `kbJwtMaxAge`, default 300 s) and `sd_hash` are required. **BREAKING:** `verifyPresentation` / `verifyAuthorizationResponse` reject a bearer SD-JWT VC unless the query sets `require_cryptographic_holder_binding: false`. **BREAKING:** `trusted_authorities` `aki` values are base64url AKI key ids (hex still matches for one release, with a warning), and each value only matches its own type. **BREAKING:** certificates with unrecognised critical extensions are rejected; `createSignedAuthorizationRequest` rejects a `certificateChain` ending in the trust anchor. See [CHANGELOG](./CHANGELOG.md).
 - **0.14.0** — Security release ([GHSA-3v3j-fghh-r2gg](https://github.com/openeudi/openid4vp/security/advisories/GHSA-3v3j-fghh-r2gg), [GHSA-r8q4-fcxm-v42q](https://github.com/openeudi/openid4vp/security/advisories/GHSA-r8q4-fcxm-v42q)). **BREAKING:** the KB-JWT `aud` must equal the verifier's client identifier. `verifyAuthorizationResponse` defaults `audience` to `clientId`, and with no audience available the check throws `MissingAudienceError`. **BREAKING:** the DCQL `require_cryptographic_holder_binding` (default `true`) is enforced, so bearer SD-JWT VCs fail unless the query sets it to `false`. **BREAKING:** `trusted_authorities` `aki` values are base64url (hex still matches for one release), unrecognised critical X.509 extensions are rejected, and Node.js 22 or later is required. KB-JWT `typ` and `iat` freshness (`kbJwtMaxAge`, default 300 s) are checked too.

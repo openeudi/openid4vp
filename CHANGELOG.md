@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **The default mDOC SessionTranscript is now the OpenID4VP 1.0 Final
+  `OpenID4VPHandover`** (§B.2.6.1, `sessionTranscriptProfile: 'openid4vp-1.0'`).
+  Up to 0.13.0 the default was the ISO 18013-7 Annex B `OID4VPHandover` of
+  draft-era (ID2/ID3) wallets, so every 1.0 Final mDOC wallet failed device
+  authentication unless the caller opted in.
+  - It is now also auto-built for **unencrypted `direct_post`** envelopes,
+    with the `null` JWK thumbprint the spec requires. Pass `clientId`,
+    `responseUri` and `nonce` as before. Previously no transcript was built
+    there and the mDOC parser failed closed.
+  - The transcript is only built when the presented credential is
+    `mso_mdoc`. An encrypted SD-JWT VC response therefore no longer needs
+    `verifierEncryptionJwk` under the 1.0 profile.
+  - An encrypted `mso_mdoc` response under the new default throws
+    `MissingVerifierEncryptionKeyError` when `verifierEncryptionJwk` is missing
+    (unchanged behaviour of the 1.0 profile). The error is now raised after
+    decryption instead of before.
+  - The Annex B layout is renamed `'oid4vp-draft-annex-b'`. `'iso-18013-7'`
+    stays as a deprecated alias and will be removed in 1.0.0.
+
+  **Migration:**
+  - Verifying 1.0 Final wallets with the default: pass `verifierEncryptionJwk`
+    (the public JWK you sent in `client_metadata.jwks`) for `direct_post.jwt`.
+    If you passed `sessionTranscriptProfile: 'openid4vp-1.0'` already, nothing
+    changes. If you built the null-thumbprint transcript by hand for
+    `direct_post`, you can drop it.
+  - Still verifying draft-era wallets: pass
+    `sessionTranscriptProfile: 'oid4vp-draft-annex-b'`.
+  - Callers who pass `mdocSessionTranscript` explicitly are unaffected.
+
 ### Added
 
 - **`verifier_info` in authorization requests** (OpenID4VP 1.0 §5.1). Both
@@ -60,6 +91,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `fromCache`).
 - `StatusListError` (`code: 'status_list_error'`, `reason`, `uri`), plus
   `decodeStatusList` / `readStatusValue` and the related types.
+- **W3C Digital Credentials API, phase 1: OpenID4VP over the DC API**
+  (OpenID4VP 1.0 Final Appendix A, HAIP 1.0 §5.2).
+  - `createDcApiRequest(input, query)` returns the
+    `{ protocol, data }` entry for
+    `navigator.credentials.get({ digital: { requests } })`.
+    - `openid4vp-v1-unsigned`: plain parameters, no `client_id` (§A.2).
+    - `openid4vp-v1-signed`: JWS Request Object in `data.request`, with
+      `client_id` (`x509_hash` by default, as HAIP requires; `x509_san_dns`
+      also accepted) and the REQUIRED `expected_origins`.
+    - `response_mode` `dc_api.jwt` (default) or `dc_api`. For `dc_api.jwt` the
+      encryption JWK is published with `use: 'enc'` and a `kid` (its RFC 7638
+      thumbprint when absent). A JWK with a private `d` member is refused.
+    - `verifierInfo` is accepted and validated as for the redirect-flow
+      builders (`DcApiRequestBuildError('invalid_verifier_info')`) and emitted
+      as `verifier_info`: in the Request Object when signed, as a plain `data`
+      member when unsigned.
+    - Signed requests run the same certificate checks as
+      `createSignedAuthorizationRequest`, including `trust_anchor_in_chain`.
+    - Only protocol strings from the W3C closed set are emitted.
+      `openid4vp-v1-multisigned` and `org-iso-mdoc` throw
+      `DcApiRequestBuildError('unsupported_protocol')`.
+  - `verifyDcApiResponse(response, query, options)`:
+    - KB-JWT `aud` must be `origin:<origin>`, also for signed requests
+      (§A.4, §B.3.6). `requireKeyBinding` defaults to `true` on this path.
+    - mDOC uses the new `OpenID4VPDCAPIHandover` SessionTranscript (§B.2.6.2).
+    - The KB-JWT audience is always derived from `origin`, so the 0.14.0
+      `MissingAudienceError` cannot be hit (or bypassed) here; a conflicting
+      caller `audience` throws `DcApiResponseError('audience_conflict')`.
+    - An unencrypted response to a `dc_api.jwt` request is rejected.
+    - Wallet error objects (`data: { error }`, also inside a decrypted
+      `dc_api.jwt` payload) throw the 0.14.0 `WalletErrorResponseError`
+      (`code`, `description`, `state`, `uri`).
+    - `statusPolicy` / `statusListResolver` and the other `VerifyOptions` are
+      forwarded as for `verifyAuthorizationResponse`.
+  - `buildOpenID4VPDCAPIHandoverSessionTranscript({ origin, nonce, verifierEncryptionJwk? })`,
+    checked against the spec's example vector.
+  - `DC_API_PRESENTATION_PROTOCOLS`, `DcApiRequestBuildError`,
+    `DcApiResponseError` and the `DcApi*` types.
+- `SessionTranscriptProfile` type export.
 
 ### Notes
 
@@ -67,6 +137,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   intent is to default to `'prefer'` in 1.0.
 - The mdoc MSO `status` (`statuslist+cwt`) is not evaluated yet;
   `statusPolicy` applies to SD-JWT VC only.
+
+### Internal
+
+- The signed-request certificate checks (SAN/hostname binding, signer key
+  match, `self_signed_leaf`, `trust_anchor_in_chain`) and `x5c` signing moved
+  from `createSignedAuthorizationRequest` into a shared `request-signing`
+  module used by both request builders. Behaviour and error codes are
+  unchanged.
 
 ## [0.14.0] — 2026-10-21
 

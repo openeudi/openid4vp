@@ -259,65 +259,28 @@ export async function verifyAuthorizationResponse(
         if (!options.decryptionKey) {
             throw new MissingDecryptionKeyError();
         }
-
-        // Auto-build the mDOC SessionTranscript. A caller-supplied transcript
-        // always wins. Otherwise the layout depends on `sessionTranscriptProfile`
-        // (default 'iso-18013-7' preserves prior behavior):
-        //  - 'iso-18013-7': ISO 18013-7 Annex B OID4VPHandover, derived from the
-        //    mdoc-generated-nonce carried in the JWE `apu` header — which only
-        //    exists on the encrypted response, so this is the sole place we can
-        //    derive it.
-        //  - 'openid4vp-1.0': OpenID4VP 1.0 (Final) OpenID4VPHandover (§B.2.6),
-        //    derived from `verifierEncryptionJwk`'s thumbprint instead — no `apu`
-        //    needed.
-        // When the request config or apu/JWK is missing, we leave the transcript
-        // unset and the mDOC parser fails closed (SD-JWT flows are unaffected
-        // either way).
-        const nextOptions: VerifyAuthorizationResponseOptions = { ...options };
-        if (
-            options.mdocSessionTranscript === undefined &&
-            options.clientId !== undefined &&
-            options.responseUri !== undefined &&
-            options.nonce !== undefined
-        ) {
-            if (options.sessionTranscriptProfile === 'openid4vp-1.0') {
-                // An encrypted response always implies the verifier advertised a
-                // response-encryption JWK, so a missing `verifierEncryptionJwk` here
-                // is a caller misconfiguration, not a legitimate "unencrypted"
-                // scenario — fail loud instead of silently binding a
-                // null-thumbprint transcript that would only surface later as an
-                // opaque device-auth failure.
-                if (options.verifierEncryptionJwk === undefined) {
-                    throw new MissingVerifierEncryptionKeyError();
-                }
-                nextOptions.mdocSessionTranscript = await buildOpenID4VPHandoverSessionTranscript({
-                    clientId: options.clientId,
-                    nonce: options.nonce,
-                    responseUri: options.responseUri,
-                    verifierEncryptionJwk: options.verifierEncryptionJwk,
-                });
-            } else {
-                const mdocGeneratedNonce = extractMdocGeneratedNonce(envelope.response);
-                if (mdocGeneratedNonce !== undefined) {
-                    nextOptions.mdocSessionTranscript = await buildOid4vpSessionTranscript({
-                        clientId: options.clientId,
-                        responseUri: options.responseUri,
-                        nonce: options.nonce,
-                        mdocGeneratedNonce,
-                    });
-                }
-            }
-        }
-
         const decrypted = await decryptAuthorizationResponse(
             envelope.response,
             options.decryptionKey,
         );
-        return verifyAuthorizationResponse(decrypted, query, nextOptions);
+        return verifyEnvelope(decrypted, query, options, envelope.response);
     }
+    return verifyEnvelope(envelope, query, options, undefined);
+}
 
+/**
+ * Verify a plaintext §8.1 envelope. `jwe` is the compact JWE it was decrypted
+ * from, or undefined when the response arrived unencrypted — it decides the
+ * SessionTranscript's thumbprint element and carries the Annex B `apu` nonce.
+ */
+async function verifyEnvelope(
+    envelope: unknown,
+    query: DcqlQuery,
+    options: VerifyAuthorizationResponseOptions,
+    jwe: string | undefined,
+): Promise<VerifyResult> {
     // OpenID4VP 1.0 §8.5 error response (also reachable decrypted, §8.3.1).
-    const walletResponse = envelope as unknown as Record<string, unknown> | null;
+    const walletResponse = envelope as Record<string, unknown> | null;
     if (typeof walletResponse === 'object' && walletResponse !== null && typeof walletResponse.error === 'string') {
         throw new WalletErrorResponseError({ ...walletResponse, error: walletResponse.error });
     }
@@ -364,14 +327,72 @@ export async function verifyAuthorizationResponse(
     const presentedCredentialQuery = query.credentials.find(
         (c) => c.id === presentedQueryId,
     );
+    const isMdoc = presentedCredentialQuery?.format === 'mso_mdoc';
     const decodedPresentation =
-        presentedCredentialQuery?.format === 'mso_mdoc' && typeof presentation === 'string'
+        isMdoc && typeof presentation === 'string'
             ? base64UrlToBytes(presentation)
             : presentation;
+
+    const mdocSessionTranscript = isMdoc
+        ? await autoBuildMdocSessionTranscript(options, jwe)
+        : options.mdocSessionTranscript;
 
     // OpenID4VP 1.0 Appendix B.3.6: the KB-JWT `aud` is the Client Identifier.
     return verifyPresentation(decodedPresentation, query, {
         ...options,
         audience: options.audience ?? options.clientId,
+        mdocSessionTranscript,
+    });
+}
+
+/**
+ * Auto-build the mDOC SessionTranscript for an OpenID4VP redirect-flow
+ * response (`direct_post` / `direct_post.jwt`). A caller-supplied transcript
+ * always wins. Without `clientId`, `responseUri` and `nonce` nothing is built
+ * and the mDOC parser fails closed.
+ *
+ * - `'openid4vp-1.0'` (default): OpenID4VP 1.0 §B.2.6.1 `OpenID4VPHandover`.
+ *   The thumbprint element is the verifier encryption key's thumbprint when the
+ *   response was encrypted and `null` otherwise, per the spec.
+ * - `'oid4vp-draft-annex-b'` / `'iso-18013-7'`: the legacy Annex B layout,
+ *   derived from the JWE `apu` header, so encrypted responses only.
+ */
+async function autoBuildMdocSessionTranscript(
+    options: VerifyAuthorizationResponseOptions,
+    jwe: string | undefined,
+): Promise<Uint8Array | undefined> {
+    if (
+        options.mdocSessionTranscript !== undefined ||
+        options.clientId === undefined ||
+        options.responseUri === undefined ||
+        options.nonce === undefined
+    ) {
+        return options.mdocSessionTranscript;
+    }
+
+    const profile = options.sessionTranscriptProfile ?? 'openid4vp-1.0';
+    if (profile === 'oid4vp-draft-annex-b' || profile === 'iso-18013-7') {
+        const mdocGeneratedNonce = jwe === undefined ? undefined : extractMdocGeneratedNonce(jwe);
+        if (mdocGeneratedNonce === undefined) return undefined;
+        return buildOid4vpSessionTranscript({
+            clientId: options.clientId,
+            responseUri: options.responseUri,
+            nonce: options.nonce,
+            mdocGeneratedNonce,
+        });
+    }
+
+    // An encrypted response implies the verifier advertised an encryption JWK,
+    // so a missing `verifierEncryptionJwk` is a caller misconfiguration. Fail
+    // loud rather than bind a null-thumbprint transcript that would only show
+    // up later as an opaque device-auth failure.
+    if (jwe !== undefined && options.verifierEncryptionJwk === undefined) {
+        throw new MissingVerifierEncryptionKeyError();
+    }
+    return buildOpenID4VPHandoverSessionTranscript({
+        clientId: options.clientId,
+        nonce: options.nonce,
+        responseUri: options.responseUri,
+        verifierEncryptionJwk: jwe === undefined ? undefined : options.verifierEncryptionJwk,
     });
 }
