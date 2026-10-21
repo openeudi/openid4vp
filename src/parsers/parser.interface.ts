@@ -104,6 +104,15 @@ export interface ParseOptions {
     trustStore?: TrustStore;
 
     /**
+     * Extended key usages accepted on an `mso_mdoc` Document Signer when a
+     * chain is built through `trustStore` (at least one must be present).
+     * Default `['1.0.18013.5.1.2']` (ISO 18013-5 `id-mdl-kp-mdlDS`). A signer
+     * that IS a trust anchor is not EKU-checked. `verifyAvPresentation` sets
+     * this for the EU Age Verification profile.
+     */
+    mdocDocumentSignerEkus?: readonly string[];
+
+    /**
      * Certificate revocation (CRL / OCSP) policy for the issuer chain built
      * from `trustStore`. Default `'skip'`.
      * - `'prefer'`: check; a revoked certificate fails, an unreachable

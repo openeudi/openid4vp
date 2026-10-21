@@ -488,6 +488,7 @@ Both `parsePresentation` and `verifyPresentation` accept:
   > Omit it and `LotlTrustStore` throws `LotlConfigurationError` on first use,
   > naming this as the cause. `StaticTrustStore` is unaffected.
 
+- `mdocDocumentSignerEkus?` — EKUs accepted on an `mso_mdoc` Document Signer when the chain is built to a CA anchor (at least one must be present). Default `['1.0.18013.5.1.2']`. A signer that is itself the anchor is not EKU-checked.
 - `revocationPolicy?` — `'skip'` (default) | `'prefer'` | `'require'`. Controls whether the chain validator consults OCSP / CRL.
 - `statusPolicy?` — `'skip'` (default) | `'prefer'` | `'require'`. Whether the SD-JWT VC `status` claim is checked against its Token Status List. See [Credential status (Token Status List)](#credential-status-token-status-list).
 - `statusListResolver?` — the `StatusListResolver` used when `statusPolicy` is not `'skip'`.
@@ -688,6 +689,85 @@ What `verifyDcApiResponse` enforces:
 - Chromium plans to stop passing unregistered protocol strings to the platform. Its [Intent to Ship](https://groups.google.com/a/chromium.org/g/blink-dev/c/fc7awi_7hYo/m/M0K1zP7IBQAJ) holds the removal until the start of 2027. Requests built by this library already use registered strings only.
 - WebKit renamed the IDL dictionary `DigitalCredentialRequest` to `DigitalCredentialGetRequest` to follow the spec ([WebKit bug 304311](https://bugs.webkit.org/show_bug.cgi?id=304311)). The JavaScript object shape (`{ protocol, data }`) is unchanged.
 
+## EU Age Verification (AV app) profile
+
+`createAvAuthorizationRequest` and `verifyAvPresentation` implement the **OpenID4VP fallback** of the [EU Age Verification technical specification](https://github.com/eu-digital-identity-wallet/av-doc-technical-specification), Annex A §A.6. Use it to accept a Proof of Age attestation from an AV app (the EU "mini wallet") by deep link or QR code. What the profile fixes:
+
+- The request goes to the AV app as plain query parameters, `av://?…` by default ("at least a custom URL scheme av:// MUST be supported"). It is not signed and there is no `request` / `request_uri` ("support for JAR is not required").
+- `response_type=vp_token`, `response_mode=direct_post` (unencrypted), `client_id=redirect_uri:<response_uri>`, a `nonce`, and an optional `state`.
+- The DCQL query asks for one `mso_mdoc` credential of doctype `eu.europa.ec.av.1` and claim `["eu.europa.ec.av.1", "age_over_18"]` (or another `age_over_NN`).
+- Relying Parties do not register and need no certificate: "The registration of Relying Parties that request age verification … is not required." TLS on `response_uri` is the only verifier authentication.
+
+**Server: build the request**
+
+```ts
+import { createAvAuthorizationRequest } from "@openeudi/openid4vp";
+
+const avRequest = createAvAuthorizationRequest({
+  responseUri: `https://shop.example/av/response/${sessionId}`, // https only
+  state: sessionId, // optional per Annex A; the reference verifier always sends one
+  // ageThreshold: 18, nonce: generated (256 bits), baseUri: "av://"
+});
+
+// Persist everything verification needs, keyed by the session.
+await sessions.save(sessionId, {
+  responseUri: avRequest.responseUri,
+  nonce: avRequest.nonce,
+  state: avRequest.state,
+  ageThreshold: avRequest.ageThreshold,
+});
+
+// Render avRequest.uri as a QR code (desktop) or a link (same device):
+// av://?response_type=vp_token&response_mode=direct_post&client_id=redirect_uri%3Ahttps%3A%2F%2F…
+```
+
+`client_metadata` carries `vp_formats_supported` for `mso_mdoc` (ES256/ES384/ES512, as the reference verifier advertises), because OpenID4VP 1.0 §5.9.3 passes all verifier metadata that way under `redirect_uri:`. Pass `vpFormatsSupported: null` to leave it out, like the Annex A example.
+
+**Server: verify the AV app's POST to `response_uri`**
+
+```ts
+import {
+  verifyAvPresentation,
+  StaticTrustStore,
+  WalletErrorResponseError,
+} from "@openeudi/openid4vp";
+
+// Anchors of authorised Attestation Providers from the Commission's AV trusted
+// list. Keep them apart from PID-provider anchors.
+const avTrustStore = new StaticTrustStore(avProviderCertificatesPem);
+
+app.post("/av/response/:sessionId", express.urlencoded({ extended: false }), async (req, res) => {
+  const persisted = await sessions.take(req.params.sessionId); // single use
+  try {
+    const result = await verifyAvPresentation(req.body, { request: persisted, trustStore: avTrustStore });
+    await sessions.complete(req.params.sessionId, { ageVerified: result.ageVerified, failure: result.failure });
+    res.json({}); // §8.2: may return { redirect_uri } for same-device flows
+  } catch (err) {
+    if (err instanceof WalletErrorResponseError) {
+      // user declined (access_denied) or the app failed
+    }
+    res.status(400).json({ error: "invalid_request" });
+  }
+});
+```
+
+What `verifyAvPresentation` checks:
+
+- `state` matches the request, when the request had one. `vp_token` holds exactly one presentation, under the requested credential id. Otherwise it throws `AvResponseError`. A wallet error response (`error=access_denied`, …) throws `WalletErrorResponseError`.
+- The `DeviceResponse` has exactly one document, with `docType` `eu.europa.ec.av.1` and status 0. The MSO `docType` must match too.
+- Data model (§A.4.2): "A Proof of Age Attestation SHALL NOT include any other attribute." Any namespace other than `eu.europa.ec.av.1`, or any element other than a boolean `age_over_NN`, rejects the presentation (`failure: 'unexpected_attribute'` / `'invalid_attribute_value'`). It is not ignored: such a credential does not conform to the data model, and accepting it would mean processing personal data the RP never asked for. Device-signed elements are rejected too.
+- Issuer signature, digests and MSO validity. The issuer chain must validate against `trustStore`. A Document Signer under a CA anchor must carry EKU `1.3.130.2.0.0.1.2` (the AV reference issuer's) or `1.0.18013.5.1.2` (ISO 18013-5); override with `documentSignerEkus`. Revocation is skipped by default ("Attestation revocation is not required").
+- Device authentication over the OpenID4VP 1.0 `OpenID4VPHandover` SessionTranscript `[clientId, nonce, null, responseUri]` (§B.2.6.1, `null` because the response is not encrypted). It is byte-identical to the Annex A example transcript.
+- The requested `age_over_NN` is disclosed (`failure: 'missing_attribute'` otherwise).
+
+Result: `{ valid, ageVerified, ageOver, ageThreshold, ageOverAttribute, issuer, trust, state, failure?, error? }`. **Gate access on `ageVerified`.** `valid: true` with `ageOver: false` is a genuine attestation that says the holder is *not* over the threshold. Trust failures throw `TrustAnchorNotFoundError` / `CertificateChainError`, as everywhere else in this library.
+
+Use each `nonce` once. The spec recommends treating a plain-mdoc Proof of Age attestation as single use; the AV app enforces that, and nonce binding prevents replay to your verifier.
+
+**Not covered:** the W3C Digital Credentials API transport with `org-iso-mdoc` and zero-knowledge proofs (Annex A §A.8, the profile's preferred mechanism), and issuance. The request carries no `verifier_info`: it is unsigned under `redirect_uri:`, so nothing could bind it to the verifier. The mdoc MSO `status` is not evaluated (`statusPolicy` covers SD-JWT VC only).
+
+**Known interop issue:** the AV reference implementation's certificates (the Annex A §A.11 Document Signer and the "Age Verification Issuer CA 01" bundled in the AV Android app) encode `IssuerAltName` as a nested Extension instead of `GeneralNames`. `@peculiar/x509` cannot parse it, so `StaticTrustStore` and chain validation throw on those certificates. RFC 5280 §4.2 requires a recognised extension to be processed, so this library fails closed rather than skipping it.
+
 ## Supported formats
 
 ### SD-JWT VC
@@ -758,6 +838,8 @@ Mobile Document credentials as defined in ISO 18013-5. The token is a CBOR-encod
 | `StatusListError`          | Status List Token … / status_list …     | Token Status List unusable under `statusPolicy: 'require'`, or misconfiguration (`reason`) |
 | `DcApiRequestBuildError`   | (per `code`)                              | `createDcApiRequest` refuses its input             |
 | `DcApiResponseError`       | (per `code`)                              | DC API response has the wrong protocol or envelope, or `origin` is misconfigured |
+| `AvRequestBuildError`      | (per `code`)                              | `createAvAuthorizationRequest` refuses its input   |
+| `AvResponseError`          | (per `code`)                              | AV response has the wrong `state` or `vp_token` shape, or the verification context is not an AV request |
 
 ```ts
 import { MalformedCredentialError, ExpiredCredentialError } from "@openeudi/openid4vp";
@@ -784,6 +866,7 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 - **Signed authorization requests (JAR)** — `createSignedAuthorizationRequest` per RFC 9101 / OpenID4VP 1.0 §5.10 with `x509_san_dns` or `x509_hash` client-id binding. Emits the OpenID4VP 1.0 Final `client_metadata` shape. Self-signed verifier leaf certificates are rejected by default per HAIP 1.0 Final.
 - **Encrypted responses** — `decryptAuthorizationResponse` for `direct_post.jwt` (ECDH-ES + A128GCM/A256GCM), `verifyAuthorizationResponse` for the 1.0 §8.1 object-keyed `vp_token` envelope.
 - **W3C Digital Credentials API** — `createDcApiRequest` / `verifyDcApiResponse` for `openid4vp-v1-unsigned` and `openid4vp-v1-signed`, with `dc_api` and `dc_api.jwt` (OpenID4VP 1.0 Appendix A). See [Digital Credentials API](#digital-credentials-api).
+- **EU Age Verification profile** — `createAvAuthorizationRequest` / `verifyAvPresentation` for the AV app's OpenID4VP fallback (`av://`, `redirect_uri:`, `direct_post`, plain `eu.europa.ec.av.1` mdoc). See [EU Age Verification (AV app) profile](#eu-age-verification-av-app-profile).
 - **X.509 chain validation** — RFC 5280 chain building including `nameConstraints`, `StaticTrustStore`, `CompositeTrustStore`; IACA → document-signer chains for `mso_mdoc` with the ISO 18013-5 Annex B certificate profile.
 - **Revocation checking** — OCSP-first with CRL fallback (`revocationPolicy: 'skip' | 'prefer' | 'require'`).
 - **Credential status** — IETF Token Status List (`statuslist+jwt`) for SD-JWT VC via `StatusListResolver` and `statusPolicy: 'skip' | 'prefer' | 'require'`.

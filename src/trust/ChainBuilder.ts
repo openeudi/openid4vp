@@ -110,6 +110,13 @@ export interface ChainBuilderOptions {
   /** Certificate profile. Default `generic`. */
   profile?: CertificateProfile;
   /**
+   * Under the `iso18013-5` profile, the Document Signer must carry at least
+   * one of these extended key usages. Default `[ISO_18013_5_DS_EKU]`. Other
+   * mdoc ecosystems use their own DS EKU (e.g. the EU Age Verification
+   * reference issuer's `1.3.130.2.0.0.1.2`). Ignored by the `generic` profile.
+   */
+  documentSignerEkus?: readonly string[];
+  /**
    * Maximum number of certificates in a chain, leaf and anchor included.
    * Default {@link DEFAULT_MAX_CHAIN_LENGTH}. Bounds work on attacker-supplied
    * `x5c` / `x5chain` pools independently of any pathLenConstraint.
@@ -439,9 +446,11 @@ export class ChainBuilder {
     if (profile !== "iso18013-5") return;
     const ext = leaf.getExtension(ExtendedKeyUsageExtension);
     const usages = (ext?.usages ?? []).map(String);
-    if (!usages.includes(ISO_18013_5_DS_EKU)) {
+    const accepted = this.opts.documentSignerEkus ?? [ISO_18013_5_DS_EKU];
+    if (!accepted.some((oid) => usages.includes(oid))) {
       throw new CertificateChainError(
-        `document signer ${leaf.subject} lacks extended key usage ${ISO_18013_5_DS_EKU} (id-mdl-kp-mdlDS)`,
+        `document signer ${leaf.subject} lacks extended key usage ${accepted.join(" or ")}` +
+          (accepted.length === 1 && accepted[0] === ISO_18013_5_DS_EKU ? " (id-mdl-kp-mdlDS)" : ""),
         { reason: "extended_key_usage" }
       );
     }

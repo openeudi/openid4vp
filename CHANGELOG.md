@@ -129,6 +129,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     checked against the spec's example vector.
   - `DC_API_PRESENTATION_PROTOCOLS`, `DcApiRequestBuildError`,
     `DcApiResponseError` and the `DcApi*` types.
+- **EU Age Verification (AV app) profile: the OpenID4VP fallback**
+  (AV technical specification Annex A §A.4, §A.6; EID-202). New `src/av/` module.
+  - `createAvAuthorizationRequest(input)` builds the unsigned by-value request
+    `av://?response_type=vp_token&response_mode=direct_post&client_id=redirect_uri:<response_uri>&response_uri=…&nonce=…&dcql_query=…&client_metadata=…[&state=…]`.
+    The DCQL query asks for `mso_mdoc` doctype `eu.europa.ec.av.1`, claim
+    `["eu.europa.ec.av.1", "age_over_NN"]` (default 18).
+    - `response_uri` must be `https:`. The nonce is generated (256 bits) unless supplied.
+    - `client_metadata.vp_formats_supported` is `mso_mdoc` with ES256/ES384/ES512,
+      as the reference verifier advertises. `vpFormatsSupported: null` omits it.
+    - `baseUri` can replace `av://`.
+    - The result carries everything verification needs (`clientId`, `responseUri`,
+      `nonce`, `state`, `ageThreshold`, `credentialId`).
+  - `verifyAvPresentation(body, { request, trustStore })` verifies the AV app's
+    `direct_post` form body. It accepts a raw string, `URLSearchParams` or a parsed object.
+    - Wallet errors throw `WalletErrorResponseError`. A `state` or `vp_token`
+      shape mismatch throws `AvResponseError`.
+    - The `DeviceResponse` must hold exactly one `eu.europa.ec.av.1` document.
+      Only boolean `age_over_NN` elements in namespace `eu.europa.ec.av.1` are
+      accepted: any other attribute rejects the presentation (§A.4.2 "SHALL NOT
+      include any other attribute"). Device-signed elements are rejected too.
+    - The issuer chain is validated against the caller's AV trust store.
+      Device authentication runs over the OpenID4VP 1.0 `OpenID4VPHandover`
+      `[redirect_uri:<response_uri>, nonce, null, response_uri]`, verified
+      byte-for-byte against the Annex A example.
+    - Returns `{ valid, ageVerified, ageOver, … }`. `age_over_18: false` is a
+      valid presentation with `ageVerified: false`.
+  - `AvRequestBuildError`, `AvResponseError` and the `AV_*` constants are exported.
+- `ParseOptions.mdocDocumentSignerEkus` (and `ChainBuilderOptions.documentSignerEkus`):
+  the Document Signer EKUs accepted for `mso_mdoc` chains. The default is
+  unchanged (`1.0.18013.5.1.2`). The AV reference issuer signs with EKU
+  `1.3.130.2.0.0.1.2`, which `verifyAvPresentation` accepts.
 - `SessionTranscriptProfile` type export.
 
 ### Notes
