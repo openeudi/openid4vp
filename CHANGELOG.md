@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-10-21
+
 ### Changed — BREAKING
 
 - **`@openeudi/dcql` ^0.3.0** (was ^0.2.0; EID-204). dcql 0.3 `validateQuery`
