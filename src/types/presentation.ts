@@ -54,8 +54,14 @@ export interface PresentationResult {
      * `trustStore` was not provided.
      */
     trust?: TrustEvaluationResult;
+    /**
+     * Token Status List outcome. Populated for SD-JWT VC when
+     * `ParseOptions.statusPolicy` is `'prefer'` or `'require'`.
+     */
+    credentialStatus?: CredentialStatusResult;
 }
 
 import type { IssuerInfo } from './issuer.js';
 import type { TrustEvaluationResult } from '../trust/TrustEvaluator.js';
+import type { CredentialStatusResult } from '../status/credential-status.js';
 export type { IssuerInfo } from './issuer.js';

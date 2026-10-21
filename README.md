@@ -497,6 +497,8 @@ Both `parsePresentation` and `verifyPresentation` accept:
   > naming this as the cause. `StaticTrustStore` is unaffected.
 
 - `revocationPolicy?` — `'skip'` (default) | `'prefer'` | `'require'`. Controls whether the chain validator consults OCSP / CRL.
+- `statusPolicy?` — `'skip'` (default) | `'prefer'` | `'require'`. Whether the SD-JWT VC `status` claim is checked against its Token Status List. See [Credential status (Token Status List)](#credential-status-token-status-list).
+- `statusListResolver?` — the `StatusListResolver` used when `statusPolicy` is not `'skip'`.
 - `fetcher?` — HTTP transport for CRL/OCSP/LOTL fetches. Defaults to a guarded fetcher — see [Network access](#network-access). A fetcher you supply **replaces** the guards; wrap it with `createGuardedFetcher({ fetch: yourFetcher })` to keep them.
 - `cache?` — cache for CRL/OCSP/LOTL artefacts. Defaults to `new InMemoryCache()`.
 - `clockSkewTolerance?` — seconds of slack applied to certificate validity checks and to the KB-JWT `iat`/`exp`/`nbf` checks. Default 60.
@@ -515,10 +517,11 @@ The library dereferences URLs only inside the trust module, and only when you op
 | EU LOTL + national trusted lists | `LotlTrustStore` | GET |
 | CRL distribution points | `revocationPolicy` `'prefer'`/`'require'` | GET |
 | OCSP responders (AIA) | `revocationPolicy` `'prefer'`/`'require'` | POST |
+| Token Status Lists (`status.status_list.uri`) | `statusPolicy` `'prefer'`/`'require'` | GET |
 
-It does **not** fetch SD-JWT VC issuer metadata (`/.well-known/jwt-vc-issuer`), `jwks_uri`, Type Metadata (`vct` resolution — use `aka_vcts` or `vctAncestors`), Token Status Lists, or `x5u`. Issuer keys come from `x5c` or `trustedIssuerJwks`. **If your application dereferences any of those itself, it is responsible for applying the SD-JWT VC draft-19 HTTP retrieval rules** — `createGuardedFetcher()` (HTTPS-only by default) is exported for exactly that.
+It does **not** fetch SD-JWT VC issuer metadata (`/.well-known/jwt-vc-issuer`), `jwks_uri`, Type Metadata (`vct` resolution — use `aka_vcts` or `vctAncestors`), or `x5u`. Issuer keys come from `x5c` or `trustedIssuerJwks`. **If your application dereferences any of those itself, it is responsible for applying the SD-JWT VC draft-19 HTTP retrieval rules** — `createGuardedFetcher()` (HTTPS-only by default) is exported for exactly that.
 
-All library fetches go through `createGuardedFetcher({ allowHttp: true })` unless you pass `fetcher`. It enforces:
+All trust-module fetches go through `createGuardedFetcher({ allowHttp: true })` unless you pass `fetcher`; `StatusListResolver` defaults to the HTTPS-only `createGuardedFetcher()`. It enforces:
 
 - `https:` only by default (`allowHttp: true` for the trust module: RFC 5280 CRLs and RFC 6960 OCSP are conventionally plain HTTP and every artefact is signature-verified); never an `https` → `http` redirect downgrade.
 - No loopback, RFC 1918, CGNAT, link-local (incl. `169.254.169.254`), ULA (incl. `fd00:ec2::254`), multicast, documentation or reserved targets — checked on the URL host *and* on every address it resolves to, including IPv4-mapped/compatible, NAT64 and 6to4 IPv6 forms. `localhost`/`*.localhost` are refused by name. A host that resolves to no addresses at all is refused as `dns_resolution_failed` rather than treated as public.
@@ -536,6 +539,57 @@ const trustStore = new LotlTrustStore({ signingAnchors, fetcher });
 ```
 
 > **Limits.** DNS rebinding: the guard resolves and validates the host, then the transport resolves it *again*, so a hostile DNS server can answer differently the second time. `fetch` gives no portable way to pin the validated address. If attacker-influenced URLs reach your verifier, also route egress through a filtering proxy, or inject a `fetch` whose connector checks the connected address (e.g. an undici `Agent` with a validating `connect.lookup`). In runtimes without `node:dns` (browsers, some edge workers) only IP literals and `localhost` are checked unless you pass `lookup`. Caching is handled by the `cache` option, not the fetcher.
+
+### Credential status (Token Status List)
+
+Implements [draft-ietf-oauth-status-list-21](https://datatracker.ietf.org/doc/draft-ietf-oauth-status-list/21/) for SD-JWT VC (SD-JWT VC draft-19 §2.4, HAIP 1.0 §6.1). A credential whose issuer-signed payload carries `status.status_list: { idx, uri }` is checked against the Status List Token at `uri`.
+
+```ts
+import { StaticTrustStore, StatusListResolver, verifyAuthorizationResponse } from "@openeudi/openid4vp";
+
+// Once per process: the cache must outlive a single presentation.
+const statusListResolver = new StatusListResolver({
+  // Status-list SIGNER anchors — e.g. the PID-providers LoTE `PID/Revocation`
+  // services — kept separate from the issuance anchors.
+  trustStore: new StaticTrustStore(revocationServiceCertificates),
+});
+
+const result = await verifyAuthorizationResponse(envelope, query, {
+  trustedCertificates: [],
+  trustStore,
+  nonce,
+  statusPolicy: "require",
+  statusListResolver,
+});
+result.parsed.credentialStatus; // { outcome: 'checked', status: 'valid', value: 0, uri, idx, ... }
+```
+
+**Policy semantics** (mirrors `revocationPolicy`):
+
+| Situation | `'skip'` (default) | `'prefer'` | `'require'` |
+|---|---|---|---|
+| Status VALID (`0x00`) | not checked | accepted | accepted |
+| INVALID (`0x01`), SUSPENDED (`0x02`), any other value | not checked | `valid: false` | `valid: false` |
+| `idx` out of range of an authentic list (§8.3 step 6) | not checked | `valid: false` | `valid: false` |
+| `status` present but malformed / no `status_list` (HAIP §6.1) | not checked | `valid: false` | `valid: false` |
+| No statement possible: list unreachable, untrusted signer, bad signature, expired, `sub` mismatch, malformed list | not checked | accepted, `credentialStatus.outcome: 'unavailable'` + `warning` | throws `StatusListError` |
+| No `status` claim | not checked | accepted, `outcome: 'absent'` | accepted, `outcome: 'absent'` |
+
+The status check runs only after the credential itself has fully validated (signature, trust, disclosures, key binding): a credential that is already invalid never triggers a fetch (§8.3). `statusPolicy` other than `'skip'` without a `statusListResolver` throws `StatusListError` (`reason: 'configuration'`). The default stays `'skip'` in 0.x for backward compatibility; it is intended to become `'prefer'` in 1.0. For PIDs, use `'require'` unless a documented ARF VCR_14 risk analysis allows `'prefer'`.
+
+**What the resolver verifies** for each Status List Token:
+
+- fetched with `GET` and `Accept: application/statuslist+jwt` through the guarded fetcher (HTTPS only, no private targets, bounded redirects, 15 s, 16 MiB);
+- compact JWS with `typ: statuslist+jwt` and an allowed `alg` (ES256/384/512 by default), signed by `x5c[0]`;
+- the `x5c` chain validates (RFC 5280) against the resolver's `trustStore`; anchors are never taken from `x5c`, and an anchor found *inside* `x5c` is refused (set `acceptPinnedSigner: true` only if your anchor is the signer certificate itself);
+- `sub` equals the referenced `uri`; `iat` present and not in the future; `nbf` / `exp` honoured with `clockSkewTolerance` (60 s); `ttl`, if present, is a positive number; optional `maxListAgeSeconds` freshness limit on `iat`;
+- `status_list.bits` ∈ {1, 2, 4, 8}, `lst` is base64url ZLIB/DEFLATE, decompressed under a 16 MiB cap (`maxListBytes`).
+
+**Caching.** Verified lists are cached in memory by `uri` until `ttl` elapses — bounded to `[minTtlSeconds, maxTtlSeconds]` (default 60 s – 24 h, `defaultTtlSeconds` 300 s when the token has no `ttl`) — and never past `exp`. The cache is LRU-bounded (`maxCacheEntries`, default 100); concurrent lookups of one `uri` share one fetch; failures are not cached. Call `statusListResolver.prefetch(uri)` on a schedule to refresh lists out of band (ARF VCR_13–VCR_15) rather than on the presentation path. `clock` is injectable for tests.
+
+**Separate anchors.** Status List Tokens are signed by a *status issuer*, which in the EUDI trust framework is published as its own service type (TS 119 602 `SvcType/PID/Revocation`), not as an issuance service. Give the resolver those anchors; do not reuse the credential `trustStore` unless the issuer demonstrably signs its lists with its issuance chain (then combine both with `CompositeTrustStore`). The chain profile is `generic`: the `id-kp-oauthStatusSigning` EKU (§10) is not required, because its OID is still unassigned.
+
+**Not yet covered:** the mdoc MSO `status` (`statuslist+cwt`, §5.2 / §6.3) is not evaluated — `statusPolicy` currently applies to SD-JWT VC only; Status List Aggregation (§9) and historical resolution (§8.4, `time` parameter) are not implemented; status-list keys must come from `x5c` (no `kid` / `jwks` resolution).
 
 ## Supported formats
 
@@ -583,6 +637,7 @@ Mobile Document credentials as defined in ISO 18013-5. The token is a CBOR-encod
 | `docType`          | `string?`               | mDOC docType                                                                |
 | `namespacedClaims` | `Record<…>?`            | mDOC claims grouped by namespace                                            |
 | `trust`            | `TrustEvaluationResult?`| Chain, anchor, revocation, provenance, `trustedAuthorities` (with `trustStore`) |
+| `credentialStatus` | `CredentialStatusResult?` | Token Status List outcome when `statusPolicy` is `'prefer'` / `'require'` (SD-JWT VC) |
 | `error`            | `string?`               | Reason for failure when `valid` is `false`                                  |
 
 `CredentialClaims` still declares `age_over_18`, `age_over_21`, `nationality`, `resident_country` and `family_name_birth`, deprecated: an EU PID has none of the age fields, and its SD-JWT VC form uses `nationalities` (an array). They go in 1.0.0.
@@ -603,6 +658,8 @@ Mobile Document credentials as defined in ISO 18013-5. The token is a CBOR-encod
 | `WalletErrorResponseError` | Wallet returned an error response: `{code}` | The wallet sent an OpenID4VP §8.5 error response (`code`, `description`, `state`) |
 | `CertificateChainError`    | (per check)                             | Chain validation fails; see `reason` (e.g. `unrecognised_critical_extension`) |
 | `SignedRequestBuildError`  | (per check)                             | `createSignedAuthorizationRequest` input is invalid; see `code` (e.g. `trust_anchor_in_chain`, `invalid_verifier_info`) |
+
+| `StatusListError`          | Status List Token … / status_list …     | Token Status List unusable under `statusPolicy: 'require'`, or misconfiguration (`reason`) |
 
 ```ts
 import { MalformedCredentialError, ExpiredCredentialError } from "@openeudi/openid4vp";
@@ -630,6 +687,7 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 - **Encrypted responses** — `decryptAuthorizationResponse` for `direct_post.jwt` (ECDH-ES + A128GCM/A256GCM), `verifyAuthorizationResponse` for the 1.0 §8.1 object-keyed `vp_token` envelope.
 - **X.509 chain validation** — RFC 5280 chain building including `nameConstraints`, `StaticTrustStore`, `CompositeTrustStore`; IACA → document-signer chains for `mso_mdoc` with the ISO 18013-5 Annex B certificate profile.
 - **Revocation checking** — OCSP-first with CRL fallback (`revocationPolicy: 'skip' | 'prefer' | 'require'`).
+- **Credential status** — IETF Token Status List (`statuslist+jwt`) for SD-JWT VC via `StatusListResolver` and `statusPolicy: 'skip' | 'prefer' | 'require'`.
 - **EU List of Trusted Lists** — `LotlTrustStore` resolves national trust lists via signed XML fetch + XAdES verification; populates `provenance` (LoA, qualified status, country, service name) on verified presentations.
 - **OIDF conformance** — automated against the OpenID Foundation conformance suite in CI: `oidf-pr.yml` runs the OpenID4VP 1.0-Final verifier happy flow for `sd_jwt_vc` and `iso_mdl` (`x509_san_dns`, signed request); `oidf-release.yml` adds that plan's negative modules (session transcript, KB-JWT nonce / aud / signature / `iat` past and future, `sd_hash`, credential signature). There is no HAIP plan run and no `x509_hash` run yet; `--profile=full` is a single ID3 happy-flow module.
 - **Algorithm allowlist** — ES256/384/512 (ECDSA only per EUDI policy); configurable via `allowedAlgorithms`.

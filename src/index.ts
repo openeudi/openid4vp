@@ -100,6 +100,24 @@ export {
     type LotlTrustStoreOptions,
 } from './trust/index.js';
 
+// Token Status List (draft-ietf-oauth-status-list-21) — credential revocation
+export {
+    StatusListResolver,
+    STATUS_LIST_JWT_TYP,
+    STATUS_LIST_JWT_MEDIA_TYPE,
+    decodeStatusList,
+    readStatusValue,
+    type StatusListResolverOptions,
+    type StatusListReference,
+    type StatusListLookup,
+    type VerifiedStatusList,
+    type DecodedStatusList,
+    type StatusListBits,
+    type TokenStatusType,
+    type CredentialStatusResult,
+    type StatusPolicy,
+} from './status/index.js';
+
 // Error classes added in 0.5.0
 export {
     OpenID4VPError,
@@ -119,6 +137,8 @@ export {
     MissingAudienceError,
     WalletErrorResponseError,
     GuardedFetchError,
+    StatusListError,
+    type StatusListErrorReason,
     type GuardedFetchRejectReason,
     type ChainErrorReason,
     type SignedRequestBuildErrorCode,

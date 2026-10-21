@@ -2,6 +2,8 @@ import type { CredentialFormat, PresentationResult } from '../types/presentation
 import type { Cache } from '../trust/Cache.js';
 import type { Fetcher } from '../trust/Fetcher.js';
 import type { TrustStore } from '../trust/TrustStore.js';
+import type { StatusPolicy } from '../status/credential-status.js';
+import type { StatusListResolver } from '../status/StatusListResolver.js';
 
 export interface ParseOptions {
     /**
@@ -160,6 +162,33 @@ export interface ParseOptions {
      * with wallets that have not migrated yet and will be removed in 1.0.0.
      */
     allowLegacyVcSdJwtTyp?: boolean;
+
+    // ---- Token Status List (draft-ietf-oauth-status-list-21) ------------
+
+    /**
+     * How the credential's `status` claim (`status.status_list`) is checked.
+     * Default `'skip'` (unchanged behaviour); intended to become `'prefer'` in 1.0.
+     *
+     * - `'prefer'` — a definitive INVALID / SUSPENDED / unrecognised status, an
+     *   out-of-range `idx` or a malformed `status` claim yields `valid: false`.
+     *   When no statement can be made (list unreachable, untrusted, expired,
+     *   malformed) the credential is accepted and
+     *   `credentialStatus.outcome === 'unavailable'` carries a warning.
+     * - `'require'` — as `'prefer'`, but "no statement can be made" throws
+     *   `StatusListError`.
+     *
+     * Any value other than `'skip'` requires {@link statusListResolver}.
+     * Applies to SD-JWT VC only in this release; the mdoc MSO `status`
+     * (`statuslist+cwt`) is not evaluated yet.
+     */
+    statusPolicy?: StatusPolicy;
+
+    /**
+     * Resolver for Status List Tokens. Create ONE per process and reuse it so
+     * its cache spans presentations; give it the status-list signer anchors
+     * (e.g. the LoTE `PID/Revocation` services), not the issuance anchors.
+     */
+    statusListResolver?: StatusListResolver;
 }
 
 export interface ICredentialParser {
