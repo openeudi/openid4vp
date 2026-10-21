@@ -23,6 +23,13 @@ export interface MobileSecurityObject {
         validUntil: Date;
         expectedUpdate?: Date;
     };
+    /**
+     * The MSO `status` element as decoded (CBOR maps stay `Map`s), e.g.
+     * `{ "status_list": { "idx": uint, "uri": tstr } }`
+     * (draft-ietf-oauth-status-list-21 §6.3). Undefined when the MSO has none.
+     * Validated only when a `statusPolicy` asks for it.
+     */
+    status?: unknown;
 }
 
 function decodeDateLike(value: unknown): Date {
@@ -135,7 +142,9 @@ export function decodeMso(payload: Uint8Array): MobileSecurityObject {
         validityInfo.expectedUpdate = decodeDateLike(vi.get('expectedUpdate'));
     }
 
-    return { version, digestAlgorithm, valueDigests, docType, deviceKey, validityInfo };
+    const mso: MobileSecurityObject = { version, digestAlgorithm, valueDigests, docType, deviceKey, validityInfo };
+    if (m.has('status')) mso.status = m.get('status');
+    return mso;
 }
 
 /**

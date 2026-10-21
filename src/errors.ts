@@ -332,11 +332,17 @@ export type StatusListErrorReason =
     | 'invalid_reference'
     /** The Status List Token could not be retrieved (network, guard, non-2xx). */
     | 'fetch_failed'
-    /** Not a well-formed `statuslist+jwt`: bad JWS, wrong `typ`, missing or invalid claims. */
+    /**
+     * Not a well-formed `statuslist+jwt` / `statuslist+cwt`: bad JWS or
+     * COSE_Sign1, wrong `typ`, missing or invalid claims.
+     */
     | 'invalid_token'
-    /** The JWS signature does not verify with the `x5c` signer key. */
+    /** The JWS / COSE_Sign1 signature does not verify with the `x5c` / `x5chain` signer key. */
     | 'signature_invalid'
-    /** The `x5c` signer does not chain to a configured status-list trust anchor. */
+    /**
+     * The `x5c` / `x5chain` signer does not chain to a configured status-list
+     * trust anchor, or the token carries the anchor itself.
+     */
     | 'untrusted_signer'
     /** `sub` differs from the `uri` the credential references (§8.3 step 4a). */
     | 'subject_mismatch'

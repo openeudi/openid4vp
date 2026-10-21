@@ -187,8 +187,9 @@ export interface ParseOptions {
      *   `StatusListError`.
      *
      * Any value other than `'skip'` requires {@link statusListResolver}.
-     * Applies to SD-JWT VC only in this release; the mdoc MSO `status`
-     * (`statuslist+cwt`) is not evaluated yet.
+     * Applies to SD-JWT VC (the `status` claim, a `statuslist+jwt` list) and
+     * to mdoc (the MSO `status`, a `statuslist+cwt` list, draft-21 §6.3). An mdoc without an MSO `status` yields
+     * `credentialStatus.outcome === 'absent'` and is accepted.
      */
     statusPolicy?: StatusPolicy;
 

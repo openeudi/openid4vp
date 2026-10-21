@@ -490,7 +490,7 @@ Both `parsePresentation` and `verifyPresentation` accept:
 
 - `mdocDocumentSignerEkus?` — EKUs accepted on an `mso_mdoc` Document Signer when the chain is built to a CA anchor (at least one must be present). Default `['1.0.18013.5.1.2']`. A signer that is itself the anchor is not EKU-checked.
 - `revocationPolicy?` — `'skip'` (default) | `'prefer'` | `'require'`. Controls whether the chain validator consults OCSP / CRL.
-- `statusPolicy?` — `'skip'` (default) | `'prefer'` | `'require'`. Whether the SD-JWT VC `status` claim is checked against its Token Status List. See [Credential status (Token Status List)](#credential-status-token-status-list).
+- `statusPolicy?` — `'skip'` (default) | `'prefer'` | `'require'`. Whether the SD-JWT VC `status` claim, or the mdoc MSO `status`, is checked against its Token Status List. See [Credential status (Token Status List)](#credential-status-token-status-list).
 - `statusListResolver?` — the `StatusListResolver` used when `statusPolicy` is not `'skip'`.
 - `fetcher?` — HTTP transport for CRL/OCSP/LOTL fetches. Defaults to a guarded fetcher — see [Network access](#network-access). A fetcher you supply **replaces** the guards; wrap it with `createGuardedFetcher({ fetch: yourFetcher })` to keep them.
 - `cache?` — cache for CRL/OCSP/LOTL artefacts. Defaults to `new InMemoryCache()`.
@@ -510,7 +510,7 @@ The library dereferences URLs only inside the trust module, and only when you op
 | EU LOTL + national trusted lists | `LotlTrustStore` | GET |
 | CRL distribution points | `revocationPolicy` `'prefer'`/`'require'` | GET |
 | OCSP responders (AIA) | `revocationPolicy` `'prefer'`/`'require'` | POST |
-| Token Status Lists (`status.status_list.uri`) | `statusPolicy` `'prefer'`/`'require'` | GET |
+| Token Status Lists (`status.status_list.uri`, SD-JWT VC and mdoc MSO) | `statusPolicy` `'prefer'`/`'require'` | GET |
 
 It does **not** fetch SD-JWT VC issuer metadata (`/.well-known/jwt-vc-issuer`), `jwks_uri`, Type Metadata (`vct` resolution — use `aka_vcts` or `vctAncestors`), or `x5u`. Issuer keys come from `x5c` or `trustedIssuerJwks`. **If your application dereferences any of those itself, it is responsible for applying the SD-JWT VC draft-19 HTTP retrieval rules** — `createGuardedFetcher()` (HTTPS-only by default) is exported for exactly that.
 
@@ -535,7 +535,14 @@ const trustStore = new LotlTrustStore({ signingAnchors, fetcher });
 
 ### Credential status (Token Status List)
 
-Implements [draft-ietf-oauth-status-list-21](https://datatracker.ietf.org/doc/draft-ietf-oauth-status-list/21/) for SD-JWT VC (SD-JWT VC draft-19 §2.4, HAIP 1.0 §6.1). A credential whose issuer-signed payload carries `status.status_list: { idx, uri }` is checked against the Status List Token at `uri`.
+Implements [draft-ietf-oauth-status-list-21](https://datatracker.ietf.org/doc/draft-ietf-oauth-status-list/21/) for both credential formats. A credential whose issuer-signed data carries `status.status_list: { idx, uri }` is checked against the Status List Token at `uri`:
+
+| Credential | Where the reference is | Status List Token fetched |
+|---|---|---|
+| SD-JWT VC (SD-JWT VC draft-19 §2.4, HAIP 1.0 §6.1) | `status` claim of the issuer-signed JWT | `statuslist+jwt` (§5.1) |
+| mdoc (ISO/IEC 18013-5 MSO, draft-21 §6.3) | `status` element of the issuer-signed MSO | `statuslist+cwt` (§5.2) |
+
+The same `statusPolicy`, `statusListResolver` and `credentialStatus` apply to both, on `verifyPresentation`, `verifyAuthorizationResponse`, `verifyDcApiResponse` and `verifyAvPresentation`. An mdoc reference is only ever resolved as a CWT, an SD-JWT VC reference only as a JWT; one resolver handles both.
 
 ```ts
 import { StaticTrustStore, StatusListResolver, verifyAuthorizationResponse } from "@openeudi/openid4vp";
@@ -572,17 +579,18 @@ The status check runs only after the credential itself has fully validated (sign
 
 **What the resolver verifies** for each Status List Token:
 
-- fetched with `GET` and `Accept: application/statuslist+jwt` through the guarded fetcher (HTTPS only, no private targets, bounded redirects, 15 s, 16 MiB);
-- compact JWS with `typ: statuslist+jwt` and an allowed `alg` (ES256/384/512 by default), signed by `x5c[0]`;
-- the `x5c` chain validates (RFC 5280) against the resolver's `trustStore`; anchors are never taken from `x5c`, and an anchor found *inside* `x5c` is refused (set `acceptPinnedSigner: true` only if your anchor is the signer certificate itself);
-- `sub` equals the referenced `uri`; `iat` present and not in the future; `nbf` / `exp` honoured with `clockSkewTolerance` (60 s); `ttl`, if present, is a positive number; optional `maxListAgeSeconds` freshness limit on `iat`;
-- `status_list.bits` ∈ {1, 2, 4, 8}, `lst` is base64url ZLIB/DEFLATE, decompressed under a 16 MiB cap (`maxListBytes`).
+- fetched with `GET` and `Accept: application/statuslist+jwt` (mdoc: `application/statuslist+cwt`) through the guarded fetcher (HTTPS only, no private targets, bounded redirects, 15 s, 16 MiB);
+- JWT: compact JWS with `typ: statuslist+jwt` and an allowed `alg` (ES256/384/512 by default), signed by `x5c[0]`;
+- CWT: COSE_Sign1 (untagged, `#6.18` or `#6.61(#6.18)`) with `typ` (16) `application/statuslist+cwt` and `alg` (1, ES256/384/512) in the **protected** header, an attached payload, signed by `x5chain[0]` (33, protected or unprotected but not both);
+- the `x5c` / `x5chain` chain validates (RFC 5280) against the resolver's `trustStore`; anchors are never taken from the token, and an anchor found *inside* the chain is refused (set `acceptPinnedSigner: true` only if your anchor is the signer certificate itself);
+- `sub` (CWT 2) equals the referenced `uri`; `iat` (6) present and not in the future; `nbf` (5) / `exp` (4) honoured with `clockSkewTolerance` (60 s); `ttl` (65534), if present, is a positive number; optional `maxListAgeSeconds` freshness limit on `iat`;
+- `status_list` (CWT 65533): `bits` ∈ {1, 2, 4, 8}, `lst` ZLIB/DEFLATE — base64url text in a JWT, a raw byte string in a CWT — decompressed under a 16 MiB cap (`maxListBytes`).
 
-**Caching.** Verified lists are cached in memory by `uri` until `ttl` elapses — bounded to `[minTtlSeconds, maxTtlSeconds]` (default 60 s – 24 h, `defaultTtlSeconds` 300 s when the token has no `ttl`) — and never past `exp`. The cache is LRU-bounded (`maxCacheEntries`, default 100); concurrent lookups of one `uri` share one fetch; failures are not cached. Call `statusListResolver.prefetch(uri)` on a schedule to refresh lists out of band (ARF VCR_13–VCR_15) rather than on the presentation path. `clock` is injectable for tests.
+**Caching.** Verified lists are cached in memory by format and `uri` until `ttl` elapses — bounded to `[minTtlSeconds, maxTtlSeconds]` (default 60 s – 24 h, `defaultTtlSeconds` 300 s when the token has no `ttl`) — and never past `exp`. The cache is LRU-bounded (`maxCacheEntries`, default 100); concurrent lookups of one `uri` share one fetch; failures are not cached. Call `statusListResolver.prefetch(uri)` (mdoc lists: `prefetch(uri, { format: 'cwt' })`) on a schedule to refresh lists out of band (ARF VCR_13–VCR_15) rather than on the presentation path. `clock` is injectable for tests.
 
 **Separate anchors.** Status List Tokens are signed by a *status issuer*, which in the EUDI trust framework is published as its own service type (TS 119 602 `SvcType/PID/Revocation`), not as an issuance service. Give the resolver those anchors; do not reuse the credential `trustStore` unless the issuer demonstrably signs its lists with its issuance chain (then combine both with `CompositeTrustStore`). The chain profile is `generic`: the `id-kp-oauthStatusSigning` EKU (§10) is not required, because its OID is still unassigned.
 
-**Not yet covered:** the mdoc MSO `status` (`statuslist+cwt`, §5.2 / §6.3) is not evaluated — `statusPolicy` currently applies to SD-JWT VC only; Status List Aggregation (§9) and historical resolution (§8.4, `time` parameter) are not implemented; status-list keys must come from `x5c` (no `kid` / `jwks` resolution).
+**Not yet covered:** Status List Aggregation (§9) and historical resolution (§8.4, `time` parameter) are not implemented; status-list keys must come from `x5c` / `x5chain` (no `kid` / `jwks` resolution); a CWT `typ` given as a CoAP Content-Format number is refused (none is registered yet).
 
 ## Digital Credentials API
 
@@ -758,13 +766,14 @@ What `verifyAvPresentation` checks:
 - Data model (§A.4.2): "A Proof of Age Attestation SHALL NOT include any other attribute." Any namespace other than `eu.europa.ec.av.1`, or any element other than a boolean `age_over_NN`, rejects the presentation (`failure: 'unexpected_attribute'` / `'invalid_attribute_value'`). It is not ignored: such a credential does not conform to the data model, and accepting it would mean processing personal data the RP never asked for. Device-signed elements are rejected too.
 - Issuer signature, digests and MSO validity. The issuer chain must validate against `trustStore`. A Document Signer under a CA anchor must carry EKU `1.3.130.2.0.0.1.2` (the AV reference issuer's) or `1.0.18013.5.1.2` (ISO 18013-5); override with `documentSignerEkus`. Revocation is skipped by default ("Attestation revocation is not required").
 - Device authentication over the OpenID4VP 1.0 `OpenID4VPHandover` SessionTranscript `[clientId, nonce, null, responseUri]` (§B.2.6.1, `null` because the response is not encrypted). It is byte-identical to the Annex A example transcript.
+- With `statusPolicy: 'prefer' | 'require'` and a `statusListResolver`, the MSO `status` (`statuslist+cwt`) when the attestation carries one (`failure: 'credential_status'` for a non-VALID status). Proof of Age attestations normally carry none and still verify (`credentialStatus.outcome: 'absent'`). Default `'skip'`.
 - The requested `age_over_NN` is disclosed (`failure: 'missing_attribute'` otherwise).
 
-Result: `{ valid, ageVerified, ageOver, ageThreshold, ageOverAttribute, issuer, trust, state, failure?, error? }`. **Gate access on `ageVerified`.** `valid: true` with `ageOver: false` is a genuine attestation that says the holder is *not* over the threshold. Trust failures throw `TrustAnchorNotFoundError` / `CertificateChainError`, as everywhere else in this library.
+Result: `{ valid, ageVerified, ageOver, ageThreshold, ageOverAttribute, issuer, trust, state, credentialStatus?, failure?, error? }`. **Gate access on `ageVerified`.** `valid: true` with `ageOver: false` is a genuine attestation that says the holder is *not* over the threshold. Trust failures throw `TrustAnchorNotFoundError` / `CertificateChainError`, as everywhere else in this library.
 
 Use each `nonce` once. The spec recommends treating a plain-mdoc Proof of Age attestation as single use; the AV app enforces that, and nonce binding prevents replay to your verifier.
 
-**Not covered:** the W3C Digital Credentials API transport with `org-iso-mdoc` and zero-knowledge proofs (Annex A §A.8, the profile's preferred mechanism), and issuance. The request carries no `verifier_info`: it is unsigned under `redirect_uri:`, so nothing could bind it to the verifier. The mdoc MSO `status` is not evaluated (`statusPolicy` covers SD-JWT VC only).
+**Not covered:** the W3C Digital Credentials API transport with `org-iso-mdoc` and zero-knowledge proofs (Annex A §A.8, the profile's preferred mechanism), and issuance. The request carries no `verifier_info`: it is unsigned under `redirect_uri:`, so nothing could bind it to the verifier.
 
 **Known interop issue:** the AV reference implementation's certificates (the Annex A §A.11 Document Signer and the "Age Verification Issuer CA 01" bundled in the AV Android app) encode `IssuerAltName` as a nested Extension instead of `GeneralNames`. `@peculiar/x509` cannot parse it, so `StaticTrustStore` and chain validation throw on those certificates. RFC 5280 §4.2 requires a recognised extension to be processed, so this library fails closed rather than skipping it.
 
@@ -814,7 +823,7 @@ Mobile Document credentials as defined in ISO 18013-5. The token is a CBOR-encod
 | `docType`          | `string?`               | mDOC docType                                                                |
 | `namespacedClaims` | `Record<…>?`            | mDOC claims grouped by namespace                                            |
 | `trust`            | `TrustEvaluationResult?`| Chain, anchor, revocation, provenance, `trustedAuthorities` (with `trustStore`) |
-| `credentialStatus` | `CredentialStatusResult?` | Token Status List outcome when `statusPolicy` is `'prefer'` / `'require'` (SD-JWT VC) |
+| `credentialStatus` | `CredentialStatusResult?` | Token Status List outcome when `statusPolicy` is `'prefer'` / `'require'` (SD-JWT VC and mdoc) |
 | `error`            | `string?`               | Reason for failure when `valid` is `false`                                  |
 
 `CredentialClaims` still declares `age_over_18`, `age_over_21`, `nationality`, `resident_country` and `family_name_birth`, deprecated: an EU PID has none of the age fields, and its SD-JWT VC form uses `nationalities` (an array). They go in 1.0.0.
@@ -869,7 +878,7 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 - **EU Age Verification profile** — `createAvAuthorizationRequest` / `verifyAvPresentation` for the AV app's OpenID4VP fallback (`av://`, `redirect_uri:`, `direct_post`, plain `eu.europa.ec.av.1` mdoc). See [EU Age Verification (AV app) profile](#eu-age-verification-av-app-profile).
 - **X.509 chain validation** — RFC 5280 chain building including `nameConstraints`, `StaticTrustStore`, `CompositeTrustStore`; IACA → document-signer chains for `mso_mdoc` with the ISO 18013-5 Annex B certificate profile.
 - **Revocation checking** — OCSP-first with CRL fallback (`revocationPolicy: 'skip' | 'prefer' | 'require'`).
-- **Credential status** — IETF Token Status List (`statuslist+jwt`) for SD-JWT VC via `StatusListResolver` and `statusPolicy: 'skip' | 'prefer' | 'require'`.
+- **Credential status** — IETF Token Status List via `StatusListResolver` and `statusPolicy: 'skip' | 'prefer' | 'require'`: `statuslist+jwt` for SD-JWT VC, `statuslist+cwt` for the mdoc MSO `status`.
 - **EU List of Trusted Lists** — `LotlTrustStore` resolves national trust lists via signed XML fetch + XAdES verification; populates `provenance` (LoA, qualified status, country, service name) on verified presentations.
 - **OIDF conformance** — automated against the OpenID Foundation conformance suite in CI: `oidf-pr.yml` runs the OpenID4VP 1.0-Final verifier happy flow for `sd_jwt_vc` and `iso_mdl` (`x509_san_dns`, signed request); `oidf-release.yml` adds that plan's negative modules (session transcript, KB-JWT nonce / aud / signature / `iat` past and future, `sd_hash`, credential signature). There is no HAIP plan run and no `x509_hash` run yet; `--profile=full` is a single ID3 happy-flow module.
 - **Algorithm allowlist** — ES256/384/512 (ECDSA only per EUDI policy); configurable via `allowedAlgorithms`.

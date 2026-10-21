@@ -55,7 +55,7 @@ export interface PresentationResult {
      */
     trust?: TrustEvaluationResult;
     /**
-     * Token Status List outcome. Populated for SD-JWT VC when
+     * Token Status List outcome. Populated for SD-JWT VC and mdoc when
      * `ParseOptions.statusPolicy` is `'prefer'` or `'require'`.
      */
     credentialStatus?: CredentialStatusResult;

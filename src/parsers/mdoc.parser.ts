@@ -452,6 +452,34 @@ export class MdocParser implements ICredentialParser {
         // Step 8: Map to claims
         const { flat: claims, namespaced: namespacedClaims } = mapRawToClaims(nameSpaces);
 
+        // Step 9: Token Status List (draft-ietf-oauth-status-list-21 §6.3, §8.3)
+        // from the issuer-signed MSO `status`. Only reached once signature,
+        // digests, validity and device authentication have all passed — the
+        // spec forbids fetching a status list for a token that is already invalid.
+        let credentialStatus: PresentationResult['credentialStatus'];
+        if ((options.statusPolicy ?? 'skip') !== 'skip') {
+            const [{ checkCredentialStatus }, { cborToPlain }] = await Promise.all([
+                import('../status/credential-status.js'),
+                import('../status/status-list-cwt.js'),
+            ]);
+            const statusCheck = await checkCredentialStatus(
+                mso.status === undefined ? {} : { status: cborToPlain(mso.status) },
+                options,
+                'cwt',
+            );
+            if (statusCheck.rejection !== undefined) {
+                return {
+                    valid: false,
+                    format: this.format,
+                    claims: {},
+                    issuer: { certificate: issuerCertBytes, country: '' },
+                    error: statusCheck.rejection,
+                    credentialStatus: statusCheck.result,
+                };
+            }
+            credentialStatus = statusCheck.result;
+        }
+
         const issuer: IssuerInfo = {
             certificate: issuerCertBytes,
             country: extractCountryHintFromCert(issuerCertBytes),
@@ -465,6 +493,7 @@ export class MdocParser implements ICredentialParser {
             namespacedClaims,
         };
         if (trustResult) result.trust = trustResult;
+        if (credentialStatus) result.credentialStatus = credentialStatus;
         return result;
     }
 }

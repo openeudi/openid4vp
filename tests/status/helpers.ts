@@ -1,6 +1,7 @@
 import { randomInt, randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 
+import { Encoder as CborEncoder, Tag } from 'cbor-x';
 import * as jose from 'jose';
 import * as x509 from '@peculiar/x509';
 import { Crypto as PeculiarCrypto } from '@peculiar/webcrypto';
@@ -105,7 +106,108 @@ export async function buildStatusListJwt(opts: BuildStatusListJwtOptions): Promi
         .sign(opts.signer.signingKey);
 }
 
-export type StubResponse = { status?: number; body: string } | Error;
+export interface BuildStatusListCwtOptions {
+    signer: StatusListSigner;
+    uri: string;
+    bits?: 1 | 2 | 4 | 8;
+    statuses?: readonly number[];
+    /**
+     * Overrides / removals (value `undefined`) of CWT claims, by JWT name
+     * (`sub`, `iat`, `exp`, `nbf`, `ttl`, `status_list`) or numeric label.
+     */
+    claims?: Record<string, unknown>;
+    /** Overrides / removals of protected header labels (1 alg, 16 typ, 33 x5chain). */
+    protectedHeader?: Map<number, unknown>;
+    unprotectedHeader?: Map<number, unknown>;
+    /** Where x5chain (33) goes. Default `'unprotected'`. */
+    x5chainIn?: 'protected' | 'unprotected' | 'both' | 'none';
+    /** DER chain, signer first. Default the signer's `x5c`. */
+    x5chain?: Uint8Array[];
+    /** Outer CBOR tag. Default none. */
+    tag?: 'none' | 'cose' | 'cwt';
+    nowSeconds?: number;
+    /** Change the signed payload after signing. */
+    tamper?: boolean;
+}
+
+const CWT_LABELS: Record<string, number> = { sub: 2, exp: 4, nbf: 5, iat: 6, status_list: 65533, ttl: 65534 };
+
+const cwtCbor = new CborEncoder({ mapsAsObjects: false, useRecords: false, tagUint8Array: false });
+
+export function x5cToDer(x5c: readonly string[]): Uint8Array[] {
+    return x5c.map((c) => new Uint8Array(Buffer.from(c, 'base64')));
+}
+
+/** A COSE_Sign1 CWT Status List Token (draft-21 §5.2), really signed by `signer`. */
+export async function buildStatusListCwt(opts: BuildStatusListCwtOptions): Promise<Uint8Array> {
+    const bits = opts.bits ?? 2;
+    const now = opts.nowSeconds ?? Math.floor(Date.now() / 1000);
+    const claims = new Map<number, unknown>([
+        [2, opts.uri],
+        [6, now - 10],
+        [4, now + 3600],
+        [65534, 600],
+        [
+            65533,
+            new Map<string, unknown>([
+                ['bits', bits],
+                ['lst', new Uint8Array(deflateSync(packStatuses(bits, opts.statuses ?? [0, 1, 2, 0]), { level: 9 }))],
+            ]),
+        ],
+    ]);
+    for (const [k, v] of Object.entries(opts.claims ?? {})) {
+        const label = CWT_LABELS[k] ?? Number(k);
+        if (v === undefined) claims.delete(label);
+        else claims.set(label, v);
+    }
+
+    const chain = opts.x5chain ?? x5cToDer(opts.signer.x5c);
+    const x5value: unknown = chain.length === 1 ? chain[0] : chain;
+    const where = opts.x5chainIn ?? 'unprotected';
+    const protectedHeader = new Map<number, unknown>([
+        [1, -7],
+        [16, 'application/statuslist+cwt'],
+    ]);
+    const unprotectedHeader = new Map<number, unknown>();
+    if (where === 'protected' || where === 'both') protectedHeader.set(33, x5value);
+    if (where === 'unprotected' || where === 'both') unprotectedHeader.set(33, x5value);
+    for (const [k, v] of opts.protectedHeader ?? []) {
+        if (v === undefined) protectedHeader.delete(k);
+        else protectedHeader.set(k, v);
+    }
+    for (const [k, v] of opts.unprotectedHeader ?? []) unprotectedHeader.set(k, v);
+
+    const protectedBytes = new Uint8Array(cwtCbor.encode(protectedHeader));
+    const payload = new Uint8Array(cwtCbor.encode(claims));
+    const sigInput = new Uint8Array(cwtCbor.encode(['Signature1', protectedBytes, new Uint8Array(0), payload]));
+    const signature = new Uint8Array(
+        await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, opts.signer.signingKey as CryptoKey, sigInput),
+    );
+    let signedPayload = payload;
+    if (opts.tamper) {
+        claims.set(65534, 601);
+        signedPayload = new Uint8Array(cwtCbor.encode(claims));
+    }
+    const cose: unknown[] = [protectedBytes, unprotectedHeader, signedPayload, signature];
+    const tag = opts.tag ?? 'none';
+    const value = tag === 'none' ? cose : tag === 'cose' ? new Tag(cose, 18) : new Tag(new Tag(cose, 18), 61);
+    return new Uint8Array(cwtCbor.encode(value));
+}
+
+/** `{ status_list: { idx, uri } }` as a CBOR map, as carried in the mdoc MSO (§6.3). */
+export function msoStatus(idx: unknown, uri: unknown): Map<string, unknown> {
+    return new Map<string, unknown>([
+        [
+            'status_list',
+            new Map<string, unknown>([
+                ['idx', idx],
+                ['uri', uri],
+            ]),
+        ],
+    ]);
+}
+
+export type StubResponse = { status?: number; body: string | Uint8Array; contentType?: string } | Error;
 
 export interface StubFetcher {
     fetcher: Fetcher;
@@ -122,9 +224,12 @@ export function createStubFetcher(initial: Record<string, StubResponse> = {}): S
         const route = routes.get(url);
         if (!route) return new Response('not found', { status: 404 });
         if (route instanceof Error) throw route;
-        return new Response(route.body, {
+        const isBytes = route.body instanceof Uint8Array;
+        return new Response(isBytes ? new Uint8Array(route.body as Uint8Array) : (route.body as string), {
             status: route.status ?? 200,
-            headers: { 'content-type': 'application/statuslist+jwt' },
+            headers: {
+                'content-type': route.contentType ?? (isBytes ? 'application/statuslist+cwt' : 'application/statuslist+jwt'),
+            },
         });
     };
     return { fetcher, calls, set: (url, response) => routes.set(url, response) };

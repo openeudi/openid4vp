@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Credential status for mdoc — the MSO `status` via a CWT Token Status List**
+  (draft-ietf-oauth-status-list-21 §5.2, §6.3; ISO/IEC 18013-5 MSO; EID-205).
+  Until now `statusPolicy` only checked the SD-JWT VC `status` claim, so a
+  revoked or suspended mdoc was accepted until `validUntil`.
+  - The mdoc parser reads `status.status_list: { idx, uri }` from the
+    issuer-signed MSO and resolves it with the same `statusPolicy`
+    (`skip` default / `prefer` / `require`) semantics as SD-JWT VC, after
+    signature, digests, validity, trust and device authentication have all
+    passed (§8.3). `PresentationResult.credentialStatus` is now set for mdoc
+    too. An mdoc without an MSO `status` yields `outcome: 'absent'`.
+  - `StatusListResolver` verifies `statuslist+cwt` tokens: fetched with
+    `Accept: application/statuslist+cwt`; COSE_Sign1 (untagged, `#6.18` or
+    `#6.61(#6.18)`) with `typ` (16) `application/statuslist+cwt` and `alg` in
+    the protected header and an attached payload; signer from `x5chain` (33,
+    protected or unprotected, not both) validated against the resolver's own
+    `trustStore` (anchor never taken from, nor allowed inside, `x5chain` —
+    the JWT rule); claims `sub` (2) == uri, `iat` (6), `nbf` (5), `exp` (4),
+    `ttl` (65534) and `status_list` (65533) with a byte-string `lst`. Size
+    caps, the cache (bounded `ttl`, never past `exp`), concurrent-fetch
+    sharing and the HTTPS-only guarded fetcher are shared with the JWT path.
+    No new dependency: COSE verification reuses the mdoc `cbor-x` code.
+  - `resolve`, `getStatusList` and `prefetch` take an optional
+    `{ format: 'jwt' | 'cwt' }` (default `'jwt'`, so existing calls are
+    unchanged). The cache is keyed by format and `uri`; an mdoc reference is
+    only ever resolved as a CWT.
+  - Wired through `verifyPresentation`, `verifyAuthorizationResponse`,
+    `verifyDcApiResponse` and `verifyAvPresentation`. The AV profile gains
+    `statusPolicy` / `statusListResolver` options (default `'skip'`),
+    `credentialStatus` on the result and the failure code
+    `'credential_status'`; an AV attestation without `status` still verifies.
+  - `decodeStatusList` accepts `lstEncoding: 'bytes'` for a CWT `lst`.
+  - Exported `STATUS_LIST_CWT_TYP`, `STATUS_LIST_CWT_MEDIA_TYPE` and the types
+    `StatusListTokenFormat`, `StatusListFormatOptions` and
+    `StatusListLstEncoding`. `VerifiedStatusList.format` records the format.
+
 ## [0.15.0] — 2026-10-21
 
 ### Changed — BREAKING

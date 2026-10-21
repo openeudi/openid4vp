@@ -1,5 +1,6 @@
 import { compactVerify, decodeProtectedHeader, importX509 } from 'jose';
 
+import { verifyCoseSign1 } from '../crypto/cose-sign1.js';
 import { StatusListError } from '../errors.js';
 import { createGuardedFetcher } from '../http/guarded-fetch.js';
 import type { Cache } from '../trust/Cache.js';
@@ -15,6 +16,19 @@ import {
     type StatusListBits,
     type TokenStatusType,
 } from './status-list.js';
+import { STATUS_LIST_CWT_MEDIA_TYPE, decodeStatusListCwt } from './status-list-cwt.js';
+
+/**
+ * Status List Token format (§5): `'jwt'` (`statuslist+jwt`, referenced by the
+ * SD-JWT VC `status` claim) or `'cwt'` (`statuslist+cwt`, referenced by the
+ * mdoc MSO `status`, §6.3).
+ */
+export type StatusListTokenFormat = 'jwt' | 'cwt';
+
+/** Which Status List Token format to fetch and verify. Default `'jwt'`. */
+export interface StatusListFormatOptions {
+    format?: StatusListTokenFormat;
+}
 
 /** JOSE `typ` of a Status List Token in JWT format (§5.1). */
 export const STATUS_LIST_JWT_TYP = 'statuslist+jwt';
@@ -34,6 +48,8 @@ export interface StatusListReference {
 /** A Status List Token whose signature, signer chain and claims have been verified. */
 export interface VerifiedStatusList {
     uri: string;
+    /** Format the token was fetched and verified in. */
+    format: StatusListTokenFormat;
     bits: StatusListBits;
     /** Decompressed status bytes. Treat as read-only. */
     bytes: Uint8Array;
@@ -84,7 +100,11 @@ export interface StatusListResolverOptions {
     clock?: () => Date;
     /** Seconds of tolerance for `iat` / `nbf` / `exp` checks. Default 60. */
     clockSkewTolerance?: number;
-    /** JWS algorithms accepted for the Status List Token. Default ES256/ES384/ES512. */
+    /**
+     * Signature algorithms accepted for the Status List Token, by JOSE name
+     * (the CWT format maps COSE -7/-35/-36 to ES256/ES384/ES512). Default
+     * ES256/ES384/ES512.
+     */
     allowedAlgorithms?: string[];
     /**
      * Revocation policy for the Status List Token's signer certificate chain
@@ -126,21 +146,24 @@ interface CacheEntry {
 
 /**
  * Resolves and verifies IETF Token Status Lists (draft-ietf-oauth-status-list-21)
- * in JWT format, and answers "what is the status of entry `idx`?".
+ * in JWT (§5.1) and CWT (§5.2) format, and answers "what is the status of
+ * entry `idx`?".
  *
  * Each Status List Token is:
- *   1. fetched with `Accept: application/statuslist+jwt` through the
- *      SSRF-guarded fetcher;
- *   2. checked to be a compact JWS with `typ: statuslist+jwt` and an allowed
- *      `alg`, signed by `x5c[0]`, whose chain validates against
- *      {@link StatusListResolverOptions.trustStore} (anchors never taken from
- *      `x5c`, and not allowed inside it);
+ *   1. fetched with `Accept: application/statuslist+jwt` (or `+cwt`) through
+ *      the SSRF-guarded fetcher;
+ *   2. checked to be a compact JWS with `typ: statuslist+jwt` (or a COSE_Sign1
+ *      with protected `typ` (16) `application/statuslist+cwt`) and an allowed
+ *      `alg`, signed by `x5c[0]` (or `x5chain[0]`, label 33), whose chain
+ *      validates against {@link StatusListResolverOptions.trustStore}
+ *      (anchors never taken from the token, and not allowed inside it);
  *   3. checked for `sub === uri`, a sane `iat`, an unexpired `exp`, `nbf`, a
- *      positive `ttl`, and a well-formed `status_list`;
- *   4. decompressed (bounded) and cached by `uri` until the bounded `ttl`
- *      elapses or `exp` arrives, whichever is first.
+ *      positive `ttl`, and a well-formed `status_list` (CWT claims 2, 6, 4, 5,
+ *      65534 and 65533);
+ *   4. decompressed (bounded) and cached by format and `uri` until the bounded
+ *      `ttl` elapses or `exp` arrives, whichever is first.
  *
- * Concurrent lookups of the same `uri` share one fetch. One resolver instance
+ * Concurrent lookups of the same format and `uri` share one fetch. One resolver instance
  * is meant to live for the process so its cache is reused across
  * presentations (ARF VCR_13–VCR_15); call {@link prefetch} to warm it out of
  * band.
@@ -172,9 +195,10 @@ export class StatusListResolver {
      * {@link StatusListError} when no statement can be made (fetch, signature,
      * trust, claims) or when `idx` is out of range.
      */
-    async resolve(reference: StatusListReference): Promise<StatusListLookup> {
+    async resolve(reference: StatusListReference, options: StatusListFormatOptions = {}): Promise<StatusListLookup> {
+        const format = validateFormat(options.format);
         const ref = validateReference(reference);
-        const { list, fromCache } = await this.getList(ref.uri);
+        const { list, fromCache } = await this.getList(ref.uri, format);
         const value = readStatusValue(list, ref.idx, ref.uri);
         const { bytes, ...meta } = list;
         void bytes;
@@ -182,15 +206,16 @@ export class StatusListResolver {
     }
 
     /** The verified Status List at `uri`, from cache when still fresh. */
-    async getStatusList(uri: string): Promise<VerifiedStatusList> {
-        return (await this.getList(validateUri(uri))).list;
+    async getStatusList(uri: string, options: StatusListFormatOptions = {}): Promise<VerifiedStatusList> {
+        return (await this.getList(validateUri(uri), validateFormat(options.format))).list;
     }
 
-    /** Fetches `uri` now and replaces any cached copy. */
-    async prefetch(uri: string): Promise<VerifiedStatusList> {
+    /** Fetches `uri` now and replaces any cached copy (of the same format). */
+    async prefetch(uri: string, options: StatusListFormatOptions = {}): Promise<VerifiedStatusList> {
         const checked = validateUri(uri);
-        this.cache.delete(checked);
-        return (await this.getList(checked)).list;
+        const format = validateFormat(options.format);
+        this.cache.delete(cacheKey(format, checked));
+        return (await this.getList(checked, format)).list;
     }
 
     /** Drops every cached Status List. */
@@ -198,32 +223,40 @@ export class StatusListResolver {
         this.cache.clear();
     }
 
-    private async getList(uri: string): Promise<{ list: VerifiedStatusList; fromCache: boolean }> {
+    private async getList(
+        uri: string,
+        format: StatusListTokenFormat,
+    ): Promise<{ list: VerifiedStatusList; fromCache: boolean }> {
+        // Keyed by format too: a JWT and a CWT served at the same uri are
+        // separate tokens, each verified in the format it was fetched in.
+        const key = cacheKey(format, uri);
         const now = this.clock();
-        const cached = this.cache.get(uri);
+        const cached = this.cache.get(key);
         if (cached) {
             if (now.getTime() < cached.list.cacheUntil.getTime()) {
                 // refresh LRU position
-                this.cache.delete(uri);
-                this.cache.set(uri, cached);
+                this.cache.delete(key);
+                this.cache.set(key, cached);
                 return { list: cached.list, fromCache: true };
             }
-            this.cache.delete(uri);
+            this.cache.delete(key);
         }
 
-        let pending = this.inFlight.get(uri);
+        let pending = this.inFlight.get(key);
         if (!pending) {
-            pending = this.fetchAndVerify(uri).finally(() => this.inFlight.delete(uri));
-            this.inFlight.set(uri, pending);
+            pending = (format === 'cwt' ? this.fetchAndVerifyCwt(uri) : this.fetchAndVerify(uri)).finally(() =>
+                this.inFlight.delete(key),
+            );
+            this.inFlight.set(key, pending);
         }
         const list = await pending;
-        if (list.cacheUntil.getTime() > this.clock().getTime()) this.store(uri, list);
+        if (list.cacheUntil.getTime() > this.clock().getTime()) this.store(key, list);
         return { list, fromCache: false };
     }
 
-    private store(uri: string, list: VerifiedStatusList): void {
-        this.cache.delete(uri);
-        this.cache.set(uri, { list });
+    private store(key: string, list: VerifiedStatusList): void {
+        this.cache.delete(key);
+        this.cache.set(key, { list });
         const max = this.opts.maxCacheEntries ?? 100;
         while (this.cache.size > max) {
             const oldest = this.cache.keys().next().value;
@@ -309,8 +342,72 @@ export class StatusListResolver {
             maxBytes: this.opts.maxListBytes ?? DEFAULT_MAX_STATUS_LIST_BYTES,
         });
 
+        return this.buildVerifiedList(uri, 'jwt', decoded, claims, fetchedAt, trust);
+    }
+
+    /**
+     * CWT Status List Token (§5.2): COSE_Sign1, protected `typ` (16)
+     * `application/statuslist+cwt`, signer in `x5chain` (33), claims `sub` (2),
+     * `iat` (6), `exp` (4), `nbf` (5), `ttl` (65534) and `status_list` (65533)
+     * whose `lst` is a byte string. Same order of checks as the JWT path.
+     */
+    private async fetchAndVerifyCwt(uri: string): Promise<VerifiedStatusList> {
+        const bytes = await this.fetchCwtToken(uri);
+        const fetchedAt = this.clock();
+
+        // --- Structure, typ, alg, x5chain — before any crypto -------------
+        const token = decodeStatusListCwt(bytes, uri);
+        if (!this.allowedAlgorithms.includes(token.alg)) {
+            throw new StatusListError('invalid_token', `Status List Token alg ${token.alg} is not allowed`, { uri });
+        }
+
+        // --- Signature with the x5chain signer key -------------------------
+        try {
+            const key = await importX509(derToPem(bytesToBase64(token.x5chain[0])), token.alg);
+            await verifyCoseSign1(
+                {
+                    protectedHeaderBytes: token.protectedHeaderBytes,
+                    protectedHeader: token.protectedHeader,
+                    unprotectedHeader: token.unprotectedHeader,
+                    payload: token.payload,
+                    signature: token.signature,
+                    x5chain: token.x5chain,
+                    alg: token.alg,
+                },
+                key as CryptoKey,
+                this.allowedAlgorithms,
+            );
+        } catch (err) {
+            throw new StatusListError('signature_invalid', `Status List Token signature from ${uri} does not verify`, {
+                uri,
+                cause: asError(err),
+            });
+        }
+
+        // --- Signer chain, then claims (same rules as the JWT path) --------
+        const iat = token.claims['iat'];
+        const trust = await this.evaluateSigner(token.x5chain, uri, isNumericDate(iat) ? new Date(iat * 1000) : undefined);
+        const claims = this.checkClaims(token.claims, uri, fetchedAt);
+
+        const decoded = await decodeStatusList(token.claims['status_list'], {
+            uri,
+            maxBytes: this.opts.maxListBytes ?? DEFAULT_MAX_STATUS_LIST_BYTES,
+            lstEncoding: 'bytes',
+        });
+        return this.buildVerifiedList(uri, 'cwt', decoded, claims, fetchedAt, trust);
+    }
+
+    private buildVerifiedList(
+        uri: string,
+        format: StatusListTokenFormat,
+        decoded: { bits: StatusListBits; bytes: Uint8Array; size: number },
+        claims: { issuedAt: Date; expiresAt?: Date; ttlSeconds?: number },
+        fetchedAt: Date,
+        trust: TrustEvaluationResult,
+    ): VerifiedStatusList {
         return {
             uri,
+            format,
             bits: decoded.bits,
             bytes: decoded.bytes,
             size: decoded.size,
@@ -323,10 +420,10 @@ export class StatusListResolver {
         };
     }
 
-    private async fetchToken(uri: string): Promise<string> {
+    private async fetchResponse(uri: string, accept: string): Promise<Response> {
         let response: Response;
         try {
-            response = await this.fetcher(uri, { method: 'GET', headers: { Accept: STATUS_LIST_JWT_MEDIA_TYPE } });
+            response = await this.fetcher(uri, { method: 'GET', headers: { Accept: accept } });
         } catch (err) {
             throw new StatusListError('fetch_failed', `Status List Token fetch failed for ${uri}`, {
                 uri,
@@ -339,6 +436,25 @@ export class StatusListResolver {
                 uri,
             });
         }
+        return response;
+    }
+
+    private async fetchCwtToken(uri: string): Promise<Uint8Array> {
+        const response = await this.fetchResponse(uri, STATUS_LIST_CWT_MEDIA_TYPE);
+        // As for JWT, the Content-Type is not enforced: the protected COSE
+        // `typ` is the binding type assertion.
+        try {
+            return new Uint8Array(await response.arrayBuffer());
+        } catch (err) {
+            throw new StatusListError('fetch_failed', `Status List Token body could not be read from ${uri}`, {
+                uri,
+                cause: asError(err),
+            });
+        }
+    }
+
+    private async fetchToken(uri: string): Promise<string> {
+        const response = await this.fetchResponse(uri, STATUS_LIST_JWT_MEDIA_TYPE);
         // The Content-Type is not enforced: the JOSE `typ` check below is the
         // binding type assertion, and servers mislabel tokens often enough
         // (`application/jwt`) that rejecting on it would only cost availability.
@@ -475,6 +591,16 @@ export class StatusListResolver {
     }
 }
 
+function cacheKey(format: StatusListTokenFormat, uri: string): string {
+    return `${format} ${uri}`;
+}
+
+function validateFormat(format: unknown): StatusListTokenFormat {
+    if (format === undefined || format === 'jwt') return 'jwt';
+    if (format === 'cwt') return 'cwt';
+    throw new StatusListError('configuration', `Unknown Status List Token format ${JSON.stringify(format)}`);
+}
+
 function validateUri(uri: unknown): string {
     if (typeof uri !== 'string' || uri.length === 0) {
         throw new StatusListError('invalid_reference', 'status_list.uri must be a non-empty string');
@@ -534,6 +660,12 @@ function base64ToBytes(b64: string): Uint8Array {
     const out = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
     return out;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+    let binary = '';
+    for (const b of bytes) binary += String.fromCharCode(b);
+    return globalThis.btoa(binary);
 }
 
 function derToPem(base64Der: string): string {

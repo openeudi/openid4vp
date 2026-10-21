@@ -38,18 +38,34 @@ export function isStatusListBits(value: unknown): value is StatusListBits {
 }
 
 /**
- * Validates and decodes the `status_list` object of a JWT Status List Token
- * (§4.2): `bits` ∈ {1, 2, 4, 8}, `lst` = base64url(ZLIB(DEFLATE(bytes))).
+ * How `status_list.lst` is carried: base64url text in a JWT Status List Token
+ * (§4.2), a raw CBOR byte string in a CWT one (§4.3).
+ */
+export type StatusListLstEncoding = 'base64url' | 'bytes';
+
+/**
+ * Validates and decodes the `status_list` object of a Status List Token:
+ * `bits` ∈ {1, 2, 4, 8} and `lst` = ZLIB(DEFLATE(bytes)), base64url-encoded in
+ * a JWT (§4.2, the default) or a byte string in a CWT (§4.3,
+ * `lstEncoding: 'bytes'`). The encoding is fixed per format: a JWT list with a
+ * byte `lst`, or a CWT list with a text `lst`, is malformed. A CBOR map with
+ * text keys is accepted as the `status_list` object.
  */
 export async function decodeStatusList(
     statusList: unknown,
-    options: { uri: string; maxBytes?: number },
+    options: { uri: string; maxBytes?: number; lstEncoding?: StatusListLstEncoding },
 ): Promise<DecodedStatusList> {
     const { uri } = options;
-    if (!statusList || typeof statusList !== 'object' || Array.isArray(statusList)) {
-        throw new StatusListError('malformed_status_list', 'status_list must be a JSON object', { uri });
+    const encoding = options.lstEncoding ?? 'base64url';
+    const fields = toStatusListFields(statusList);
+    if (!fields) {
+        throw new StatusListError(
+            'malformed_status_list',
+            encoding === 'bytes' ? 'status_list must be a CBOR map with text keys' : 'status_list must be a JSON object',
+            { uri },
+        );
     }
-    const { bits, lst } = statusList as Record<string, unknown>;
+    const { bits, lst } = fields;
     if (!isStatusListBits(bits)) {
         throw new StatusListError(
             'malformed_status_list',
@@ -57,22 +73,43 @@ export async function decodeStatusList(
             { uri },
         );
     }
-    if (typeof lst !== 'string' || lst.length === 0 || !/^[A-Za-z0-9_-]+$/.test(lst)) {
-        throw new StatusListError('malformed_status_list', 'status_list.lst must be a non-empty base64url string', {
-            uri,
-        });
-    }
     let compressed: Uint8Array;
-    try {
-        compressed = base64url.decode(lst);
-    } catch (err) {
-        throw new StatusListError('malformed_status_list', 'status_list.lst is not valid base64url', {
-            uri,
-            cause: err instanceof Error ? err : undefined,
-        });
+    if (encoding === 'bytes') {
+        if (!(lst instanceof Uint8Array) || lst.length === 0) {
+            throw new StatusListError('malformed_status_list', 'status_list.lst must be a non-empty byte string', {
+                uri,
+            });
+        }
+        compressed = lst;
+    } else {
+        if (typeof lst !== 'string' || lst.length === 0 || !/^[A-Za-z0-9_-]+$/.test(lst)) {
+            throw new StatusListError('malformed_status_list', 'status_list.lst must be a non-empty base64url string', {
+                uri,
+            });
+        }
+        try {
+            compressed = base64url.decode(lst);
+        } catch (err) {
+            throw new StatusListError('malformed_status_list', 'status_list.lst is not valid base64url', {
+                uri,
+                cause: err instanceof Error ? err : undefined,
+            });
+        }
     }
     const bytes = await inflateStatusList(compressed, { uri, maxBytes: options.maxBytes });
     return { bits, bytes, size: (bytes.length * 8) / bits };
+}
+
+function toStatusListFields(statusList: unknown): { bits: unknown; lst: unknown } | undefined {
+    if (statusList instanceof Map) {
+        for (const key of statusList.keys()) if (typeof key !== 'string') return undefined;
+        return { bits: statusList.get('bits'), lst: statusList.get('lst') };
+    }
+    if (!statusList || typeof statusList !== 'object' || Array.isArray(statusList) || statusList instanceof Uint8Array) {
+        return undefined;
+    }
+    const record = statusList as Record<string, unknown>;
+    return { bits: record['bits'], lst: record['lst'] };
 }
 
 /**

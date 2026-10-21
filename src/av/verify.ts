@@ -44,7 +44,9 @@ const NO_ISSUER: IssuerInfo = { certificate: new Uint8Array(), country: '' };
  * 4. Issuer signature, digests, MSO validity and docType, issuer chain against
  *    `trustStore`, and device authentication over the OpenID4VP 1.0
  *    `OpenID4VPHandover` SessionTranscript `[clientId, nonce, null, responseUri]`.
- * 5. The requested `age_over_NN` is disclosed.
+ * 5. Under `statusPolicy` `'prefer'` / `'require'`, the MSO `status` (Token
+ *    Status List, `statuslist+cwt`) when present.
+ * 6. The requested `age_over_NN` is disclosed.
  *
  * Credential failures return `{ valid: false, failure, error }`. Trust failures
  * propagate as `TrustAnchorNotFoundError` / `CertificateChainError`, as on
@@ -116,14 +118,23 @@ export async function verifyAvPresentation(
         fetcher: options.fetcher,
         cache: options.cache,
         clockSkewTolerance: options.clockSkewTolerance,
+        statusPolicy: options.statusPolicy,
+        statusListResolver: options.statusListResolver,
     });
+    const credentialStatus = parsed.credentialStatus ? { credentialStatus: parsed.credentialStatus } : {};
     if (!parsed.valid) {
-        return fail('invalid_credential', parsed.error ?? 'mdoc verification failed', parsed.issuer);
+        // The parser only sets credentialStatus once everything else verified,
+        // so an invalid result carrying it was rejected by the status check.
+        const failure = parsed.credentialStatus ? 'credential_status' : 'invalid_credential';
+        return { ...fail(failure, parsed.error ?? 'mdoc verification failed', parsed.issuer), ...credentialStatus };
     }
 
     const ageOver = parsed.namespacedClaims?.[AV_NAMESPACE]?.[ageOverAttribute];
     if (typeof ageOver !== 'boolean') {
-        return fail('missing_attribute', `the presentation does not disclose ${ageOverAttribute}`, parsed.issuer);
+        return {
+            ...fail('missing_attribute', `the presentation does not disclose ${ageOverAttribute}`, parsed.issuer),
+            ...credentialStatus,
+        };
     }
 
     return {
@@ -133,6 +144,7 @@ export async function verifyAvPresentation(
         ageOver,
         issuer: parsed.issuer,
         trust: parsed.trust,
+        ...credentialStatus,
     };
 }
 
