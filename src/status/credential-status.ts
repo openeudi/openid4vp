@@ -1,6 +1,6 @@
 import { StatusListError, type StatusListErrorReason } from '../errors.js';
 
-import type { StatusListResolver } from './StatusListResolver.js';
+import type { StatusListResolver, StatusListTokenFormat } from './StatusListResolver.js';
 import type { TokenStatusType } from './status-list.js';
 
 /**
@@ -64,15 +64,15 @@ const POLICIES: ReadonlySet<string> = new Set(['skip', 'prefer', 'require']);
  * credential payload (draft-ietf-oauth-status-list-21 §8.3: the Referenced
  * Token is validated first; status is evaluated only afterwards).
  *
- * Format note: this handles the JOSE `status` claim (SD-JWT VC). The mdoc MSO
- * `status` (`statuslist+cwt`, §5.2 / §6.3) is not evaluated yet.
- * TODO(EID-196 follow-up): decode the MSO `status` in `src/crypto/mso.ts`,
- * verify the COSE_Sign1 Status List CWT (claims 2/6/4/65534/65533) and reuse
- * `decodeStatusList` / `readStatusValue` with the raw `lst` byte string.
+ * `payload.status` is the JOSE `status` claim of an SD-JWT VC, whose list is a
+ * `statuslist+jwt` (`format: 'jwt'`, the default), or the mdoc MSO `status`
+ * (§6.3) with its maps converted to objects, whose list is a `statuslist+cwt`
+ * (`format: 'cwt'`). Both carry `status_list: { idx, uri }`.
  */
 export async function checkCredentialStatus(
     payload: Record<string, unknown>,
     options: CredentialStatusOptions,
+    format: StatusListTokenFormat = 'jwt',
 ): Promise<CredentialStatusCheck> {
     const policy = options.statusPolicy ?? 'skip';
     if (!POLICIES.has(policy)) {
@@ -98,8 +98,13 @@ export async function checkCredentialStatus(
         rejection: message,
     });
 
-    if (!status || typeof status !== 'object' || Array.isArray(status)) {
-        return reject('invalid_reference', 'Credential status claim must be a JSON object');
+    if (!isObject(status)) {
+        return reject(
+            'invalid_reference',
+            format === 'cwt'
+                ? 'MSO status must be a map with text keys'
+                : 'Credential status claim must be a JSON object',
+        );
     }
     const reference = (status as Record<string, unknown>)['status_list'];
     if (reference === undefined) {
@@ -112,7 +117,7 @@ export async function checkCredentialStatus(
 
     let lookup;
     try {
-        lookup = await resolver.resolve(reference as { idx: number; uri: string });
+        lookup = await resolver.resolve(reference as { idx: number; uri: string }, { format });
     } catch (err) {
         if (!(err instanceof StatusListError)) throw err;
         if (DEFINITIVE_REASONS.has(err.reason)) {
@@ -148,5 +153,11 @@ export async function checkCredentialStatus(
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
-    return !!value && typeof value === 'object' && !Array.isArray(value);
+    return (
+        !!value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        !(value instanceof Map) &&
+        !(value instanceof Uint8Array)
+    );
 }

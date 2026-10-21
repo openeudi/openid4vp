@@ -1,5 +1,7 @@
 import type { DcqlQuery } from '@openeudi/dcql';
 
+import type { CredentialStatusResult, StatusPolicy } from '../status/credential-status.js';
+import type { StatusListResolver } from '../status/StatusListResolver.js';
 import type { Cache } from '../trust/Cache.js';
 import type { Fetcher } from '../trust/Fetcher.js';
 import type { TrustEvaluationResult } from '../trust/TrustEvaluator.js';
@@ -90,6 +92,17 @@ export interface VerifyAvPresentationOptions {
     cache?: Cache;
     /** Seconds, for certificate validity. Default 60. */
     clockSkewTolerance?: number;
+    /**
+     * How the attestation's MSO `status` (Token Status List, `statuslist+cwt`)
+     * is checked. Default `'skip'`: Proof of Age attestations are short-lived
+     * and normally carry no `status` (AV specification §3.4.3). Under
+     * `'prefer'` / `'require'` an attestation without `status` still verifies
+     * (`credentialStatus.outcome: 'absent'`); one with a `status` is checked
+     * as on every other mdoc path. Requires {@link statusListResolver}.
+     */
+    statusPolicy?: StatusPolicy;
+    /** Resolver for Status List Tokens; give it the status-list signer anchors. */
+    statusListResolver?: StatusListResolver;
 }
 
 export type AvVerificationFailure =
@@ -105,7 +118,12 @@ export type AvVerificationFailure =
     /** The requested `age_over_NN` was not disclosed. */
     | 'missing_attribute'
     /** `deviceSigned.nameSpaces` is not empty. */
-    | 'device_signed_elements';
+    | 'device_signed_elements'
+    /**
+     * The MSO `status` names a non-VALID status, an out-of-range index, or is
+     * malformed (only under `statusPolicy` `'prefer'` / `'require'`).
+     */
+    | 'credential_status';
 
 export interface AvVerificationResult {
     /** The presentation is a valid, trusted, device-bound Proof of Age attestation that discloses the requested attribute. */
@@ -124,6 +142,8 @@ export interface AvVerificationResult {
     trust?: TrustEvaluationResult;
     /** `state` echoed by the wallet, if any. */
     state?: string;
+    /** Token Status List outcome; set when `statusPolicy` is `'prefer'` or `'require'` and the check ran. */
+    credentialStatus?: CredentialStatusResult;
     failure?: AvVerificationFailure;
     error?: string;
 }

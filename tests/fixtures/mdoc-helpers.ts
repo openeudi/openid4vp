@@ -58,6 +58,11 @@ export interface BuildSignedMdocOptions {
      * the single `issuerKey.certDerBytes`. The leaf MUST certify `issuerKey`.
      */
     x5chain?: Uint8Array[];
+    /**
+     * MSO `status` element (draft-ietf-oauth-status-list-21 §6.3), e.g.
+     * `{ status_list: { idx, uri } }`. Omitted when undefined.
+     */
+    msoStatus?: unknown;
 }
 
 export interface BuildSignedMdocResult {
@@ -153,6 +158,7 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
         sessionTranscript = DEFAULT_TEST_SESSION_TRANSCRIPT,
         omitDeviceAuth = false,
         x5chain,
+        msoStatus,
     } = options;
 
     const coseAlg = ALG_TO_COSE_LABEL[alg];
@@ -224,6 +230,8 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
             ]),
         ],
     ]);
+
+    if (msoStatus !== undefined) mso.set('status', msoStatus);
 
     // 5: CBOR-encode MSO. The COSE payload MUST be a tag-24 byte string
     const msoCbor = cbor.encode(mso);
