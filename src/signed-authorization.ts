@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { calculateJwkThumbprint, type JWK } from 'jose';
-import type { DcqlQuery } from '@openeudi/dcql';
+import { validateQuery, type DcqlQuery } from '@openeudi/dcql';
 
 import { SignedRequestBuildError } from './errors.js';
 import {
@@ -50,6 +50,9 @@ export async function createSignedAuthorizationRequest(
             'vpFormatsSupported is required and must be non-empty',
         );
     }
+
+    // Never sign a dcql_query a wallet must reject (OpenID4VP 1.0 §6, dcql 0.3 rules).
+    validateQuery(query);
 
     if (input.verifierInfo !== undefined) {
         const problem = verifierInfoProblem(input.verifierInfo, query);

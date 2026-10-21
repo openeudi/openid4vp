@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import type { DcqlQuery } from '@openeudi/dcql';
+import { validateQuery, type DcqlQuery } from '@openeudi/dcql';
 
 import type { AuthorizationRequestInput, AuthorizationRequest } from './types/authorization.js';
 import { serializeVerifierInfo, verifierInfoProblem } from './verifier-info.js';
@@ -11,6 +11,8 @@ export function createAuthorizationRequest(
     if (!input.clientId) throw new TypeError('clientId is required');
     if (!input.nonce) throw new TypeError('nonce is required');
     if (!input.responseUri) throw new TypeError('responseUri is required');
+    // Never emit a dcql_query a wallet must reject (OpenID4VP 1.0 §6, dcql 0.3 rules).
+    validateQuery(query);
     if (input.verifierInfo !== undefined) {
         const problem = verifierInfoProblem(input.verifierInfo, query);
         if (problem) throw new TypeError(problem);
