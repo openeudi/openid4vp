@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security (dependencies)
+
+- `@xmldom/xmldom` ^0.9.12 (was 0.9.10) and, through `xml-core` 1.2.6, no more 0.8.x copy
+  under `xmldsigjs` / `xadesjs`: fixes the 2026 xmldom advisories (XML injection that bypasses
+  `requireWellFormed`, and quadratic-time / ReDoS parsing). The LOTL / national trusted-list
+  XMLDSig path parses untrusted XML with it.
+- `uuid` ^11.1.1 (missing buffer bounds check in v3/v5/v6).
+
 ### Added
 
 - **Credential status for mdoc — the MSO `status` via a CWT Token Status List**
