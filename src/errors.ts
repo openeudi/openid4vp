@@ -50,7 +50,11 @@ export type HaipValidationCode =
     | 'EMPTY_OPTIONS'
     | 'DUPLICATE_CREDENTIAL_ID'
     | 'MISSING_CREDENTIAL_SETS'
-    | 'UNKNOWN_OPTION_REFERENCE';
+    | 'UNKNOWN_OPTION_REFERENCE'
+    /** Credential query id outside `[A-Za-z0-9_-]+` (OpenID4VP 1.0 §6.1). */
+    | 'INVALID_CREDENTIAL_ID'
+    /** Any other rule `@openeudi/dcql` `validateQuery` enforces (OpenID4VP 1.0 §6–§7); the message carries its path. */
+    | 'INVALID_DCQL';
 
 export class HaipValidationError extends Error {
     readonly code: HaipValidationCode;

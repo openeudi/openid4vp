@@ -1,8 +1,10 @@
-import type {
-    DcqlQuery,
-    CredentialQuery,
-    ClaimsQuery,
-    CredentialSetQuery,
+import {
+    DcqlValidationError,
+    validateQuery,
+    type DcqlQuery,
+    type CredentialQuery,
+    type ClaimsQuery,
+    type CredentialSetQuery,
 } from '@openeudi/dcql';
 import { HaipValidationError } from './errors.js';
 import type { HaipQueryInput, CredentialSetQueryInput } from './types/haip.js';
@@ -12,7 +14,41 @@ export const HAIP_DOCTYPE_NAMESPACES: Record<string, string> = {
     'eu.europa.ec.eudi.pid.1': 'eu.europa.ec.eudi.pid.1',
 };
 
+/** OpenID4VP 1.0 §6.1: "alphanumeric, underscore (_), or hyphen (-) characters". */
+const CREDENTIAL_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+function assertCredentialId(id: unknown): void {
+    if (typeof id !== 'string' || !CREDENTIAL_ID_PATTERN.test(id)) {
+        throw new HaipValidationError(
+            'INVALID_CREDENTIAL_ID',
+            `credential id ${JSON.stringify(id)} must be a non-empty string of [A-Za-z0-9_-] (OpenID4VP 1.0 §6.1)`,
+            typeof id === 'string' ? id : undefined,
+        );
+    }
+}
+
+/**
+ * Runs the `@openeudi/dcql` structural rules (OpenID4VP 1.0 §6–§7) after the
+ * profile rules, so a query this module builds or accepts is one a wallet
+ * must accept too.
+ */
+function assertValidDcql(query: DcqlQuery): void {
+    try {
+        validateQuery(query);
+    } catch (err) {
+        if (!(err instanceof DcqlValidationError)) throw err;
+        const index = /^\/credentials\/(\d+)/.exec(err.path)?.[1];
+        const credentialId = index === undefined ? undefined : query.credentials[Number(index)]?.id;
+        throw new HaipValidationError(
+            'INVALID_DCQL',
+            `invalid DCQL query at ${err.path}: ${err.message} (${err.code})`,
+            credentialId,
+        );
+    }
+}
+
 export function buildHaipQuery(input: HaipQueryInput): DcqlQuery {
+    assertCredentialId(input.credentialId);
     if (input.claims.length === 0) {
         throw new HaipValidationError(
             'NO_CLAIMS',
@@ -58,7 +94,9 @@ export function buildHaipQuery(input: HaipQueryInput): DcqlQuery {
         credential.trusted_authorities = input.trustedAuthorities;
     }
 
-    return { credentials: [credential] };
+    const query: DcqlQuery = { credentials: [credential] };
+    assertValidDcql(query);
+    return query;
 }
 
 /**
@@ -110,7 +148,9 @@ export function buildCredentialSetQuery(input: CredentialSetQueryInput): DcqlQue
         credentialSet.required = false;
     }
 
-    return { credentials, credential_sets: [credentialSet] };
+    const query: DcqlQuery = { credentials, credential_sets: [credentialSet] };
+    assertValidDcql(query);
+    return query;
 }
 
 const HAIP_FORMATS = new Set<string>(['dc+sd-jwt', 'mso_mdoc']);
@@ -133,6 +173,7 @@ export function validateHaipQuery(query: DcqlQuery): void {
     for (const credential of query.credentials) {
         validateCredential(credential);
     }
+    assertValidDcql(query);
 }
 
 /**
@@ -141,6 +182,7 @@ export function validateHaipQuery(query: DcqlQuery): void {
  * top-level `credential_sets` is allowed, never on what a credential may say.
  */
 function validateCredential(credential: CredentialQuery): void {
+    assertCredentialId(credential.id);
     if (!HAIP_FORMATS.has(credential.format)) {
         throw new HaipValidationError(
             'UNSUPPORTED_FORMAT',
@@ -233,6 +275,7 @@ export function validateCredentialSetQuery(query: DcqlQuery): void {
             }
         }
     }
+    assertValidDcql(query);
 }
 
 export function isHaipQuery(query: DcqlQuery): boolean {

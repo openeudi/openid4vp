@@ -7,7 +7,6 @@ import {
     credentialTypes,
     hasKeyBindingJwt,
     requiresHolderBinding,
-    vctForQuery,
 } from './credential-types.js';
 import { prepareTrustedAuthorityMatching } from './trusted-authorities.js';
 import { decryptAuthorizationResponse } from './decrypt-response.js';
@@ -91,9 +90,20 @@ export async function verifyPresentation(
         claims: decodedClaims,
     };
 
+    // Tell DCQL whether the presentation is holder-bound, so every query entry
+    // that requires binding (§6.1 default) reports `holder_binding_required`
+    // for a bearer credential. Only set for a presentation the parser accepted:
+    // only then is a present KB-JWT, or the mdoc DeviceAuth, known to be verified.
+    if (parsed.valid) {
+        decoded.holder_bound = parsed.format === 'mdoc' || hasKeyBindingJwt(vpToken);
+    }
+
     // OpenID4VP 1.0 §6.1: holder binding is required unless the query entry
     // opts out. mdoc DeviceAuth is always verified; an SD-JWT VC without a
-    // KB-JWT passed the parser only because it has no `cnf`.
+    // KB-JWT passed the parser only because it has no `cnf`. Kept on top of
+    // `holder_bound`: it fails the presentation itself (`parsed.valid`), so a
+    // `credential_sets` alternative that DCQL could still satisfy cannot turn
+    // a bearer presentation of the presented entry into a valid result.
     if (
         parsed.valid &&
         parsed.format === 'sd-jwt-vc' &&
@@ -110,20 +120,22 @@ export async function verifyPresentation(
     }
 
     if (parsed.format === 'sd-jwt-vc' && typeof parsed.vct === 'string') {
-        // The real vct stays on `parsed`; DCQL sees the inherited type it asked for.
-        decoded.vct = vctForQuery(types, parsed.vct, presentedCredentialQuery);
+        // DCQL matches `meta.vct_values` against `vct` and every alias: the
+        // issuer-signed `aka_vcts` and the `vctAncestors` chain (B.3.5).
+        decoded.vct = parsed.vct;
+        const aliases = types.filter((t) => t !== parsed.vct);
+        if (aliases.length > 0) decoded.vct_aliases = aliases;
     }
     if (parsed.format === 'mdoc' && typeof parsed.docType === 'string') {
         decoded.doctype = parsed.docType;
     }
 
-    // Forward trust-evaluation authority ids into the decoded credential so
-    // DCQL's trusted_authorities filter can match them, type-tagged on both
-    // sides (see trusted-authorities.ts). Populated by TrustEvaluator when a
-    // trustStore is provided.
+    // Forward the trust evaluation's authorities (TrustEvaluator, when a
+    // trustStore is provided) as DCQL's typed `trusted_authorities`, so an
+    // `aki` value never satisfies an `etsi_tl` entry (see trusted-authorities.ts).
     const authorities = prepareTrustedAuthorityMatching(query, parsed.trust);
-    if (authorities.ids) {
-        decoded.trusted_authority_ids = authorities.ids;
+    if (authorities.trustedAuthorities) {
+        decoded.trusted_authorities = authorities.trustedAuthorities;
     }
 
     const match = matchQuery(authorities.query, [decoded]);

@@ -1,5 +1,5 @@
 import { calculateJwkThumbprint, type JWK } from 'jose';
-import type { DcqlQuery } from '@openeudi/dcql';
+import { validateQuery, type DcqlQuery } from '@openeudi/dcql';
 
 import { resolveRequestSigner, signRequestObject } from '../request-signing.js';
 import { serializeVerifierInfo, verifierInfoProblem } from '../verifier-info.js';
@@ -54,6 +54,9 @@ export async function createDcApiRequest(
             'vpFormatsSupported is required and must be non-empty',
         );
     }
+
+    // Never emit a dcql_query a wallet must reject (OpenID4VP 1.0 §6, dcql 0.3 rules).
+    validateQuery(query);
 
     if (input.verifierInfo !== undefined) {
         const problem = verifierInfoProblem(input.verifierInfo, query);

@@ -97,7 +97,7 @@ console.log(request.dcqlQuery);
 | `nonce`        | `string` | Yes      | Challenge nonce for replay protection          |
 | `state`        | `string` | No       | Session state (auto-generated UUID if omitted) |
 
-The second argument is a DCQL `Query` object. Use `buildHaipQuery` (below) or hand-construct one and validate it via `validateHaipQuery`.
+The second argument is a DCQL `Query` object. Use `buildHaipQuery` (below) or hand-construct one and validate it via `validateHaipQuery`. `createAuthorizationRequest`, `createSignedAuthorizationRequest` and `createDcApiRequest` run `@openeudi/dcql` `validateQuery` on it first and throw its `DcqlValidationError` (`code`, `path`) for a query a wallet must reject (OpenID4VP 1.0 §6–§7): `meta` missing (`vct_values` for `dc+sd-jwt`, `doctype_value` for `mso_mdoc`, `{}` otherwise), an `id` outside `[A-Za-z0-9_-]`, an `mso_mdoc` claim path that is not exactly `[namespace, element]`, empty `claims` / `values` / `trusted_authorities`, and so on.
 
 ## HAIP helpers
 
@@ -117,6 +117,8 @@ const query = buildHaipQuery({
 // Or validate a hand-built DCQL query:
 validateHaipQuery(query); // throws HaipValidationError on violation
 ```
+
+The HAIP rules run first, with their own codes; then every `@openeudi/dcql` `validateQuery` rule, reported as `HaipValidationError` `INVALID_DCQL` (the message names the JSON pointer). A credential id outside `[A-Za-z0-9_-]` is `INVALID_CREDENTIAL_ID`. `buildHaipQuery` and `buildCredentialSetQuery` apply the same checks to what they build.
 
 Supported formats: `dc+sd-jwt` and `mso_mdoc`. Other formats (e.g., `jwt_vc_json`) will be rejected by the validator.
 
@@ -208,13 +210,13 @@ if (result.valid) {
 } else {
   console.warn("mismatch reasons:", result.match.unmatched);
   // each entry: { queryId, reason, detail? }
-  // reason ∈ { format_mismatch, vct_mismatch, doctype_mismatch, missing_claims, value_mismatch, trusted_authority_mismatch, no_credential_found /* only when the candidate list is empty */ }
+  // reason ∈ { format_mismatch, vct_mismatch, doctype_mismatch, holder_binding_required, missing_claims, value_mismatch, trusted_authority_mismatch, no_credential_found /* only when the candidate list is empty */ }
 }
 ```
 
 Mismatches return `valid: false` — they do not throw. Only crypto/structural failures (malformed VP tokens, invalid signatures, expired credentials), configuration faults (`MissingAudienceError`) and malformed DCQL queries throw exceptions.
 
-**Holder binding follows the query.** OpenID4VP 1.0 §6.1 makes `require_cryptographic_holder_binding` default to `true`, so a bearer SD-JWT VC (no `cnf`, no KB-JWT) yields `valid: false` unless the matched credential query sets `require_cryptographic_holder_binding: false`. mDOC device authentication is always required.
+**Holder binding follows the query.** OpenID4VP 1.0 §6.1 makes `require_cryptographic_holder_binding` default to `true`, so a bearer SD-JWT VC (no `cnf`, no KB-JWT) yields `valid: false` unless the matched credential query sets `require_cryptographic_holder_binding: false`. mDOC device authentication is always required. The presentation's binding is also passed to DCQL (`holder_bound`), so any other query entry that requires binding reports `holder_binding_required` for a bearer credential.
 
 **National PID types.** A wallet may answer `vct_values: ["urn:eudi:pid:1"]` with a national PID such as `urn:eudi:pid:de:1` (PID Rulebook PID_14, OpenID4VP 1.0 Appendix B.3.5). Such a credential matches when its issuer-signed `aka_vcts` lists a requested type, or when you declare the inheritance out of band:
 
@@ -838,6 +840,7 @@ Mobile Document credentials as defined in ISO 18013-5. The token is a CBOR-encod
 | `MalformedCredentialError` | Credential structure is malformed         | Token cannot be decoded or is structurally invalid |
 | `NonceValidationError`     | Nonce does not match expected value       | Key binding JWT nonce does not match               |
 | `HaipValidationError`      | HAIP query constraint violated            | DCQL query fails `validateHaipQuery`               |
+| `DcqlValidationError`      | (per `code`, with `path`)                 | A request builder is given a DCQL query that fails `@openeudi/dcql` `validateQuery` |
 | `LotlConfigurationError`   | No xmldsigjs crypto engine registered     | `LotlTrustStore` used without `Application.setEngine` |
 | `GuardedFetchError`        | refusing … / exceeds … / timed out      | A guarded fetch is refused or cut off (`reason`)   |
 | `MissingAudienceError`     | An expected audience is required …      | A KB-JWT is verified without `audience` (or `clientId`) |
@@ -926,6 +929,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for per-release changes. Key migration moment
 
 - **Unreleased (next minor)** — **BREAKING:** a KB-JWT needs an expected audience (`audience`, or `clientId` on `verifyAuthorizationResponse`; `MissingAudienceError` otherwise), its `aud` must be one string equal to it, and `typ: kb+jwt`, `iat` (within `kbJwtMaxAge`, default 300 s) and `sd_hash` are required. **BREAKING:** `verifyPresentation` / `verifyAuthorizationResponse` reject a bearer SD-JWT VC unless the query sets `require_cryptographic_holder_binding: false`. **BREAKING:** `trusted_authorities` `aki` values are base64url AKI key ids (hex still matches for one release, with a warning), and each value only matches its own type. **BREAKING:** certificates with unrecognised critical extensions are rejected; `createSignedAuthorizationRequest` rejects a `certificateChain` ending in the trust anchor. See [CHANGELOG](./CHANGELOG.md).
 - **0.14.0** — Security release ([GHSA-3v3j-fghh-r2gg](https://github.com/openeudi/openid4vp/security/advisories/GHSA-3v3j-fghh-r2gg), [GHSA-r8q4-fcxm-v42q](https://github.com/openeudi/openid4vp/security/advisories/GHSA-r8q4-fcxm-v42q)). **BREAKING:** the KB-JWT `aud` must equal the verifier's client identifier. `verifyAuthorizationResponse` defaults `audience` to `clientId`, and with no audience available the check throws `MissingAudienceError`. **BREAKING:** the DCQL `require_cryptographic_holder_binding` (default `true`) is enforced, so bearer SD-JWT VCs fail unless the query sets it to `false`. **BREAKING:** `trusted_authorities` `aki` values are base64url (hex still matches for one release), unrecognised critical X.509 extensions are rejected, and Node.js 22 or later is required. KB-JWT `typ` and `iat` freshness (`kbJwtMaxAge`, default 300 s) are checked too.
+- **Unreleased (`@openeudi/dcql` 0.3)** — **BREAKING:** the request builders and `validateHaipQuery` / `validateCredentialSetQuery` / `buildHaipQuery` / `buildCredentialSetQuery` apply the stricter dcql 0.3 `validateQuery` rules: add `meta` to every credential query, keep ids to `[A-Za-z0-9_-]`, write mdoc claim paths as `[namespace, element]`. The re-exported `DcqlValidationErrorCode` and the `match.unmatched[].reason` union gained members (`invalid_id`, `holder_binding_required`). Credential status now covers mdoc too (`statuslist+cwt`). See [CHANGELOG](./CHANGELOG.md).
 - **0.15.0** — **BREAKING:** the auto-built mDOC SessionTranscript defaults to the OpenID4VP 1.0 Final `OpenID4VPHandover` (`sessionTranscriptProfile: 'openid4vp-1.0'`); pass `sessionTranscriptProfile: 'oid4vp-draft-annex-b'` for draft-era wallets. Additive: `verifierInfo` (`verifier_info`, ETSI TS 119 472-2), Token Status List checks (`statusPolicy`, `statusListResolver`), OpenID4VP over the Digital Credentials API (`verifyDcApiResponse`, KB-JWT `aud` = `origin:<origin>`), and the EU Age Verification fallback profile (`createAvAuthorizationRequest`, `verifyAvPresentation`).
 
 ## License

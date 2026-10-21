@@ -41,23 +41,6 @@ export function credentialTypes(
 }
 
 /**
- * The type to show DCQL for `credentialQuery`: the first of `types` listed in
- * its `vct_values`, else the credential's real `vct`.
- *
- * TODO: switch to `DecodedCredential.vct_aliases` once @openeudi/dcql ships
- * it; dcql 0.2.0 compares `vct` with `vct_values` by exact string only.
- */
-export function vctForQuery(
-    types: readonly string[],
-    realVct: string,
-    credentialQuery: CredentialQuery | undefined
-): string {
-    const vctValues = credentialQuery?.meta?.vct_values;
-    if (!Array.isArray(vctValues)) return realVct;
-    return types.find((t) => vctValues.includes(t)) ?? realVct;
-}
-
-/**
  * Does the query entry demand a holder-bound presentation? OpenID4VP 1.0
  * §6.1: `require_cryptographic_holder_binding` defaults to `true`.
  */

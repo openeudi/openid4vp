@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **`@openeudi/dcql` ^0.3.0** (was ^0.2.0; EID-204). dcql 0.3 `validateQuery`
+  rejects queries OpenID4VP 1.0 §6–§7 forbids, and openid4vp now applies it to
+  every query it emits or vouches for:
+  - `createAuthorizationRequest`, `createSignedAuthorizationRequest` and
+    `createDcApiRequest` run `validateQuery` on the query before anything else
+    that reads it, and throw dcql's `DcqlValidationError` (`code`, `path`,
+    re-exported). Until now they emitted any query unchecked, which a
+    conformant wallet then refused.
+  - `validateHaipQuery` and `validateCredentialSetQuery` run the dcql rules
+    after the HAIP rules, as `HaipValidationError` with the new code
+    `INVALID_DCQL` (the message carries dcql's JSON pointer and code); a
+    credential id outside `[A-Za-z0-9_-]` is the new `INVALID_CREDENTIAL_ID`.
+    `isHaipQuery` follows. `buildHaipQuery` and `buildCredentialSetQuery` check
+    what they build the same way (e.g. a `credentialId` with a `.`, or a
+    `trustedAuthorities` entry with empty `values`, now throws).
+  - Re-exported types widened: `DcqlValidationErrorCode` gained `invalid_id`,
+    and `match.unmatched[].reason` (`UnmatchedReason`) gained
+    `holder_binding_required`. An exhaustive `switch` over either will flag it.
+  - `verifyPresentation` / `verifyAuthorizationResponse` /
+    `verifyDcApiResponse` do not validate the query (unchanged).
+
+  **Migration:**
+  - Give every credential query a `meta`: `{ vct_values: [...] }` for
+    `dc+sd-jwt`, `{ doctype_value: '...' }` for `mso_mdoc`, `{}` for other
+    formats. `buildHaipQuery` already does.
+  - Use only `[A-Za-z0-9_-]` in credential and claim ids; claim ids must be
+    unique, and every claim needs one when `claim_sets` is present.
+  - Write `mso_mdoc` claim paths as exactly `['<namespace>', '<element>']`.
+  - Drop empty `claims`, `values` or `trusted_authorities` arrays rather than
+    sending them empty.
+  - Catch `DcqlValidationError` around the request builders if queries come
+    from configuration; `HaipValidationError` `INVALID_DCQL` /
+    `INVALID_CREDENTIAL_ID` around the HAIP helpers.
+
+### Changed
+
+- `verifyPresentation` fills the dcql 0.3 `DecodedCredential` fields:
+  - `vct_aliases`: the issuer-signed `aka_vcts` plus the `vctAncestors` chain,
+    transitively, with `vct` left as the credential's real type. This replaces
+    substituting the inherited type the presented query asked for into `vct`.
+    The presented entry matches exactly as before. A side effect, only for a
+    query with several same-format entries: another entry now matches when it
+    lists any of the credential's types, where before it was compared with the
+    one substituted type.
+  - `holder_bound`: `true` for an accepted presentation with a verified KB-JWT
+    or mdoc device authentication, `false` for an accepted bearer SD-JWT VC,
+    unset when the parser rejected the presentation. **Security-relevant:** a
+    bearer presentation accepted under an entry that opts out of holder binding
+    no longer satisfies another entry that requires it
+    (`holder_binding_required`). The 0.14.0 enforcement that rejects the
+    presentation itself (`parsed.valid: false`) is kept, because DCQL alone
+    would let an optional `credential_sets` alternative pass.
+  - typed `trusted_authorities` (`{ type, values }`) instead of the deprecated
+    `trusted_authority_ids`. The 0.14.0 type prefixing (`aki:…`) of both sides
+    is kept, so matching and the deprecated hex `aki` alias are unchanged.
+
 ### Security (dependencies)
 
 - `@xmldom/xmldom` ^0.9.12 (was 0.9.10) and, through `xml-core` 1.2.6, no more 0.8.x copy

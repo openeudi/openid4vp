@@ -1,17 +1,19 @@
-import type { DcqlQuery } from '@openeudi/dcql';
+import type { CredentialTrustedAuthority, DcqlQuery } from '@openeudi/dcql';
 
 import { base64UrlToBytes, bytesToHex } from './encoding/base64url.js';
 import type { TrustEvaluationResult } from './trust/TrustEvaluator.js';
 
 /**
- * Typed `trusted_authorities` matching on top of @openeudi/dcql 0.2.0.
+ * Typed `trusted_authorities` matching (OpenID4VP 1.0 §6.1.1).
  *
- * dcql 0.2.0 puts the values of every `trusted_authorities` entry into one
- * set and compares them with the credential's untyped
- * `trusted_authority_ids`, so an `etsi_tl` entry could be satisfied by an
- * `aki` id. Prefixing both sides with their type (`aki:…`, `etsi_tl:…`) keeps
- * the types apart without changing dcql: the rewritten query is used for
- * matching only.
+ * dcql 0.2.0 put the values of every `trusted_authorities` entry into one set
+ * and compared them with the credential's untyped `trusted_authority_ids`, so
+ * an `etsi_tl` entry could be satisfied by an `aki` id. Since 0.14.0 both
+ * sides are prefixed with their type (`aki:…`, `etsi_tl:…`); the rewritten
+ * query is used for matching only. dcql 0.3.0 matches the typed
+ * `DecodedCredential.trusted_authorities` per type itself, which this now
+ * fills. The prefixing is kept so the 0.14.0 behaviour and its tests stay
+ * unchanged; it is redundant with per-type matching, not contrary to it.
  *
  * Until 0.14.0 `aki` ids were the anchor SKI in hex, while OpenID4VP 1.0
  * §6.1.1.1 specifies base64url of the AuthorityKeyIdentifier keyIdentifier.
@@ -21,8 +23,14 @@ import type { TrustEvaluationResult } from './trust/TrustEvaluator.js';
 export interface TrustedAuthorityMatching {
     /** The query to give `matchQuery`; the original is returned when it has no `trusted_authorities`. */
     query: DcqlQuery;
-    /** Type-tagged ids for `DecodedCredential.trusted_authority_ids`; undefined when there are none. */
+    /** Type-tagged ids (`aki:…`); undefined when there are none. */
     ids: string[] | undefined;
+    /**
+     * The same type-tagged ids grouped by type, for the typed
+     * `DecodedCredential.trusted_authorities` (dcql 0.3.0); undefined when
+     * there are none.
+     */
+    trustedAuthorities: CredentialTrustedAuthority[] | undefined;
 }
 
 let hexAkiWarningShown = false;
@@ -37,9 +45,10 @@ export function prepareTrustedAuthorityMatching(
 ): TrustedAuthorityMatching {
     const typed = trust?.trustedAuthorities ?? [];
     const ids = typed.length > 0 ? typed.map((t) => tag(t.type, t.value)) : undefined;
+    const trustedAuthorities = typed.length > 0 ? groupByType(typed) : undefined;
 
     if (!query.credentials.some((c) => c.trusted_authorities && c.trusted_authorities.length > 0)) {
-        return { query, ids };
+        return { query, ids, trustedAuthorities };
     }
 
     // Deprecated hex alias → the base64url id it denotes.
@@ -66,6 +75,7 @@ export function prepareTrustedAuthorityMatching(
 
     return {
         ids,
+        trustedAuthorities,
         query: {
             ...query,
             credentials: query.credentials.map((c) =>
@@ -81,6 +91,16 @@ export function prepareTrustedAuthorityMatching(
             ),
         },
     };
+}
+
+function groupByType(typed: ReadonlyArray<{ type: string; value: string }>): CredentialTrustedAuthority[] {
+    const byType = new Map<string, string[]>();
+    for (const t of typed) {
+        const values = byType.get(t.type) ?? [];
+        values.push(tag(t.type, t.value));
+        byType.set(t.type, values);
+    }
+    return [...byType].map(([type, values]) => ({ type, values }));
 }
 
 function warnHexAkiOnce(): void {
