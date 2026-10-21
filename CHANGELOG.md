@@ -7,11 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-10-21
+
 ### Changed — BREAKING
 
 - **The default mDOC SessionTranscript is now the OpenID4VP 1.0 Final
   `OpenID4VPHandover`** (§B.2.6.1, `sessionTranscriptProfile: 'openid4vp-1.0'`).
-  Up to 0.13.0 the default was the ISO 18013-7 Annex B `OID4VPHandover` of
+  Up to 0.14.0 the default was the ISO 18013-7 Annex B `OID4VPHandover` of
   draft-era (ID2/ID3) wallets, so every 1.0 Final mDOC wallet failed device
   authentication unless the caller opted in.
   - It is now also auto-built for **unencrypted `direct_post`** envelopes,
