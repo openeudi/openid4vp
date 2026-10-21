@@ -4,6 +4,7 @@ import { X509Certificate } from '@peculiar/x509';
 import type { DcqlQuery } from '@openeudi/dcql';
 
 import { SignedRequestBuildError } from './errors.js';
+import { serializeVerifierInfo, verifierInfoProblem } from './verifier-info.js';
 import type {
     SignedAuthorizationRequestInput,
     SignedAuthorizationRequest,
@@ -58,6 +59,11 @@ export async function createSignedAuthorizationRequest(
             'missing_vp_formats',
             'vpFormatsSupported is required and must be non-empty',
         );
+    }
+
+    if (input.verifierInfo !== undefined) {
+        const problem = verifierInfoProblem(input.verifierInfo, query);
+        if (problem) throw new SignedRequestBuildError('invalid_verifier_info', problem);
     }
 
     const clientIdPrefix = input.clientIdPrefix ?? 'x509_san_dns';
@@ -192,6 +198,9 @@ export async function createSignedAuthorizationRequest(
         iat: now,
         exp: now + 120,
     };
+    if (input.verifierInfo !== undefined) {
+        payload.verifier_info = serializeVerifierInfo(input.verifierInfo);
+    }
 
     const x5c = input.certificateChain.map((der) => bytesToBase64(der));
 

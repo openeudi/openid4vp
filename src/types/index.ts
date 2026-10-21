@@ -14,3 +14,11 @@ export type {
     VerifyAuthorizationResponseOptions,
 } from './verify.js';
 export type { HaipQueryInput, CredentialSetQueryInput } from './haip.js';
+export type {
+    VerifierInfo,
+    RegistrarDataset,
+    RegistrarIdentifier,
+    RegistrarCredential,
+    RegistrarClaim,
+    MultiLangString,
+} from './verifier-info.js';

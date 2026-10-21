@@ -13,6 +13,7 @@ export const VERSION = '0.14.0';
 // Builders
 export { createAuthorizationRequest } from './authorization.js';
 export { createSignedAuthorizationRequest } from './signed-authorization.js';
+export { registrarDatasetVerifierInfo, registrationCertVerifierInfo } from './verifier-info.js';
 export {
     buildHaipQuery,
     validateHaipQuery,
@@ -67,6 +68,12 @@ export type {
     VerifyResult,
     HaipQueryInput,
     CredentialSetQueryInput,
+    VerifierInfo,
+    RegistrarDataset,
+    RegistrarIdentifier,
+    RegistrarCredential,
+    RegistrarClaim,
+    MultiLangString,
 } from './types/index.js';
 
 // -------------------------------------------------------------------

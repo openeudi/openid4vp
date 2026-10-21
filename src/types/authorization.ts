@@ -1,11 +1,20 @@
 import type { DcqlQuery } from '@openeudi/dcql';
 
+import type { VerifierInfo } from './verifier-info.js';
+
 export interface AuthorizationRequestInput {
     clientId: string;
     responseUri: string;
     nonce: string;
     state?: string;
     responseMode?: 'direct_post' | 'direct_post.jwt';
+    /**
+     * Attestations about the Verifier, emitted as `verifier_info` (OpenID4VP 1.0
+     * §5.1). An unsigned request cannot bind them to the Verifier, so wallets
+     * enforcing ETSI TS 119 472-2 or HAIP expect them in a signed request object
+     * instead; see `createSignedAuthorizationRequest`.
+     */
+    verifierInfo?: VerifierInfo[];
 }
 
 export interface AuthorizationRequest {
@@ -47,6 +56,14 @@ export interface SignedAuthorizationRequestInput {
         supportedEncValues?: string[];
     };
     vpFormatsSupported: Record<string, unknown>;
+    /**
+     * Attestations about the Verifier, emitted as `verifier_info` in the request
+     * object (OpenID4VP 1.0 §5.1). ETSI TS 119 472-2 V1.3.1 makes it mandatory,
+     * with a `registrar_dataset` element and, when the relying party holds one,
+     * a `registration_cert` element: build them with
+     * `registrarDatasetVerifierInfo` and `registrationCertVerifierInfo`.
+     */
+    verifierInfo?: VerifierInfo[];
 }
 
 export interface SignedAuthorizationRequest {
