@@ -100,7 +100,8 @@ export type ChainErrorReason =
     | 'path_length'
     | 'algorithm_disallowed'
     | 'aki_ski_mismatch'
-    | 'unrecognised_critical_extension';
+    | 'unrecognised_critical_extension'
+    | 'malformed_extension';
 
 export class CertificateChainError extends OpenID4VPError {
     readonly code = 'chain_invalid' as const;

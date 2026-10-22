@@ -8,6 +8,7 @@ import {
     TrustAnchorNotFoundError,
 } from '../errors.js';
 import type { Cache } from './Cache.js';
+import { readTypedExtension } from './extensions.js';
 import { ChainBuilder, type ChainBuilderOptions } from './ChainBuilder.js';
 import type { Fetcher } from './Fetcher.js';
 import { RevocationChecker } from './RevocationChecker.js';
@@ -184,7 +185,7 @@ export class TrustEvaluator {
 }
 
 function deriveHint(leaf: X509Certificate) {
-    const aki = leaf.getExtension(AuthorityKeyIdentifierExtension);
+    const aki = readTypedExtension(leaf, '2.5.29.35', AuthorityKeyIdentifierExtension);
     const keyIdHex = aki?.keyId;
     const akiBytes = keyIdHex ? hexToBytes(keyIdHex) : undefined;
     return {

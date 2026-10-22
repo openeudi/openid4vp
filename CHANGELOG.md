@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **One malformed certificate extension no longer breaks trust evaluation.**
+  `@peculiar/x509` 2.x decodes every extension on first access and throws if
+  any one is malformed, then caches an empty list, so the certificate looks
+  extension-less from then on. The EU age-verification reference PKI ("Age
+  Verification Issuer CA 01" on the acceptance AV-TL, and its Document
+  Signers) encodes IssuerAltName as a nested Extension; with it in a
+  `StaticTrustStore`, the constructor threw and every `verifyAvPresentation`
+  failed, including wallet error responses.
+  - Every extension read now goes through `src/trust/extensions.ts`, which
+    decodes each extension on its own from the raw DER.
+  - Fail closed: a certificate with a malformed or duplicated extension is
+    refused (`CertificateChainError`, new reason `malformed_extension`), and
+    reading a malformed extension throws rather than reporting it absent. The
+    one exception is a **non-critical IssuerAltName** (`2.5.29.18`), which
+    plays no part in path validation; a critical one is still refused.
+  - `StaticTrustStore` skips a certificate it cannot use (not X.509, or a
+    malformed extension other than that) instead of throwing, and lists it in
+    the new `rejectedAnchors` property. `LotlTrustStore` and provenance
+    resolution skip such a listed certificate rather than failing the lookup.
+  - The AV spec's Annex A example now verifies against the reference CA as
+    published on the AV-TL (`valid`, `ageVerified`).
+
 ## [0.16.0] — 2026-10-21
 
 ### Changed — BREAKING

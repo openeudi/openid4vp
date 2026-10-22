@@ -1,6 +1,7 @@
 import { X509Certificate } from '@peculiar/x509';
 import type { NationalTlSnapshot, TspService } from './lotl-types.js';
 import { deriveServiceMetadata } from './service-metadata.js';
+import { unusableAnchorReason } from './extensions.js';
 import { getSkiBase64Url, getSkiHex } from './x509-utils.js';
 
 export interface ResolvedProvenance {
@@ -41,6 +42,7 @@ export class ProvenanceResolver {
 
 function serviceMatches(service: TspService, anchorSki: string): boolean {
     for (const cert of service.certificates) {
+        if (unusableAnchorReason(cert)) continue;
         const ski = getSkiHex(cert);
         if (ski && ski === anchorSki) return true;
     }

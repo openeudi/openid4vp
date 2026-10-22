@@ -26,6 +26,7 @@ import {
     ANNEX_A_VERIFICATION_TIME,
 } from '../fixtures/av-annex-a-example.js';
 import type { TestKeyMaterial } from '../fixtures/crypto-helpers.js';
+import { AV_REFERENCE_ISSUER_CA_DER_BASE64 } from '../fixtures/av-reference-issuer-ca.js';
 import { buildSignedMdoc } from '../fixtures/mdoc-helpers.js';
 import { createCa, createLeaf, type GeneratedCa, type Leaf } from '../trust/helpers/synthetic-ca.js';
 
@@ -412,17 +413,29 @@ describe('verifyAvPresentation — Annex A §A.11 example (AV reference implemen
         await expect(verifyAnnexDeviceAuth(crypto.randomUUID())).rejects.toThrow(/device authentication/i);
     });
 
-    it("fails closed on the reference Document Signer's malformed IssuerAltName extension", async () => {
+    it('verifies the example against the AV-TL reference issuer CA despite its malformed IssuerAltName', async () => {
         // The reference PKI encodes IssuerAltName as a nested Extension, not
-        // GeneralNames. RFC 5280 §4.2: a recognised extension "MUST be
-        // processed", so the certificate cannot be used. Pinned so a change
-        // in this behaviour is a deliberate decision.
+        // GeneralNames, on both the CA and the Document Signer. A malformed
+        // non-critical IssuerAltName is tolerated (owner decision, EID-216):
+        // it plays no part in path validation. Any other malformed extension
+        // still fails closed (tests/trust/extensions.test.ts).
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(ANNEX_A_VERIFICATION_TIME);
+        const referenceCa = Buffer.from(AV_REFERENCE_ISSUER_CA_DER_BASE64, 'base64');
+        const result = await verifyAvPresentation(formBody(ANNEX_A_DEVICE_RESPONSE, ANNEX_A_REQUEST.state), {
+            request: ANNEX_A_REQUEST,
+            trustStore: new StaticTrustStore([new Uint8Array(referenceCa)]),
+        });
+        expect(result).toMatchObject({ valid: true, ageVerified: true, ageThreshold: 18 });
+    });
+
+    it('does not trust the example under any other anchor', async () => {
         vi.useFakeTimers({ toFake: ['Date'] });
         vi.setSystemTime(ANNEX_A_VERIFICATION_TIME);
         const result = verifyAvPresentation(formBody(ANNEX_A_DEVICE_RESPONSE, ANNEX_A_REQUEST.state), {
             request: ANNEX_A_REQUEST,
             trustStore: storeOf(av.ca),
         });
-        await expect(result).rejects.toThrow(/GeneralName/);
+        await expect(result).rejects.toBeInstanceOf(TrustAnchorNotFoundError);
     });
 });
