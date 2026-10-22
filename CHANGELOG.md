@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.1] — 2026-10-22
+
 ### Fixed
 
 - **One malformed certificate extension no longer breaks trust evaluation.**
