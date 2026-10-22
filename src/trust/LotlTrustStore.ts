@@ -14,6 +14,7 @@ import { NationalTlResolver } from './NationalTlResolver.js';
 import type { LotlAnchorMetadata, TrustAnchor, TrustedAuthorityId } from './TrustAnchor.js';
 import type { TrustStore, TrustStoreHint } from './TrustStore.js';
 import { deriveServiceMetadata } from './service-metadata.js';
+import { unusableAnchorReason } from './extensions.js';
 import { getSkiBase64Url, getSkiBytes, getSkiHex } from './x509-utils.js';
 
 const DEFAULT_LOTL_URL = 'https://ec.europa.eu/tools/lotl/eu-lotl.xml';
@@ -144,6 +145,9 @@ export class LotlTrustStore implements TrustStore {
 }
 
 function matchesHint(cert: X509Certificate, hint: TrustStoreHint): boolean {
+    // A listed certificate whose key identifier or CA constraints cannot be
+    // read is never an anchor, and must not fail the lookup for every other one.
+    if (unusableAnchorReason(cert)) return false;
     if (hint.aki) {
         const ski = getSkiBytes(cert);
         if (ski && equalBytes(ski, hint.aki)) return true;

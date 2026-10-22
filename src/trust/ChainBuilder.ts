@@ -18,9 +18,16 @@ import {
   X509Certificate,
 } from "@peculiar/x509";
 import { CertificateChainError } from "../errors.js";
+import { disqualifyingExtensions, readExtension, readTypedExtension } from "./extensions.js";
 import { certificatesEqual } from "./x509-utils.js";
 
 const NAME_CONSTRAINTS_OID = "2.5.29.30";
+const BASIC_CONSTRAINTS_OID = "2.5.29.19";
+const KEY_USAGE_OID = "2.5.29.15";
+const EXT_KEY_USAGE_OID = "2.5.29.37";
+const SUBJECT_ALT_NAME_OID = "2.5.29.17";
+const AKI_OID = "2.5.29.35";
+const SKI_OID = "2.5.29.14";
 
 /** ISO/IEC 18013-5 Annex B `id-mdl-kp-mdlDS` — Document Signer extended key usage. */
 export const ISO_18013_5_DS_EKU = "1.0.18013.5.1.2";
@@ -358,7 +365,7 @@ export class ChainBuilder {
     const leafNames = collectLeafNames(leaf);
     const types: SubtreeName["type"][] = ["dn", "dns", "email", "uri"];
     for (const ca of chainAboveLeaf) {
-      const ext = ca.extensions.find((e) => e.type === NAME_CONSTRAINTS_OID);
+      const ext = readExtension(ca, NAME_CONSTRAINTS_OID);
       if (!ext) continue;
       const nc = AsnConvert.parse(ext.value, NameConstraints);
       const permitted = extractSubtrees(nc.permittedSubtrees);
@@ -406,7 +413,7 @@ export class ChainBuilder {
 
   private checkCaAndPathLen(cert: X509Certificate, nonLeafDepth: number): void {
     this.checkCaKeyUsage(cert, this.opts.profile ?? "generic");
-    const bc = cert.getExtension(BasicConstraintsExtension);
+    const bc = readTypedExtension(cert, BASIC_CONSTRAINTS_OID, BasicConstraintsExtension);
     if (!bc || !bc.ca) {
       throw new CertificateChainError(
         `certificate ${cert.subject} is not a CA (BasicConstraints cA=false or absent)`,
@@ -422,7 +429,7 @@ export class ChainBuilder {
   }
 
   private checkLeafKeyUsage(leaf: X509Certificate, profile: CertificateProfile): void {
-    const ext = leaf.getExtension(KeyUsagesExtension);
+    const ext = readTypedExtension(leaf, KEY_USAGE_OID, KeyUsagesExtension);
     if (!ext) {
       // RFC 5280: absent keyUsage → no restriction. ISO 18013-5 Annex B makes
       // it mandatory on the Document Signer.
@@ -444,7 +451,7 @@ export class ChainBuilder {
 
   private checkLeafExtendedKeyUsage(leaf: X509Certificate, profile: CertificateProfile): void {
     if (profile !== "iso18013-5") return;
-    const ext = leaf.getExtension(ExtendedKeyUsageExtension);
+    const ext = readTypedExtension(leaf, EXT_KEY_USAGE_OID, ExtendedKeyUsageExtension);
     const usages = (ext?.usages ?? []).map(String);
     const accepted = this.opts.documentSignerEkus ?? [ISO_18013_5_DS_EKU];
     if (!accepted.some((oid) => usages.includes(oid))) {
@@ -457,7 +464,7 @@ export class ChainBuilder {
   }
 
   private checkCaKeyUsage(cert: X509Certificate, profile: CertificateProfile): void {
-    const ext = cert.getExtension(KeyUsagesExtension);
+    const ext = readTypedExtension(cert, KEY_USAGE_OID, KeyUsagesExtension);
     if (!ext) {
       if (profile === "iso18013-5") {
         throw new CertificateChainError(
@@ -478,8 +485,10 @@ export class ChainBuilder {
   /**
    * RFC 5280 §4.2: reject a certificate carrying a critical extension this
    * validator does not process. Read from the raw ASN.1 rather than
-   * `cert.extensions`, whose typed decoding throws on some malformed
-   * non-critical extensions found in real certificates.
+   * `X509Certificate#extensions`, whose typed decoding throws on some malformed
+   * non-critical extensions found in real certificates (see extensions.ts).
+   * Then rejects any malformed or duplicated extension, except a
+   * non-critical IssuerAltName (extensions.ts, EID-216).
    */
   private checkCriticalExtensions(cert: X509Certificate): void {
     const extensions =
@@ -492,11 +501,18 @@ export class ChainBuilder {
         );
       }
     }
+    const bad = disqualifyingExtensions(cert)[0];
+    if (bad) {
+      throw new CertificateChainError(
+        `certificate ${cert.subject} has a malformed extension ${bad.oid} (${bad.problem})`,
+        { reason: "malformed_extension" }
+      );
+    }
   }
 
   private checkAkiSkiMatch(child: X509Certificate, issuer: X509Certificate): void {
-    const aki = child.getExtension(AuthorityKeyIdentifierExtension);
-    const ski = issuer.getExtension(SubjectKeyIdentifierExtension);
+    const aki = readTypedExtension(child, AKI_OID, AuthorityKeyIdentifierExtension);
+    const ski = readTypedExtension(issuer, SKI_OID, SubjectKeyIdentifierExtension);
     if (!aki || !ski) return; // extension-less certs permitted
     const akiKeyId = aki.keyId;
     const skiKeyId = ski.keyId;
@@ -608,7 +624,7 @@ function mapX509AlgoToJwaName(cert: X509Certificate): string {
  */
 function collectLeafNames(leaf: X509Certificate): SubtreeName[] {
   const out: SubtreeName[] = [{ type: "dn", value: leaf.subject }];
-  const san = leaf.getExtension(SubjectAlternativeNameExtension);
+  const san = readTypedExtension(leaf, SUBJECT_ALT_NAME_OID, SubjectAlternativeNameExtension);
   if (san?.names?.items) {
     for (const name of san.names.items) {
       if (name.type === "dns") out.push({ type: "dns", value: name.value });

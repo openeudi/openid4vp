@@ -6,6 +6,7 @@ import { AsnConvert } from '@peculiar/asn1-schema';
 import { X509Certificate } from '@peculiar/x509';
 import { RevocationCheckFailedError } from '../errors.js';
 import type { Cache } from './Cache.js';
+import { readExtension } from './extensions.js';
 import { CrlFetcher } from './CrlFetcher.js';
 import type { Fetcher } from './Fetcher.js';
 import { OcspClient } from './OcspClient.js';
@@ -118,9 +119,9 @@ export class RevocationChecker {
 }
 
 function extractOcspUrl(cert: X509Certificate): string | undefined {
-    const ext = cert.extensions.find((e) => e.type === '1.3.6.1.5.5.7.1.1');
-    if (!ext) return undefined;
     try {
+        const ext = readExtension(cert, '1.3.6.1.5.5.7.1.1');
+        if (!ext) return undefined;
         const aia = AsnConvert.parse(new Uint8Array(ext.value), AuthorityInfoAccessSyntax);
         for (const desc of aia) {
             if (desc.accessMethod === '1.3.6.1.5.5.7.48.1') {
@@ -135,9 +136,9 @@ function extractOcspUrl(cert: X509Certificate): string | undefined {
 }
 
 function extractCrlUrls(cert: X509Certificate): string[] {
-    const ext = cert.extensions.find((e) => e.type === '2.5.29.31');
-    if (!ext) return [];
     try {
+        const ext = readExtension(cert, '2.5.29.31');
+        if (!ext) return [];
         const cdp = AsnConvert.parse(new Uint8Array(ext.value), CRLDistributionPoints);
         const out: string[] = [];
         for (const dp of cdp) {

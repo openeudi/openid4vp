@@ -4,13 +4,20 @@ import {
     X509Certificate,
 } from '@peculiar/x509';
 import { bytesToBase64Url, hexToBytes } from '../encoding/base64url.js';
+import { readTypedExtension } from './extensions.js';
+
+const SKI_OID = '2.5.29.14';
+const AKI_OID = '2.5.29.35';
+
+// Every reader below throws CertificateChainError (`malformed_extension`) when
+// the extension is present but undecodable: see extensions.ts.
 
 /**
  * Return the hex-encoded Subject Key Identifier of the given cert, or
  * null if the cert has no SKI extension. Always lowercase.
  */
 export function getSkiHex(cert: X509Certificate): string | null {
-    const ext = cert.getExtension(SubjectKeyIdentifierExtension);
+    const ext = readTypedExtension(cert, SKI_OID, SubjectKeyIdentifierExtension);
     return ext ? ext.keyId.toLowerCase() : null;
 }
 
@@ -37,7 +44,7 @@ export function certificatesEqual(
  * Return the raw bytes of the Subject Key Identifier, or null.
  */
 export function getSkiBytes(cert: X509Certificate): Uint8Array | null {
-    const ext = cert.getExtension(SubjectKeyIdentifierExtension);
+    const ext = readTypedExtension(cert, SKI_OID, SubjectKeyIdentifierExtension);
     if (!ext) return null;
     const hex = ext.keyId;
     const out = new Uint8Array(hex.length / 2);
@@ -52,7 +59,7 @@ export function getSkiBytes(cert: X509Certificate): Uint8Array | null {
  * `trusted_authorities` uses for `aki` values (OpenID4VP 1.0 §6.1.1.1).
  */
 export function getSkiBase64Url(cert: X509Certificate): string | null {
-    const ext = cert.getExtension(SubjectKeyIdentifierExtension);
+    const ext = readTypedExtension(cert, SKI_OID, SubjectKeyIdentifierExtension);
     return ext ? bytesToBase64Url(hexToBytes(ext.keyId)) : null;
 }
 
@@ -61,6 +68,6 @@ export function getSkiBase64Url(cert: X509Certificate): string | null {
  * null when the certificate has no AKI or the AKI carries no keyIdentifier.
  */
 export function getAkiKeyIdBase64Url(cert: X509Certificate): string | null {
-    const ext = cert.getExtension(AuthorityKeyIdentifierExtension);
+    const ext = readTypedExtension(cert, AKI_OID, AuthorityKeyIdentifierExtension);
     return ext?.keyId ? bytesToBase64Url(hexToBytes(ext.keyId)) : null;
 }

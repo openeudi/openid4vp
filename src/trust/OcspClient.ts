@@ -10,6 +10,7 @@ import {
 import { AlgorithmIdentifier, SubjectPublicKeyInfo } from '@peculiar/asn1-x509';
 import { ExtendedKeyUsageExtension, X509Certificate } from '@peculiar/x509';
 import type { Cache } from './Cache.js';
+import { readTypedExtension } from './extensions.js';
 import { ChainBuilder } from './ChainBuilder.js';
 import { ecdsaDerToIeee } from './ecdsa-util.js';
 import { createDefaultTrustFetcher } from '../http/guarded-fetch.js';
@@ -184,7 +185,12 @@ export class OcspClient {
         let sawNonResponderCandidate = false;
         const builder = new ChainBuilder();
         for (const candidate of embeddedCerts) {
-            const eku = candidate.getExtension(ExtendedKeyUsageExtension);
+            let eku: ExtendedKeyUsageExtension | null;
+            try {
+                eku = readTypedExtension(candidate, '2.5.29.37', ExtendedKeyUsageExtension);
+            } catch {
+                eku = null; // undecodable EKU: not a usable responder certificate
+            }
             if (!eku || !eku.usages.includes('1.3.6.1.5.5.7.3.9')) {
                 sawNonResponderCandidate = true;
                 continue;

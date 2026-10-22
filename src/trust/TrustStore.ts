@@ -1,6 +1,7 @@
 import { X509Certificate } from '@peculiar/x509';
 import type { TrustAnchor } from './TrustAnchor.js';
 import type { NationalTlSnapshot } from './lotl-types.js';
+import { unusableAnchorReason } from './extensions.js';
 import { certificatesEqual, getSkiHex } from './x509-utils.js';
 
 /**
@@ -36,15 +37,38 @@ export class StaticTrustStore implements TrustStore {
     private readonly skiIndex: Map<string, TrustAnchor[]> = new Map();
     private readonly subjectIndex: Map<string, TrustAnchor[]> = new Map();
 
+    /**
+     * Certificates refused at construction, with the reason: input that does
+     * not parse as X.509, or a malformed extension other than a non-critical
+     * IssuerAltName (see extensions.ts). One bad certificate no longer aborts
+     * the whole store; callers should log or alert on a non-empty list.
+     */
+    readonly rejectedAnchors: ReadonlyArray<{ index: number; subject?: string; reason: string }>;
+
     constructor(certs: Iterable<TrustStoreInput>) {
+        const rejected: Array<{ index: number; subject?: string; reason: string }> = [];
+        let index = -1;
         for (const input of certs) {
-            const cert = toCertificate(input);
+            index += 1;
+            let cert: X509Certificate;
+            try {
+                cert = toCertificate(input);
+            } catch (error) {
+                rejected.push({ index, reason: `not an X.509 certificate: ${error instanceof Error ? error.message : String(error)}` });
+                continue;
+            }
+            const unusable = unusableAnchorReason(cert);
+            if (unusable) {
+                rejected.push({ index, subject: cert.subject, reason: unusable });
+                continue;
+            }
             const anchor: TrustAnchor = { certificate: cert, source: 'static' };
             this.anchors.push(anchor);
             pushInto(this.subjectIndex, cert.subject, anchor);
             const ski = getSkiHex(cert);
             if (ski) pushInto(this.skiIndex, ski, anchor);
         }
+        this.rejectedAnchors = rejected;
     }
 
     async getAnchors(hint: TrustStoreHint): Promise<TrustAnchor[]> {

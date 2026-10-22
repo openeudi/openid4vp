@@ -2,6 +2,7 @@ import { SignJWT } from 'jose';
 import { X509Certificate } from '@peculiar/x509';
 
 import { SignedRequestBuildError } from './errors.js';
+import { readExtension } from './trust/extensions.js';
 
 const SUPPORTED_SIGNING_ALGS = new Set(['ES256', 'ES384', 'RS256']);
 
@@ -170,7 +171,12 @@ function extractDnsNames(cert: X509Certificate): string[] {
     // 2.5.29.17. Its `.names.items` (a GeneralNames collection) yields entries
     // with { type, value } — where `type: 'dns'` entries are DNSNames.
     const SAN_OID = '2.5.29.17';
-    const ext = cert.extensions.find((e) => e.type === SAN_OID);
+    let ext;
+    try {
+        ext = readExtension(cert, SAN_OID);
+    } catch {
+        return []; // undecodable SAN: no DNS name, refused by the caller like a missing one
+    }
     if (!ext) return [];
     // Dynamic narrowing: the extension carries a `names` GeneralNames object.
     const names = (ext as unknown as { names?: { items?: Array<{ type: string; value: string }> } }).names;
