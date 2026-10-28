@@ -70,6 +70,53 @@ export interface DcApiSignedRequestInput extends DcApiRequestCommonInput, Reques
 export type DcApiRequestInput = DcApiUnsignedRequestInput | DcApiSignedRequestInput;
 
 /**
+ * ISO/IEC 18013-7 Annex C (`org-iso-mdoc`): an ISO 18013-5 `DeviceRequest`
+ * (version `"1.0"`, no reader authentication) plus an `EncryptionInfo` that
+ * carries the nonce and a fresh P-256 recipient key for the HPKE-encrypted
+ * response. The DCQL query must hold exactly one `mso_mdoc` credential with a
+ * `doctype_value` and `[namespace, element]` claim paths; it is translated
+ * into the `DeviceRequest`.
+ */
+export interface DcApiIsoMdocRequestInput {
+    protocol: 'org-iso-mdoc';
+    /**
+     * The `EncryptionInfo` nonce as base64url, at least 16 bytes once decoded.
+     * Generated (16 random bytes, as the multipaz reference verifier does)
+     * when omitted.
+     */
+    nonce?: string;
+}
+
+/**
+ * The `{ protocol, data }` entry for `navigator.credentials.get()`. Both values
+ * are base64url (no padding) of CBOR, and `data` holds nothing else: the EU AV
+ * iOS library parses it as a string-to-string map.
+ */
+export interface DcApiIsoMdocCredentialRequest {
+    protocol: 'org-iso-mdoc';
+    data: { deviceRequest: string; encryptionInfo: string };
+}
+
+/** The request plus every secret `verifyDcApiResponse` needs. Keep it server-side. */
+export interface DcApiIsoMdocRequest {
+    /** Send this to the browser and pass it in `digital.requests`. */
+    request: DcApiIsoMdocCredentialRequest;
+    /** The `EncryptionInfo` nonce as base64url. */
+    nonce: string;
+    /**
+     * `request.data.encryptionInfo`, the exact base64url string the wallet
+     * hashes into the SessionTranscript. Store it verbatim.
+     */
+    encryptionInfo: string;
+    /**
+     * The ephemeral HPKE recipient private key (P-256 JWK with `d`). It opens
+     * the response, so store it server-side only and drop it once used.
+     */
+    recipientPrivateJwk: JsonWebKey;
+    dcqlQuery: DcqlQuery;
+}
+
+/**
  * One entry of `navigator.credentials.get({ digital: { requests: [...] } })`.
  * Serializable as JSON so the server can hand it to the browser as-is.
  */
@@ -132,4 +179,32 @@ export type VerifyDcApiResponseOptions = Omit<VerifyOptions, 'audience'> & {
      * what binds an SD-JWT presentation to the origin and nonce.
      */
     requireKeyBinding?: boolean;
+};
+
+/**
+ * Options for verifying an `org-iso-mdoc` (ISO/IEC 18013-7 Annex C) response.
+ * `protocol: 'org-iso-mdoc'` selects this variant.
+ */
+export type VerifyDcApiIsoMdocResponseOptions = Omit<VerifyOptions, 'audience' | 'nonce' | 'mdocSessionTranscript'> & {
+    protocol: 'org-iso-mdoc';
+
+    /**
+     * The web origin the request was made from, as the browser serializes it
+     * (`https://shop.example`). Take it from server configuration — never from
+     * the request being verified. It is bound into the SessionTranscript, which
+     * is also the HPKE `info`.
+     */
+    origin: string;
+
+    /** The stored `encryptionInfo` string of the request, byte for byte. */
+    encryptionInfo: string;
+
+    /**
+     * The stored recipient private key: the `recipientPrivateJwk` the builder
+     * returned, or an ECDH P-256 private `CryptoKey` (usage `deriveBits`).
+     */
+    decryptionKey: CryptoKey | JsonWebKey;
+
+    /** When set, must equal the nonce inside `encryptionInfo` (base64url). */
+    nonce?: string;
 };

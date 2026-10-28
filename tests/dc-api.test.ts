@@ -224,7 +224,7 @@ describe('createDcApiRequest — openid4vp-v1-unsigned', () => {
         ).rejects.toMatchObject({ code: 'missing_vp_formats' });
     });
 
-    it.each(['openid4vp-v1-multisigned', 'org-iso-mdoc', 'openid4vp', `x-${crypto.randomUUID()}`])(
+    it.each(['openid4vp-v1-multisigned', 'openid4vp', `x-${crypto.randomUUID()}`])(
         'rejects protocol "%s"',
         async (protocol) => {
             const err = await createDcApiRequest(
@@ -565,7 +565,7 @@ describe('verifyDcApiResponse — SD-JWT VC', () => {
     });
 
     it.each([
-        ['unsupported_protocol', 'org-iso-mdoc', undefined],
+        ['protocol_mismatch', 'org-iso-mdoc', undefined],
         ['unsupported_protocol', 'openid4vp-v1-multisigned', undefined],
         ['unsupported_protocol', `x-${crypto.randomUUID()}`, undefined],
         ['protocol_mismatch', 'openid4vp-v1-unsigned', 'openid4vp-v1-signed'],

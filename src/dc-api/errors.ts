@@ -17,7 +17,13 @@ export type DcApiRequestBuildErrorCode =
     | 'unsupported_enc_value'
     | 'missing_expected_origins'
     | 'invalid_origin'
-    | 'invalid_verifier_info';
+    | 'invalid_verifier_info'
+    /** `org-iso-mdoc`: a supplied nonce is not base64url of at least 16 bytes. */
+    | 'invalid_nonce'
+    /** `org-iso-mdoc`: the DCQL query cannot be expressed as a `DeviceRequest`. */
+    | 'unsupported_query'
+    /** `org-iso-mdoc`: the query asks for `eu.europa.ec.av.1`; use `createAvDcApiRequest`. */
+    | 'av_profile_required';
 
 /** `createDcApiRequest` refused its input. */
 export class DcApiRequestBuildError extends OpenID4VPError {
@@ -35,7 +41,17 @@ export type DcApiResponseErrorCode =
     | 'malformed_response'
     | 'unencrypted_response'
     | 'unexpected_encrypted_response'
-    | 'audience_conflict';
+    | 'audience_conflict'
+    /** `org-iso-mdoc`: the stored `encryptionInfo` does not decode. */
+    | 'invalid_encryption_info'
+    /** `org-iso-mdoc`: `options.nonce` differs from the nonce inside `encryptionInfo`. */
+    | 'nonce_mismatch'
+    /** `org-iso-mdoc`: the decryption key is not the recipient key of `encryptionInfo`. */
+    | 'decryption_key_mismatch'
+    /** `org-iso-mdoc`: the `DeviceResponse` status is not 0 (OK). */
+    | 'device_response_error'
+    /** `org-iso-mdoc`: the response carries `eu.europa.ec.av.1`; use `verifyAvDcApiResponse`. */
+    | 'av_profile_required';
 
 /**
  * A Digital Credentials API response was rejected before any credential was

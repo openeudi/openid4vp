@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`org-iso-mdoc` over the W3C Digital Credentials API (ISO/IEC 18013-7
+  Annex C; EID-230).** The only DC API protocol Safari and the EU Age
+  Verification apps accept. No reader authentication yet (`ReaderAuth` is a
+  later release) and no zero-knowledge proofs.
+  - `createDcApiRequest({ protocol: 'org-iso-mdoc', nonce? }, query)` returns
+    `{ request: { protocol, data: { deviceRequest, encryptionInfo } }, nonce,
+    encryptionInfo, recipientPrivateJwk, dcqlQuery }`. The DCQL query (one
+    `mso_mdoc` credential, `[namespace, element]` claims) becomes an ISO
+    18013-5 `DeviceRequest` 1.0 without `readerAuth`; `intent_to_retain` maps
+    to `intentToRetain`. `EncryptionInfo` carries the nonce (16 random bytes
+    by default) and a fresh ephemeral P-256 recipient key. Queries a
+    `DeviceRequest` 1.0 cannot express (`credential_sets`, `claim_sets`,
+    claim `values`, `multiple`, several credentials) throw
+    `DcApiRequestBuildError('unsupported_query')`.
+  - `verifyDcApiResponse(response, query, { protocol: 'org-iso-mdoc', origin,
+    encryptionInfo, decryptionKey, nonce?, …VerifyOptions })` opens the HPKE
+    `EncryptedResponse` (RFC 9180 base mode, DHKEM(P-256, HKDF-SHA256) /
+    HKDF-SHA256 / AES-128-GCM, empty aad) with the stored key, using as HPKE
+    `info` the Annex C SessionTranscript `[null, null, ["dcapi",
+    sha256(cbor([encryptionInfo, origin]))]]` built from the caller's origin
+    and the stored `encryptionInfo`, never from the response. It then checks
+    the `DeviceResponse` (status 0, exactly one document) and verifies it like
+    every other mdoc (issuer signature, digests, validity, trust, status,
+    device signature over that transcript) before DCQL matching.
+  - New `buildDCAPIHandoverSessionTranscript({ encryptionInfo, origin })`.
+  - New error codes: `DcApiRequestBuildError` `invalid_nonce`,
+    `unsupported_query`, `av_profile_required`; `DcApiResponseError`
+    `invalid_encryption_info`, `nonce_mismatch`, `decryption_key_mismatch`,
+    `device_response_error`, `av_profile_required`. A response that does not
+    decrypt throws `DecryptionFailedError`.
+  - HPKE is implemented on WebCrypto (`src/crypto/hpke.ts`); no new
+    dependency.
+- **EU Age Verification over the Digital Credentials API** (AV Annex A §A.6,
+  the profile's default transport; G2 of the eidas-pro DC API gap list).
+  `createAvDcApiRequest({ ageThreshold?, nonce? })` builds the `org-iso-mdoc`
+  request for `eu.europa.ec.av.1` / `age_over_NN`, byte-identical to the
+  Annex A §A.11 example for `age_over_18`. `verifyAvDcApiResponse(response,
+  { request, origin, decryptionKey, trustStore, … })` returns the same
+  `AvVerificationResult` as `verifyAvPresentation` and runs the same checks
+  from the same code (`verifyAvDeviceResponse`, extracted from
+  `verifyAvPresentation`): one `eu.europa.ec.av.1` document, only boolean
+  `age_over_NN`, no device-signed elements, Document Signer EKUs, trust,
+  validity, optional status, and device authentication over the Annex C
+  transcript. The generic `org-iso-mdoc` path refuses `eu.europa.ec.av.1`
+  (`av_profile_required`) so the attestation cannot bypass these checks.
+- **Cross-checked test vectors** for the reconstructed Annex C wire format (the
+  ISO text is paywalled): RFC 9180 A.3.1 (HPKE); walt.id's
+  `ANNEXC-DETERMINISTIC-001` (SessionTranscript hash, HPKE decryption,
+  `DeviceRequest` and `EncryptionInfo` bytes) and `ANNEXC-REAL-001` (a
+  request captured from the multipaz verifier: transcript hash and
+  `EncryptionInfo` bytes); the AV specification's §A.11 DC API example
+  (request bytes, and the AV reference wallet's `DeviceResponse` verified
+  against the AV-TL reference CA with its device signature over the printed
+  `dcapi` transcript).
+
+### Changed
+
+- `verifyDcApiResponse` with OpenID4VP options now answers an `org-iso-mdoc`
+  response with `protocol_mismatch` (was `unsupported_protocol`). The
+  `openid4vp-v1-*` paths are otherwise unchanged.
+
 ## [0.16.1] — 2026-10-22
 
 ### Fixed
