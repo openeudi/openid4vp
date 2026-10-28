@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-10-28
+
 ### Added
 
 - **`org-iso-mdoc` over the W3C Digital Credentials API (ISO/IEC 18013-7
