@@ -31,9 +31,10 @@ export {
     buildOid4vpSessionTranscript,
     buildOpenID4VPHandoverSessionTranscript,
     buildOpenID4VPDCAPIHandoverSessionTranscript,
+    buildDCAPIHandoverSessionTranscript,
 } from './crypto/session-transcript.js';
 
-// W3C Digital Credentials API (OpenID4VP 1.0 Appendix A)
+// W3C Digital Credentials API (OpenID4VP 1.0 Appendix A, ISO/IEC 18013-7 Annex C)
 export { createDcApiRequest } from './dc-api/request.js';
 export { verifyDcApiResponse } from './dc-api/response.js';
 export { DC_API_PRESENTATION_PROTOCOLS } from './dc-api/protocols.js';
@@ -46,6 +47,7 @@ export {
 export type {
     DcApiPresentationProtocol,
     DcApiOpenId4VpProtocol,
+    DcApiSupportedProtocol,
 } from './dc-api/protocols.js';
 export type {
     DcApiResponseMode,
@@ -56,10 +58,16 @@ export type {
     DcApiRequest,
     DcApiResponse,
     VerifyDcApiResponseOptions,
+    DcApiIsoMdocRequestInput,
+    DcApiIsoMdocCredentialRequest,
+    DcApiIsoMdocRequest,
+    VerifyDcApiIsoMdocResponseOptions,
 } from './dc-api/types.js';
-// EU Age Verification (AV app) profile — OpenID4VP fallback (AV Annex A §A.6)
+// EU Age Verification (AV app) profile (AV Annex A §A.6) — the OpenID4VP
+// fallback and the default Digital Credentials API transport (org-iso-mdoc)
 export { createAvAuthorizationRequest } from './av/request.js';
 export { verifyAvPresentation } from './av/verify.js';
+export { createAvDcApiRequest, verifyAvDcApiResponse } from './av/dc-api.js';
 export {
     AV_DOCTYPE,
     AV_NAMESPACE,
@@ -81,6 +89,10 @@ export type {
     VerifyAvPresentationOptions,
     AvVerificationFailure,
     AvVerificationResult,
+    AvDcApiRequestInput,
+    AvDcApiRequest,
+    AvDcApiVerificationContext,
+    VerifyAvDcApiResponseOptions,
 } from './av/types.js';
 export { SdJwtParser } from './parsers/sd-jwt.parser.js';
 export { MdocParser } from './parsers/mdoc.parser.js';

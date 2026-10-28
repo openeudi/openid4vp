@@ -1,15 +1,23 @@
 import { calculateJwkThumbprint, type JWK } from 'jose';
 import { validateQuery, type DcqlQuery } from '@openeudi/dcql';
 
+import { AV_DOCTYPE } from '../av/constants.js';
 import { resolveRequestSigner, signRequestObject } from '../request-signing.js';
 import { serializeVerifierInfo, verifierInfoProblem } from '../verifier-info.js';
 import { DcApiRequestBuildError } from './errors.js';
+import { buildIsoMdocRequest, docRequestFromDcqlQuery } from './iso-mdoc.js';
 import {
     describeUnsupportedProtocol,
     isSecureSerializedOrigin,
     isSupportedDcApiProtocol,
 } from './protocols.js';
-import type { DcApiRequest, DcApiRequestInput, DcApiResponseMode } from './types.js';
+import type {
+    DcApiIsoMdocRequest,
+    DcApiIsoMdocRequestInput,
+    DcApiRequest,
+    DcApiRequestInput,
+    DcApiResponseMode,
+} from './types.js';
 
 // Must stay a subset of what decryptAuthorizationResponse accepts, or the
 // verifier would advertise an `enc` it then refuses to decrypt.
@@ -34,16 +42,32 @@ const DEFAULT_REQUEST_OBJECT_TTL_SECONDS = 300;
  * `verifierInfo` is validated as for the redirect-flow builders and emitted as
  * `verifier_info` in both variants.
  *
- * `openid4vp-v1-multisigned` and `org-iso-mdoc` are rejected with
+ * - `org-iso-mdoc` (ISO/IEC 18013-7 Annex C): an ISO 18013-5 `DeviceRequest`
+ *   1.0 translated from the DCQL query (one `mso_mdoc` credential), with no
+ *   reader authentication, and an `EncryptionInfo` holding the nonce and a
+ *   fresh P-256 recipient key. Returns the recipient private key to store for
+ *   `verifyDcApiResponse`. A query for `eu.europa.ec.av.1` is refused
+ *   (`av_profile_required`): use `createAvDcApiRequest`.
+ *
+ * `openid4vp-v1-multisigned` is rejected with
  * `DcApiRequestBuildError('unsupported_protocol')`.
  */
+export async function createDcApiRequest(input: DcApiIsoMdocRequestInput, query: DcqlQuery): Promise<DcApiIsoMdocRequest>;
+export async function createDcApiRequest(input: DcApiRequestInput, query: DcqlQuery): Promise<DcApiRequest>;
 export async function createDcApiRequest(
-    input: DcApiRequestInput,
+    input: DcApiRequestInput | DcApiIsoMdocRequestInput,
     query: DcqlQuery,
-): Promise<DcApiRequest> {
+): Promise<DcApiRequest | DcApiIsoMdocRequest>;
+export async function createDcApiRequest(
+    input: DcApiRequestInput | DcApiIsoMdocRequestInput,
+    query: DcqlQuery,
+): Promise<DcApiRequest | DcApiIsoMdocRequest> {
     const protocol: unknown = input.protocol;
     if (!isSupportedDcApiProtocol(protocol)) {
         throw new DcApiRequestBuildError('unsupported_protocol', describeUnsupportedProtocol(protocol));
+    }
+    if (input.protocol === 'org-iso-mdoc') {
+        return createIsoMdocDcApiRequest(input, query);
     }
     if (typeof input.nonce !== 'string' || input.nonce.length === 0) {
         throw new DcApiRequestBuildError('missing_nonce', 'nonce is required and must be a non-empty string');
@@ -118,6 +142,24 @@ export async function createDcApiRequest(
         clientId: signer.clientId,
         expectedOrigins,
     };
+}
+
+async function createIsoMdocDcApiRequest(
+    input: DcApiIsoMdocRequestInput,
+    query: DcqlQuery,
+): Promise<DcApiIsoMdocRequest> {
+    validateQuery(query);
+    const docRequest = docRequestFromDcqlQuery(query);
+    // The AV data-model checks (Annex A §A.4) only run in verifyAvDcApiResponse,
+    // so a generic request for the attestation would be verified without them.
+    if (docRequest.docType === AV_DOCTYPE) {
+        throw new DcApiRequestBuildError(
+            'av_profile_required',
+            `${AV_DOCTYPE} must be requested with createAvDcApiRequest, whose verifier applies the AV profile checks`,
+        );
+    }
+    const built = await buildIsoMdocRequest(docRequest, input.nonce);
+    return { ...built, dcqlQuery: query };
 }
 
 async function buildClientMetadata(

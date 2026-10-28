@@ -1,5 +1,6 @@
 import type { DcqlQuery } from '@openeudi/dcql';
 
+import type { DcApiIsoMdocCredentialRequest } from '../dc-api/types.js';
 import type { CredentialStatusResult, StatusPolicy } from '../status/credential-status.js';
 import type { StatusListResolver } from '../status/StatusListResolver.js';
 import type { Cache } from '../trust/Cache.js';
@@ -103,6 +104,49 @@ export interface VerifyAvPresentationOptions {
     statusPolicy?: StatusPolicy;
     /** Resolver for Status List Tokens; give it the status-list signer anchors. */
     statusListResolver?: StatusListResolver;
+}
+
+/** Input of `createAvDcApiRequest` (W3C Digital Credentials API, `org-iso-mdoc`). */
+export interface AvDcApiRequestInput {
+    /** Age threshold NN of the requested `age_over_NN`. Default 18. */
+    ageThreshold?: number;
+    /**
+     * The `EncryptionInfo` nonce as base64url, at least 16 bytes once decoded.
+     * Generated (16 random bytes) when omitted.
+     */
+    nonce?: string;
+}
+
+/** The DC API request plus every value `verifyAvDcApiResponse` needs. Persist it server-side. */
+export interface AvDcApiRequest {
+    /** `{ protocol: 'org-iso-mdoc', data: { deviceRequest, encryptionInfo } }` for `navigator.credentials.get()`. */
+    request: DcApiIsoMdocCredentialRequest;
+    /** The `EncryptionInfo` nonce as base64url. */
+    nonce: string;
+    /** `request.data.encryptionInfo`, the exact string bound into the SessionTranscript. */
+    encryptionInfo: string;
+    /** The ephemeral HPKE recipient private key (P-256 JWK). Server-side only; single use. */
+    recipientPrivateJwk: JsonWebKey;
+    ageThreshold: number;
+    /** The requested element identifier, e.g. `age_over_18`. */
+    ageOverAttribute: string;
+}
+
+/** What `verifyAvDcApiResponse` needs from the request it answers. */
+export type AvDcApiVerificationContext = Pick<AvDcApiRequest, 'encryptionInfo'> &
+    Partial<Pick<AvDcApiRequest, 'nonce' | 'ageThreshold'>>;
+
+export interface VerifyAvDcApiResponseOptions extends Omit<VerifyAvPresentationOptions, 'request'> {
+    /** The persisted request (`createAvDcApiRequest` result or the {@link AvDcApiVerificationContext} subset). */
+    request: AvDcApiVerificationContext;
+    /**
+     * The origin of the page that called `navigator.credentials.get()`, as the
+     * browser serializes it (`https://shop.example`). Take it from server-side
+     * session state — never from the request being verified.
+     */
+    origin: string;
+    /** The persisted `recipientPrivateJwk`, or an ECDH P-256 private `CryptoKey`. */
+    decryptionKey: CryptoKey | JsonWebKey;
 }
 
 export type AvVerificationFailure =

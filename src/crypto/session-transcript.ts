@@ -122,3 +122,32 @@ export async function buildOpenID4VPDCAPIHandoverSessionTranscript(params: {
     const infoHash = await sha256(new Uint8Array(enc.encode([origin, nonce, thumb])));
     return new Uint8Array(enc.encode([null, null, ['OpenID4VPDCAPIHandover', infoHash]]));
 }
+
+/**
+ * Build the ISO/IEC 18013-7 Annex C SessionTranscript of an `org-iso-mdoc`
+ * presentation over the W3C Digital Credentials API (the `dcapi` handover):
+ *
+ *   SessionTranscript = [ null, null, [ "dcapi", SHA-256(cbor(dcapiInfo)) ] ]
+ *   dcapiInfo = [ encryptionInfo, origin ]
+ *
+ * `encryptionInfo` is the base64url string exactly as sent in the request's
+ * `data.encryptionInfo` (not the decoded CBOR). `origin` is the bare web
+ * origin the browser passed to the wallet (`https://shop.example`). The CBOR
+ * encoding of this transcript is also the HPKE `info` of the encrypted
+ * response, so a wrong origin fails decryption before any signature is read.
+ *
+ * Annex C is paywalled; the layout was reconstructed from open
+ * implementations (multipaz, the EU AV iOS library, walt.id, A-SIT vck,
+ * Digital Bazaar) and is pinned by walt.id's published Annex C test vectors.
+ */
+export async function buildDCAPIHandoverSessionTranscript(params: {
+    encryptionInfo: string;
+    origin: string;
+}): Promise<Uint8Array> {
+    const { encryptionInfo, origin } = params;
+    if (origin.startsWith('origin:')) {
+        throw new TypeError('origin must be the bare web origin, without the "origin:" prefix');
+    }
+    const infoHash = await sha256(new Uint8Array(enc.encode([encryptionInfo, origin])));
+    return new Uint8Array(enc.encode([null, null, ['dcapi', infoHash]]));
+}

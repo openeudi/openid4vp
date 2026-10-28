@@ -72,7 +72,7 @@ export async function verifyAvPresentation(
         );
     }
     const ageThreshold = request.ageThreshold ?? AV_DEFAULT_AGE_THRESHOLD;
-    const ageOverAttribute = avAgeOverAttribute(ageThreshold);
+    avAgeOverAttribute(ageThreshold); // a bad threshold is a caller error: throw before reading the body
     const credentialId = request.credentialId ?? AV_DEFAULT_CREDENTIAL_ID;
 
     const body = toBody(response);
@@ -86,6 +86,37 @@ export async function verifyAvPresentation(
     const presentation = extractPresentation(body, credentialId);
     const deviceResponse = decodeBase64Url(presentation);
 
+    const sessionTranscript = await buildOpenID4VPHandoverSessionTranscript({
+        clientId,
+        nonce: request.nonce,
+        responseUri: request.responseUri,
+    });
+    return verifyAvDeviceResponse(deviceResponse, { sessionTranscript, nonce: request.nonce, ageThreshold, state }, options);
+}
+
+/** What {@link verifyAvDeviceResponse} binds the presentation to, per transport. */
+export interface AvDeviceResponseContext {
+    /** CBOR SessionTranscript the device signature must cover. */
+    sessionTranscript: Uint8Array;
+    nonce: string;
+    ageThreshold: number;
+    state?: string;
+}
+
+/**
+ * The transport-independent part of AV verification, shared by the OpenID4VP
+ * fallback ({@link verifyAvPresentation}) and the Digital Credentials API
+ * (`verifyAvDcApiResponse`): the Annex A §A.4 data-model checks, issuer and
+ * device authentication over `context.sessionTranscript`, trust, status, and
+ * the requested `age_over_NN`. Steps 3–6 of {@link verifyAvPresentation}.
+ */
+export async function verifyAvDeviceResponse(
+    deviceResponse: Uint8Array,
+    context: AvDeviceResponseContext,
+    options: Omit<VerifyAvPresentationOptions, 'request'>,
+): Promise<AvVerificationResult> {
+    const { ageThreshold, state } = context;
+    const ageOverAttribute = avAgeOverAttribute(ageThreshold);
     const base = { ageThreshold, ageOverAttribute, state };
     const fail = (failure: AvVerificationFailure, error: string, issuer: IssuerInfo = NO_ISSUER): AvVerificationResult => ({
         ...base,
@@ -100,18 +131,12 @@ export async function verifyAvPresentation(
     const structural = checkStructure(deviceResponse);
     if (structural) return fail(structural.failure, structural.error);
 
-    const mdocSessionTranscript = await buildOpenID4VPHandoverSessionTranscript({
-        clientId,
-        nonce: request.nonce,
-        responseUri: request.responseUri,
-    });
-
     const parsed = await parser.parse(deviceResponse, {
         trustedCertificates: [],
-        nonce: request.nonce,
-        trustStore,
+        nonce: context.nonce,
+        trustStore: options.trustStore,
         mdocDocumentSignerEkus: options.documentSignerEkus ?? [AV_DOCUMENT_SIGNER_EKU, ISO_18013_5_DS_EKU],
-        mdocSessionTranscript,
+        mdocSessionTranscript: context.sessionTranscript,
         expectedDocType: AV_DOCTYPE,
         allowedAlgorithms: options.allowedAlgorithms,
         revocationPolicy: options.revocationPolicy ?? 'skip',

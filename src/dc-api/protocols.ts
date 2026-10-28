@@ -17,14 +17,17 @@ export type DcApiPresentationProtocol = (typeof DC_API_PRESENTATION_PROTOCOLS)[n
 
 /**
  * The OpenID4VP-over-DC-API protocols this library builds and verifies.
- * `openid4vp-v1-multisigned` (JWS JSON Serialization) and `org-iso-mdoc`
- * (ISO/IEC 18013-7 Annex C) are not supported.
+ * `openid4vp-v1-multisigned` (JWS JSON Serialization) is not supported.
  */
 export type DcApiOpenId4VpProtocol = 'openid4vp-v1-unsigned' | 'openid4vp-v1-signed';
 
-const SUPPORTED: ReadonlySet<string> = new Set<DcApiOpenId4VpProtocol>([
+/** Every DC API protocol this library builds and verifies: OpenID4VP and ISO/IEC 18013-7 Annex C. */
+export type DcApiSupportedProtocol = DcApiOpenId4VpProtocol | 'org-iso-mdoc';
+
+const SUPPORTED: ReadonlySet<string> = new Set<DcApiSupportedProtocol>([
     'openid4vp-v1-unsigned',
     'openid4vp-v1-signed',
+    'org-iso-mdoc',
 ]);
 const KNOWN: ReadonlySet<string> = new Set<string>(DC_API_PRESENTATION_PROTOCOLS);
 
@@ -32,14 +35,14 @@ export function isDcApiPresentationProtocol(value: unknown): value is DcApiPrese
     return typeof value === 'string' && KNOWN.has(value);
 }
 
-export function isSupportedDcApiProtocol(value: unknown): value is DcApiOpenId4VpProtocol {
+export function isSupportedDcApiProtocol(value: unknown): value is DcApiSupportedProtocol {
     return typeof value === 'string' && SUPPORTED.has(value);
 }
 
 /** Human-readable reason a protocol string cannot be used, for error messages. */
 export function describeUnsupportedProtocol(value: unknown): string {
     if (isDcApiPresentationProtocol(value)) {
-        return `DC API protocol "${value}" is not supported by this library (supported: openid4vp-v1-unsigned, openid4vp-v1-signed)`;
+        return `DC API protocol "${value}" is not supported by this library (supported: openid4vp-v1-unsigned, openid4vp-v1-signed, org-iso-mdoc)`;
     }
     return `"${String(value)}" is not a W3C Digital Credentials API presentation protocol (expected one of: ${DC_API_PRESENTATION_PROTOCOLS.join(', ')})`;
 }

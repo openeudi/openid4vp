@@ -605,9 +605,9 @@ Supported protocols (`DigitalCredentialGetRequest.protocol`):
 | `openid4vp-v1-unsigned` | `protocol: 'openid4vp-v1-unsigned'` | §A.3.1. Parameters in clear; `client_id` omitted. The browser's origin authenticates the verifier. |
 | `openid4vp-v1-signed` | `protocol: 'openid4vp-v1-signed'` | §A.3.2.1. JWS Request Object in `data.request`, with `client_id` (`x509_hash` by default, as HAIP requires) and the REQUIRED `expected_origins`. Same certificate checks as `createSignedAuthorizationRequest`, including `trust_anchor_in_chain`. |
 | `openid4vp-v1-multisigned` | — | Not supported (JWS JSON Serialization). Rejected with `unsupported_protocol`. |
-| `org-iso-mdoc` | — | Not supported yet (ISO/IEC 18013-7 Annex C). See below. |
+| `org-iso-mdoc` | `protocol: 'org-iso-mdoc'` | ISO/IEC 18013-7 Annex C: ISO 18013-5 `DeviceRequest` + HPKE-encrypted `DeviceResponse`. No reader authentication. The only protocol Safari accepts. See [`org-iso-mdoc`](#org-iso-mdoc-isoiec-18013-7-annex-c). |
 
-Both variants accept `verifierInfo` (validated as for `createSignedAuthorizationRequest`, `DcApiRequestBuildError('invalid_verifier_info')`) and emit it as `verifier_info`: inside the Request Object when signed, as a plain `data` member when unsigned. Wallets enforcing ETSI TS 119 472-2 or HAIP expect it in a signed request.
+Both OpenID4VP variants accept `verifierInfo` (validated as for `createSignedAuthorizationRequest`, `DcApiRequestBuildError('invalid_verifier_info')`) and emit it as `verifier_info`: inside the Request Object when signed, as a plain `data` member when unsigned. Wallets enforcing ETSI TS 119 472-2 or HAIP expect it in a signed request.
 
 The library only emits protocol strings from the W3C closed `DigitalCredentialPresentationProtocol` set (exported as `DC_API_PRESENTATION_PROTOCOLS`). Browsers reject other strings.
 
@@ -688,10 +688,71 @@ What `verifyDcApiResponse` enforces:
 
 `origin` must be the serialized origin exactly as the browser sends it (`https://shop.example`, no path or trailing slash). `http:` is accepted only for `localhost` / loopback, since the API needs a secure context. For a signed request listing several `expected_origins`, pass the origin the page was actually served from.
 
+### `org-iso-mdoc` (ISO/IEC 18013-7 Annex C)
+
+The ISO mdoc binding of the Digital Credentials API. It is the only protocol Safari (macOS, iOS, iPadOS) accepts, the only one the EU Age Verification apps accept, and the AV profile's default transport (for age verification use the [AV helpers](#over-the-digital-credentials-api-org-iso-mdoc), not this generic path). There is no reader authentication (a later release adds `ReaderAuth`), so the wallet learns who asks only from the origin the browser shows.
+
+Wire format:
+
+- Request `data`: `{ deviceRequest, encryptionInfo }`, each base64url (no padding) of CBOR, and nothing else.
+  - `deviceRequest`: an ISO 18013-5 `DeviceRequest`, version `"1.0"`, one `DocRequest` whose `itemsRequest` (tag 24) carries the docType and the requested elements with their `intentToRetain`. No `readerAuth`.
+  - `encryptionInfo`: `["dcapi", { "nonce": bstr, "recipientPublicKey": COSE_Key }]`, with a fresh ephemeral P-256 recipient key per request. The nonce is 16 random bytes unless you pass one (base64url, at least 16 bytes).
+- Response `data`: `{ response }`, base64url of `["dcapi", { "enc": bstr, "cipherText": bstr }]`.
+- `cipherText` is HPKE (RFC 9180) base mode, DHKEM(P-256, HKDF-SHA256) / HKDF-SHA256 / AES-128-GCM, empty aad, over the CBOR `DeviceResponse`. The HPKE `info` is the CBOR SessionTranscript:
+
+  ```
+  SessionTranscript = [ null, null, [ "dcapi", sha256(cbor([ encryptionInfo, origin ])) ] ]
+  ```
+
+  where `encryptionInfo` is the base64url string exactly as sent, and `origin` the page origin. The device signature covers the same transcript. `buildDCAPIHandoverSessionTranscript` is exported.
+
+The ISO text is paywalled. The structures above agree across multipaz, the EU AV iOS library, walt.id, A-SIT vck and Digital Bazaar, and the AV specification (Annex A §A.6) restates `EncryptionInfo` and `EncryptedResponse`. The tests pin them to fixed bytes: walt.id's Annex C vectors (transcript hash and HPKE decryption, including a request captured from the multipaz verifier), the AV specification's §A.11 example (request bytes, and the AV reference wallet's device signature over a `dcapi` transcript), and RFC 9180 A.3.1 for HPKE.
+
+**Server: build the request.** The DCQL query must hold exactly one `mso_mdoc` credential with a `doctype_value` and `[namespace, element]` claims. `credential_sets`, `claim_sets`, claim `values` and `multiple` have no `DeviceRequest` 1.0 equivalent and are refused (`unsupported_query`). A query for `eu.europa.ec.av.1` is refused with `av_profile_required`: use `createAvDcApiRequest`.
+
+```ts
+const isoRequest = await createDcApiRequest(
+  { protocol: "org-iso-mdoc" },
+  {
+    credentials: [
+      {
+        id: "mdl",
+        format: "mso_mdoc",
+        meta: { doctype_value: "org.iso.18013.5.1.mDL" },
+        claims: [{ path: ["org.iso.18013.5.1", "age_over_21"] }],
+      },
+    ],
+  },
+);
+
+// Keep isoRequest.encryptionInfo, isoRequest.recipientPrivateJwk (secret) and
+// the query in the server-side session, with the page origin.
+// Send isoRequest.request ({ protocol, data }) to the browser.
+```
+
+**Server: verify the response**
+
+```ts
+const result = await verifyDcApiResponse(body, session.dcqlQuery, {
+  protocol: "org-iso-mdoc",
+  origin: session.origin, // the pinned page origin, never from the request
+  encryptionInfo: session.encryptionInfo,
+  decryptionKey: session.recipientPrivateJwk, // or an ECDH P-256 CryptoKey
+  trustStore,
+});
+```
+
+What it enforces, in addition to the generic checks above (wallet error object, origin hygiene):
+
+- The response `protocol` is `org-iso-mdoc` (`protocol_mismatch` otherwise; an `org-iso-mdoc` response passed without these options is refused the same way). `data` is exactly `{ response }` (`malformed_response`).
+- HPKE opens the response with the stored key and the transcript built from **your** `origin` and stored `encryptionInfo`. A response the browser bound to another origin, made for another request, or modified in transit throws `DecryptionFailedError`. A private JWK that is not the `encryptionInfo` recipient key is refused before decryption (`decryption_key_mismatch`). When `nonce` is passed, it must equal the `encryptionInfo` nonce (`nonce_mismatch`).
+- The `DeviceResponse` has status 0 (`device_response_error`) and exactly one document (`MultipleCredentialsNotSupportedError`), and it is not a Proof of Age attestation (`av_profile_required`).
+- The document is verified as on every mdoc path: issuer signature, digests, MSO validity, trust, status, and the device signature over the Annex C transcript. Then it is matched against the DCQL query (`result.valid`).
+
 **Not in this release:**
 
-- `org-iso-mdoc` (ISO/IEC 18013-7 Annex C, phase 2). The EU age-verification profile uses this protocol as its default DC API transport.
-- Zero-knowledge proofs of age (for example Longfellow, phase 3). They are only available over that transport and probably belong in a separate package.
+- `ReaderAuth` for `org-iso-mdoc` (reader authentication, `DeviceRequest` 1.1 `readerAuthAll`).
+- Zero-knowledge proofs of age (for example Longfellow). They are only available over `org-iso-mdoc` and probably belong in a separate package. Requests carry no `zkRequest`, so wallets answer with a plain mdoc.
 - `openid4vp-v1-multisigned`, `transaction_data` and multi-credential responses.
 
 **Browser status** (checked 2026-10-20; re-check before relying on it):
@@ -775,7 +836,42 @@ Result: `{ valid, ageVerified, ageOver, ageThreshold, ageOverAttribute, issuer, 
 
 Use each `nonce` once. The spec recommends treating a plain-mdoc Proof of Age attestation as single use; the AV app enforces that, and nonce binding prevents replay to your verifier.
 
-**Not covered:** the W3C Digital Credentials API transport with `org-iso-mdoc` and zero-knowledge proofs (Annex A §A.8, the profile's preferred mechanism), and issuance. The request carries no `verifier_info`: it is unsigned under `redirect_uri:`, so nothing could bind it to the verifier.
+### Over the Digital Credentials API (`org-iso-mdoc`)
+
+`createAvDcApiRequest` and `verifyAvDcApiResponse` implement the profile's **default transport**: "The W3C Digital Credentials API is used as specified in [ISO/IEC 18013-7], Annex C" (Annex A §A.6). The AV apps accept no other DC API protocol, and "Reader authentication is not required", so this route needs no certificate. The wire format is described under [`org-iso-mdoc`](#org-iso-mdoc-isoiec-18013-7-annex-c).
+
+```ts
+import { createAvDcApiRequest, verifyAvDcApiResponse } from "@openeudi/openid4vp";
+
+// Server: one request per get() call. ageThreshold defaults to 18.
+const avDcRequest = await createAvDcApiRequest();
+await sessions.save(sessionId, {
+  origin: pinnedOrigin, // the shop page that calls navigator.credentials.get()
+  encryptionInfo: avDcRequest.encryptionInfo,
+  recipientPrivateJwk: avDcRequest.recipientPrivateJwk, // secret, single use
+  ageThreshold: avDcRequest.ageThreshold,
+});
+// Browser: navigator.credentials.get({ digital: { requests: [avDcRequest.request] } })
+// and POST { protocol: credential.protocol, data: credential.data } back.
+
+// Server: verify.
+const persisted = await sessions.take(sessionId);
+const result = await verifyAvDcApiResponse(body, {
+  request: persisted, // encryptionInfo, ageThreshold (and nonce, if stored)
+  origin: persisted.origin, // never from the request
+  decryptionKey: persisted.recipientPrivateJwk,
+  trustStore: avTrustStore,
+});
+if (result.ageVerified) {
+  // over the threshold
+}
+```
+
+- The `deviceRequest` asks for `eu.europa.ec.av.1` / `age_over_NN` with `intentToRetain: false`. For `age_over_18` it is byte-identical to the Annex A §A.11 example. It carries no `zkRequest`, so both AV apps answer with a plain mdoc (no ZKP).
+- `verifyAvDcApiResponse` decrypts as described for `org-iso-mdoc` (a wrong origin, another request's response or a modified ciphertext throws `DecryptionFailedError`), then applies **the same checks as `verifyAvPresentation`**, from the same code: one `eu.europa.ec.av.1` document, only boolean `age_over_NN` elements, no device-signed elements, the Document Signer EKUs, issuer chain against `trustStore`, MSO validity, optional status, and the device signature over the Annex C transcript. The result has the same shape (`valid`, `ageVerified`, `failure`, …), without `state`.
+- The generic `createDcApiRequest` / `verifyDcApiResponse` refuse `eu.europa.ec.av.1` (`av_profile_required`), so a Proof of Age attestation is never accepted without these checks on the `org-iso-mdoc` path.
+
+**Not covered:** zero-knowledge proofs (Annex A §A.8, the profile's preferred mechanism; the plain mdoc is the fallback the RP "SHALL accept"), and issuance. The OpenID4VP request carries no `verifier_info`: it is unsigned under `redirect_uri:`, so nothing could bind it to the verifier.
 
 **Known interop issue:** the AV reference implementation's certificates (the Annex A §A.11 Document Signer and the "Age Verification Issuer CA 01" bundled in the AV Android app) encode `IssuerAltName` as a nested Extension instead of `GeneralNames`. `@peculiar/x509` cannot parse it, so `StaticTrustStore` and chain validation throw on those certificates. RFC 5280 §4.2 requires a recognised extension to be processed, so this library fails closed rather than skipping it.
 
@@ -848,9 +944,10 @@ Mobile Document credentials as defined in ISO 18013-5. The token is a CBOR-encod
 | `CertificateChainError`    | (per check)                             | Chain validation fails; see `reason` (e.g. `unrecognised_critical_extension`) |
 | `SignedRequestBuildError`  | (per check)                             | `createSignedAuthorizationRequest` (or a signed `createDcApiRequest`) input is invalid; see `code` (e.g. `trust_anchor_in_chain`, `invalid_verifier_info`) |
 | `StatusListError`          | Status List Token … / status_list …     | Token Status List unusable under `statusPolicy: 'require'`, or misconfiguration (`reason`) |
-| `DcApiRequestBuildError`   | (per `code`)                              | `createDcApiRequest` refuses its input             |
-| `DcApiResponseError`       | (per `code`)                              | DC API response has the wrong protocol or envelope, or `origin` is misconfigured |
-| `AvRequestBuildError`      | (per `code`)                              | `createAvAuthorizationRequest` refuses its input   |
+| `DcApiRequestBuildError`   | (per `code`)                              | `createDcApiRequest` refuses its input (`org-iso-mdoc`: `unsupported_query`, `invalid_nonce`, `av_profile_required`) |
+| `DcApiResponseError`       | (per `code`)                              | DC API response has the wrong protocol or envelope, or `origin` is misconfigured (`org-iso-mdoc` adds `invalid_encryption_info`, `nonce_mismatch`, `decryption_key_mismatch`, `device_response_error`, `av_profile_required`) |
+| `DecryptionFailedError`    | Failed to decrypt …                       | A `direct_post.jwt` / `dc_api.jwt` JWE or an `org-iso-mdoc` HPKE response does not decrypt (wrong key, origin or request, or modified) |
+| `AvRequestBuildError`      | (per `code`)                              | `createAvAuthorizationRequest` or `createAvDcApiRequest` refuses its input |
 | `AvResponseError`          | (per `code`)                              | AV response has the wrong `state` or `vp_token` shape, or the verification context is not an AV request |
 
 ```ts
@@ -877,8 +974,8 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 - **HAIP** — `buildHaipQuery` / `validateHaipQuery` helpers for the High Assurance Interoperability Profile, plus `buildCredentialSetQuery` / `validateCredentialSetQuery` for `credential_sets` disjunctions.
 - **Signed authorization requests (JAR)** — `createSignedAuthorizationRequest` per RFC 9101 / OpenID4VP 1.0 §5.10 with `x509_san_dns` or `x509_hash` client-id binding. Emits the OpenID4VP 1.0 Final `client_metadata` shape. Self-signed verifier leaf certificates are rejected by default per HAIP 1.0 Final.
 - **Encrypted responses** — `decryptAuthorizationResponse` for `direct_post.jwt` (ECDH-ES + A128GCM/A256GCM), `verifyAuthorizationResponse` for the 1.0 §8.1 object-keyed `vp_token` envelope.
-- **W3C Digital Credentials API** — `createDcApiRequest` / `verifyDcApiResponse` for `openid4vp-v1-unsigned` and `openid4vp-v1-signed`, with `dc_api` and `dc_api.jwt` (OpenID4VP 1.0 Appendix A). See [Digital Credentials API](#digital-credentials-api).
-- **EU Age Verification profile** — `createAvAuthorizationRequest` / `verifyAvPresentation` for the AV app's OpenID4VP fallback (`av://`, `redirect_uri:`, `direct_post`, plain `eu.europa.ec.av.1` mdoc). See [EU Age Verification (AV app) profile](#eu-age-verification-av-app-profile).
+- **W3C Digital Credentials API** — `createDcApiRequest` / `verifyDcApiResponse` for `openid4vp-v1-unsigned` and `openid4vp-v1-signed`, with `dc_api` and `dc_api.jwt` (OpenID4VP 1.0 Appendix A), and for `org-iso-mdoc` (ISO/IEC 18013-7 Annex C, HPKE-encrypted `DeviceResponse`, no reader authentication). See [Digital Credentials API](#digital-credentials-api).
+- **EU Age Verification profile** — `createAvAuthorizationRequest` / `verifyAvPresentation` for the AV app's OpenID4VP fallback (`av://`, `redirect_uri:`, `direct_post`, plain `eu.europa.ec.av.1` mdoc), and `createAvDcApiRequest` / `verifyAvDcApiResponse` for its default Digital Credentials API transport (`org-iso-mdoc`). See [EU Age Verification (AV app) profile](#eu-age-verification-av-app-profile).
 - **X.509 chain validation** — RFC 5280 chain building including `nameConstraints`, `StaticTrustStore`, `CompositeTrustStore`; IACA → document-signer chains for `mso_mdoc` with the ISO 18013-5 Annex B certificate profile.
 - **Revocation checking** — OCSP-first with CRL fallback (`revocationPolicy: 'skip' | 'prefer' | 'require'`).
 - **Credential status** — IETF Token Status List via `StatusListResolver` and `statusPolicy: 'skip' | 'prefer' | 'require'`: `statuslist+jwt` for SD-JWT VC, `statuslist+cwt` for the mdoc MSO `status`.
@@ -890,7 +987,7 @@ This library implements the **verifier side** of OpenID4VP for SD-JWT VC and mDO
 
 - Multi-credential DCQL queries (multiple query ids) and multi-presentation arrays per query id — currently rejected with `MultipleCredentialsNotSupportedError`.
 - SIOPv2 (Self-Issued OpenID Provider) identity flows.
-- Digital Credentials API: `org-iso-mdoc` (ISO/IEC 18013-7 Annex C), ZKP proofs of age, and `openid4vp-v1-multisigned`.
+- Digital Credentials API: reader authentication (`ReaderAuth`) for `org-iso-mdoc`, ZKP proofs of age, and `openid4vp-v1-multisigned`.
 
 EUDI Architecture Reference Framework (ARF) alignment: tracks OpenID4VP 1.0 final. Full ARF profile compliance (ARF v3.0.0, 2026-07-23, at the time of writing) is a goal for a stable 1.0.
 

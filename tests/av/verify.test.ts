@@ -2,7 +2,6 @@
  * EU Age Verification profile — verifying the AV app's direct_post response
  * (AV Annex A §A.4 data model, §A.6 OpenID4VP fallback, OpenID4VP 1.0 §B.2.6.1).
  */
-import { Crypto as PeculiarCrypto } from '@peculiar/webcrypto';
 import { Encoder as CborEncoder, Tag } from 'cbor-x';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -28,50 +27,12 @@ import {
 import type { TestKeyMaterial } from '../fixtures/crypto-helpers.js';
 import { AV_REFERENCE_ISSUER_CA_DER_BASE64 } from '../fixtures/av-reference-issuer-ca.js';
 import { buildSignedMdoc } from '../fixtures/mdoc-helpers.js';
-import { createCa, createLeaf, type GeneratedCa, type Leaf } from '../trust/helpers/synthetic-ca.js';
+import type { GeneratedCa } from '../trust/helpers/synthetic-ca.js';
+import { createIssuer, nodeDeviceKey, storeOf } from './helpers.js';
 
 const AV = 'eu.europa.ec.av.1';
 const PID = 'eu.europa.ec.eudi.pid.1';
-const peculiar = new PeculiarCrypto();
 const cbor = new CborEncoder({ mapsAsObjects: false, useRecords: false, tagUint8Array: false });
-
-function uniqueName(role: string): string {
-    return `CN=${role} ${crypto.randomUUID()},O=Test Attestation Provider,C=EU`;
-}
-
-/** @peculiar/webcrypto keys → Node WebCrypto keys, so the mdoc fixture can sign. */
-async function toKeyMaterial(leaf: Leaf): Promise<TestKeyMaterial> {
-    const jwkPriv = await peculiar.subtle.exportKey('jwk', leaf.keys.privateKey);
-    const jwkPub = await peculiar.subtle.exportKey('jwk', leaf.keys.publicKey);
-    const algo = { name: 'ECDSA', namedCurve: 'P-256' };
-    const der = new Uint8Array(leaf.certificate.rawData);
-    return {
-        privateKey: await crypto.subtle.importKey('jwk', jwkPriv, algo, true, ['sign']),
-        publicKey: await crypto.subtle.importKey('jwk', jwkPub, algo, true, ['verify']),
-        x5cBase64: Buffer.from(der).toString('base64'),
-        certDerBytes: der,
-    };
-}
-
-/** Holder device key on Node WebCrypto (synthetic-ca switches @peculiar/x509 to its own provider). */
-async function nodeDeviceKey(): Promise<TestKeyMaterial> {
-    const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
-    return { privateKey: pair.privateKey, publicKey: pair.publicKey, x5cBase64: '', certDerBytes: new Uint8Array() };
-}
-
-async function createIssuer(name: string, ekus: string[]): Promise<{ ca: GeneratedCa; ds: TestKeyMaterial }> {
-    const ca = await createCa({
-        name: uniqueName(`${name} IACA`),
-        pathLenConstraint: 0,
-        notBefore: new Date(Date.now() - 365 * 24 * 3600 * 1000),
-    });
-    const ds = await createLeaf(ca, { name: uniqueName(`${name} DS`), extendedKeyUsages: ekus });
-    return { ca, ds: await toKeyMaterial(ds) };
-}
-
-function storeOf(...cas: GeneratedCa[]): StaticTrustStore {
-    return new StaticTrustStore(cas.map((ca) => ca.certificate));
-}
 
 function randomRequest(overrides: Partial<Parameters<typeof createAvAuthorizationRequest>[0]> = {}) {
     return createAvAuthorizationRequest({
