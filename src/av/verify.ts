@@ -5,6 +5,7 @@ import { WalletErrorResponseError } from '../errors.js';
 import { MdocParser } from '../parsers/mdoc.parser.js';
 import { ISO_18013_5_DS_EKU } from '../trust/ChainBuilder.js';
 import type { IssuerInfo } from '../types/issuer.js';
+import { type AvAgeOverElement, decideAvAgeOver } from './age-over.js';
 import {
     AV_DEFAULT_AGE_THRESHOLD,
     AV_DEFAULT_CREDENTIAL_ID,
@@ -46,7 +47,12 @@ const NO_ISSUER: IssuerInfo = { certificate: new Uint8Array(), country: '' };
  *    `OpenID4VPHandover` SessionTranscript `[clientId, nonce, null, responseUri]`.
  * 5. Under `statusPolicy` `'prefer'` / `'require'`, the MSO `status` (Token
  *    Status List, `statuslist+cwt`) when present.
- * 6. The requested `age_over_NN` is disclosed.
+ * 6. The disclosed `age_over_NN` elements are consistent (no `true` at one
+ *    threshold with a `false` at the same or a lower one →
+ *    `inconsistent_attributes`) and decide the requested threshold NN:
+ *    `age_over_NN` itself, else the nearest `true` above NN, else the nearest
+ *    `false` below NN (ISO/IEC 18013-5 §7.2.5). Nothing that decides it →
+ *    `missing_attribute`. `decidedBy` names the element used.
  *
  * Credential failures return `{ valid: false, failure, error }`. Trust failures
  * propagate as `TrustAnchorNotFoundError` / `CertificateChainError`, as on
@@ -108,7 +114,8 @@ export interface AvDeviceResponseContext {
  * fallback ({@link verifyAvPresentation}) and the Digital Credentials API
  * (`verifyAvDcApiResponse`): the Annex A §A.4 data-model checks, issuer and
  * device authentication over `context.sessionTranscript`, trust, status, and
- * the requested `age_over_NN`. Steps 3–6 of {@link verifyAvPresentation}.
+ * the age decision for the requested threshold. Steps 3–6 of
+ * {@link verifyAvPresentation}.
  */
 export async function verifyAvDeviceResponse(
     deviceResponse: Uint8Array,
@@ -129,7 +136,7 @@ export async function verifyAvDeviceResponse(
     });
 
     const structural = checkStructure(deviceResponse);
-    if (structural) return fail(structural.failure, structural.error);
+    if ('failure' in structural) return fail(structural.failure, structural.error);
 
     const parsed = await parser.parse(deviceResponse, {
         trustedCertificates: [],
@@ -154,19 +161,22 @@ export async function verifyAvDeviceResponse(
         return { ...fail(failure, parsed.error ?? 'mdoc verification failed', parsed.issuer), ...credentialStatus };
     }
 
-    const ageOver = parsed.namespacedClaims?.[AV_NAMESPACE]?.[ageOverAttribute];
-    if (typeof ageOver !== 'boolean') {
-        return {
-            ...fail('missing_attribute', `the presentation does not disclose ${ageOverAttribute}`, parsed.issuer),
-            ...credentialStatus,
-        };
+    // The parser has now verified the digest of every IssuerSignedItem, so the
+    // elements the structure check decoded are the issuer-signed values. They
+    // are read from there rather than from `parsed.namespacedClaims`, which
+    // keeps only the last of two items with the same identifier: a conflicting
+    // duplicate must surface as inconsistent, not be silently dropped.
+    const decision = decideAvAgeOver(structural.elements, ageThreshold);
+    if ('failure' in decision) {
+        return { ...fail(decision.failure, decision.error, parsed.issuer), ...credentialStatus };
     }
 
     return {
         ...base,
         valid: true,
-        ageVerified: ageOver,
-        ageOver,
+        ageVerified: decision.ageOver,
+        ageOver: decision.ageOver,
+        decidedBy: decision.decidedBy,
         issuer: parsed.issuer,
         trust: parsed.trust,
         ...credentialStatus,
@@ -240,10 +250,12 @@ function decodeBase64Url(value: string): Uint8Array {
 
 /**
  * Annex A §A.4 data-model checks on the decoded (not yet verified) structure.
- * These only add rejections; every accepted value is re-read from the
- * verified parser output.
+ * Returns the `age_over_NN` elements, which the caller may use only after the
+ * parser has verified every item's digest against the signed MSO.
  */
-function checkStructure(bytes: Uint8Array): { failure: AvVerificationFailure; error: string } | undefined {
+function checkStructure(
+    bytes: Uint8Array,
+): { failure: AvVerificationFailure; error: string } | { elements: AvAgeOverElement[] } {
     let deviceResponse: unknown;
     try {
         deviceResponse = decoder.decode(bytes);
@@ -272,6 +284,7 @@ function checkStructure(bytes: Uint8Array): { failure: AvVerificationFailure; er
     if (!(nameSpaces instanceof Map)) {
         return { failure: 'malformed_credential', error: 'issuerSigned.nameSpaces must be a map' };
     }
+    const elements: AvAgeOverElement[] = [];
     for (const [namespace, items] of nameSpaces) {
         if (namespace !== AV_NAMESPACE) {
             return {
@@ -294,9 +307,11 @@ function checkStructure(bytes: Uint8Array): { failure: AvVerificationFailure; er
                     error: `attribute "${identifier}" is not allowed in a Proof of Age attestation (Annex A §A.4.2)`,
                 };
             }
-            if (typeof (element as Map<unknown, unknown>).get('elementValue') !== 'boolean') {
+            const value = (element as Map<unknown, unknown>).get('elementValue');
+            if (typeof value !== 'boolean') {
                 return { failure: 'invalid_attribute_value', error: `${identifier} must be a boolean` };
             }
+            elements.push({ identifier, value });
         }
     }
 
@@ -310,7 +325,7 @@ function checkStructure(bytes: Uint8Array): { failure: AvVerificationFailure; er
             };
         }
     }
-    return undefined;
+    return { elements };
 }
 
 /** Decode a tag-24 embedded CBOR value (Tag, extension object or raw bytes) to its content. */

@@ -766,7 +766,7 @@ What it enforces, in addition to the generic checks above (wallet error object, 
 
 - The request goes to the AV app as plain query parameters, `av://?…` by default ("at least a custom URL scheme av:// MUST be supported"). It is not signed and there is no `request` / `request_uri` ("support for JAR is not required").
 - `response_type=vp_token`, `response_mode=direct_post` (unencrypted), `client_id=redirect_uri:<response_uri>`, a `nonce`, and an optional `state`.
-- The DCQL query asks for one `mso_mdoc` credential of doctype `eu.europa.ec.av.1` and claim `["eu.europa.ec.av.1", "age_over_18"]` (or another `age_over_NN`).
+- The DCQL query asks for one `mso_mdoc` credential of doctype `eu.europa.ec.av.1` and claim `["eu.europa.ec.av.1", "age_over_18"]` (or another `age_over_NN`). Below 18 it also accepts `age_over_18` (see [Thresholds other than 18](#thresholds-other-than-18)).
 - Relying Parties do not register and need no certificate: "The registration of Relying Parties that request age verification … is not required." TLS on `response_uri` is the only verifier authentication.
 
 **Server: build the request**
@@ -830,11 +830,35 @@ What `verifyAvPresentation` checks:
 - Issuer signature, digests and MSO validity. The issuer chain must validate against `trustStore`. A Document Signer under a CA anchor must carry EKU `1.3.130.2.0.0.1.2` (the AV reference issuer's) or `1.0.18013.5.1.2` (ISO 18013-5); override with `documentSignerEkus`. Revocation is skipped by default ("Attestation revocation is not required").
 - Device authentication over the OpenID4VP 1.0 `OpenID4VPHandover` SessionTranscript `[clientId, nonce, null, responseUri]` (§B.2.6.1, `null` because the response is not encrypted). It is byte-identical to the Annex A example transcript.
 - With `statusPolicy: 'prefer' | 'require'` and a `statusListResolver`, the MSO `status` (`statuslist+cwt`) when the attestation carries one (`failure: 'credential_status'` for a non-VALID status). Proof of Age attestations normally carry none and still verify (`credentialStatus.outcome: 'absent'`). Default `'skip'`.
-- The requested `age_over_NN` is disclosed (`failure: 'missing_attribute'` otherwise).
+- The disclosed `age_over_NN` elements are consistent and decide the requested threshold (see [Thresholds other than 18](#thresholds-other-than-18); `failure: 'inconsistent_attributes'` / `'missing_attribute'` otherwise).
 
-Result: `{ valid, ageVerified, ageOver, ageThreshold, ageOverAttribute, issuer, trust, state, credentialStatus?, failure?, error? }`. **Gate access on `ageVerified`.** `valid: true` with `ageOver: false` is a genuine attestation that says the holder is *not* over the threshold. Trust failures throw `TrustAnchorNotFoundError` / `CertificateChainError`, as everywhere else in this library.
+Result: `{ valid, ageVerified, ageOver, ageThreshold, ageOverAttribute, decidedBy, issuer, trust, state, credentialStatus?, failure?, error? }`. **Gate access on `ageVerified`.** `valid: true` with `ageOver: false` is a genuine attestation that says the holder is *not* over the threshold. Trust failures throw `TrustAnchorNotFoundError` / `CertificateChainError`, as everywhere else in this library.
 
 Use each `nonce` once. The spec recommends treating a plain-mdoc Proof of Age attestation as single use; the AV app enforces that, and nonce binding prevents replay to your verifier.
+
+### Thresholds other than 18
+
+Every Proof of Age attestation carries `age_over_18`; any other `age_over_NN` is optional (Annex A §A.4.2), and an issuer may not issue it at all. So for a threshold below 18 (a 16+ check, for example) both request builders also accept `age_over_18`:
+
+- `createAvAuthorizationRequest` gives each claim an `id` and adds `claim_sets: [["age_over_16"], ["age_over_18"]]`. The wallet discloses `age_over_16` when it has it, `age_over_18` otherwise.
+- `createAvDcApiRequest` asks for both `age_over_16` and `age_over_18` in the `DeviceRequest` (`intentToRetain: false`).
+- Both return `requestedAgeOverAttributes: ["age_over_16", "age_over_18"]`. `ageOverAttribute` stays `"age_over_16"`.
+
+From 18 up the request asks for `age_over_NN` alone, as before: `age_over_18` cannot prove a higher threshold.
+
+Verification reads every disclosed `age_over_MM`, following the nearest-attestation rule of ISO/IEC 18013-5 §7.2.5 (`true` at MM proves every threshold up to MM; `false` at MM disproves every threshold from MM up):
+
+| Requested | Disclosed | Result |
+| --- | --- | --- |
+| 16 | `age_over_16: true` / `false` | `ageOver: true` / `false`, `decidedBy: 'age_over_16'` |
+| 16 | `age_over_18: true` | `ageOver: true`, `decidedBy: 'age_over_18'` |
+| 16 | `age_over_18: false` | `failure: 'missing_attribute'` (18 is not reached; 16 is unknown) |
+| 21 | `age_over_25: true` | `ageOver: true`, `decidedBy: 'age_over_25'` |
+| 21 | `age_over_18: false` | `ageOver: false`, `decidedBy: 'age_over_18'` |
+| 21 | `age_over_18: true` | `failure: 'missing_attribute'` |
+| any | `age_over_18: true` with `age_over_16: false` | `failure: 'inconsistent_attributes'` |
+
+In order: a `true` at one threshold together with a `false` at the same or a lower one is contradictory (`inconsistent_attributes`). Otherwise `age_over_NN` itself decides when disclosed, then the nearest `true` above NN, then the nearest `false` below NN. Nothing else is a statement about NN, and it is never reported as `ageOver: false`. `decidedBy` names the element used.
 
 ### Over the Digital Credentials API (`org-iso-mdoc`)
 
@@ -867,7 +891,7 @@ if (result.ageVerified) {
 }
 ```
 
-- The `deviceRequest` asks for `eu.europa.ec.av.1` / `age_over_NN` with `intentToRetain: false`. For `age_over_18` it is byte-identical to the Annex A §A.11 example. It carries no `zkRequest`, so both AV apps answer with a plain mdoc (no ZKP).
+- The `deviceRequest` asks for `eu.europa.ec.av.1` / `age_over_NN` with `intentToRetain: false` (below 18, also `age_over_18`). For `age_over_18` it is byte-identical to the Annex A §A.11 example. It carries no `zkRequest`, so both AV apps answer with a plain mdoc (no ZKP).
 - `verifyAvDcApiResponse` decrypts as described for `org-iso-mdoc` (a wrong origin, another request's response or a modified ciphertext throws `DecryptionFailedError`), then applies **the same checks as `verifyAvPresentation`**, from the same code: one `eu.europa.ec.av.1` document, only boolean `age_over_NN` elements, no device-signed elements, the Document Signer EKUs, issuer chain against `trustStore`, MSO validity, optional status, and the device signature over the Annex C transcript. The result has the same shape (`valid`, `ageVerified`, `failure`, …), without `state`.
 - The generic `createDcApiRequest` / `verifyDcApiResponse` refuse `eu.europa.ec.av.1` (`av_profile_required`), so a Proof of Age attestation is never accepted without these checks on the `org-iso-mdoc` path.
 

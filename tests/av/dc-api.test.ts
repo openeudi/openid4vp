@@ -91,15 +91,43 @@ describe('createAvDcApiRequest', () => {
         expect(typeof request.recipientPrivateJwk.d).toBe('string');
     });
 
-    it('requests another age_over_NN', async () => {
-        const threshold = 10 + Math.floor(Math.random() * 80);
-        const request = await createAvDcApiRequest({ ageThreshold: threshold });
-
+    function requestedElements(request: AvDcApiRequest): unknown {
         const deviceRequest = cbor.decode(Buffer.from(request.request.data.deviceRequest, 'base64url')) as Map<string, unknown>;
         const tagged = (deviceRequest.get('docRequests') as Map<string, unknown>[])[0].get('itemsRequest') as Tag;
         const items = cbor.decode(tagged.value as Uint8Array) as Map<string, unknown>;
-        expect(items.get('nameSpaces')).toEqual(new Map([[AV, new Map([[`age_over_${threshold}`, false]])]]));
+        return items.get('nameSpaces');
+    }
+
+    it('requests another age_over_NN alone from 18 up', async () => {
+        const threshold = 18 + Math.floor(Math.random() * 82);
+        const request = await createAvDcApiRequest({ ageThreshold: threshold });
+
+        expect(requestedElements(request)).toEqual(new Map([[AV, new Map([[`age_over_${threshold}`, false]])]]));
         expect(request.ageOverAttribute).toBe(`age_over_${threshold}`);
+        expect(request.requestedAgeOverAttributes).toEqual([`age_over_${threshold}`]);
+    });
+
+    it('below 18 requests both age_over_NN and age_over_18, neither retained', async () => {
+        const threshold = Math.floor(Math.random() * 18);
+        const nn = `age_over_${String(threshold).padStart(2, '0')}`;
+        const request = await createAvDcApiRequest({ ageThreshold: threshold });
+
+        expect(requestedElements(request)).toEqual(
+            new Map([
+                [
+                    AV,
+                    new Map([
+                        [nn, false],
+                        ['age_over_18', false],
+                    ]),
+                ],
+            ]),
+        );
+        expect(request).toMatchObject({
+            ageThreshold: threshold,
+            ageOverAttribute: nn,
+            requestedAgeOverAttributes: [nn, 'age_over_18'],
+        });
     });
 
     it.each([-1, 100, 1.5])('rejects age threshold %s', async (ageThreshold) => {
@@ -129,7 +157,7 @@ describe('verifyAvDcApiResponse — round trip', () => {
         const result = await verifyAvDcApiResponse(await answer(request, origin), options(request, origin));
 
         expect(result.error).toBeUndefined();
-        expect(result).toMatchObject({ valid: true, ageVerified: true, ageOver: true, ageThreshold: 18 });
+        expect(result).toMatchObject({ valid: true, ageVerified: true, ageOver: true, ageThreshold: 18, decidedBy: 'age_over_18' });
         expect(result.trust).toBeDefined();
     });
 
@@ -161,6 +189,41 @@ describe('verifyAvDcApiResponse — round trip', () => {
         );
 
         expect(result).toMatchObject({ valid: true, ageVerified: true, ageOverAttribute: 'age_over_21' });
+    });
+
+    it('answers a 16+ request from age_over_18 when the attestation has no age_over_16', async () => {
+        const origin = randomOrigin();
+        const request = await createAvDcApiRequest({ ageThreshold: 16 });
+
+        const over = await verifyAvDcApiResponse(
+            await answer(request, origin, { namespaces: { [AV]: { age_over_18: true } } }),
+            options(request, origin),
+        );
+        expect(over).toMatchObject({
+            valid: true,
+            ageVerified: true,
+            ageOver: true,
+            ageOverAttribute: 'age_over_16',
+            decidedBy: 'age_over_18',
+        });
+
+        const noStatement = await verifyAvDcApiResponse(
+            await answer(request, origin, { namespaces: { [AV]: { age_over_18: false } } }),
+            options(request, origin),
+        );
+        expect(noStatement).toMatchObject({ valid: false, ageVerified: false, ageOver: undefined, failure: 'missing_attribute' });
+    });
+
+    it('rejects contradictory age_over_NN elements', async () => {
+        const origin = randomOrigin();
+        const request = await createAvDcApiRequest({ ageThreshold: 16 });
+
+        const result = await verifyAvDcApiResponse(
+            await answer(request, origin, { namespaces: { [AV]: { age_over_16: false, age_over_18: true } } }),
+            options(request, origin),
+        );
+        expect(result).toMatchObject({ valid: false, ageVerified: false, failure: 'inconsistent_attributes' });
+        expect(result.decidedBy).toBeUndefined();
     });
 });
 

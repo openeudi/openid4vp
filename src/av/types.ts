@@ -23,7 +23,10 @@ export interface AvAuthorizationRequestInput {
     nonce?: string;
     /** Optional `state` (Annex A §A.6: "optional"). Not generated when omitted. */
     state?: string;
-    /** Age threshold NN of the requested `age_over_NN`. Default 18. */
+    /**
+     * Age threshold NN of the requested `age_over_NN`. Default 18. Below 18
+     * the request also accepts `age_over_18`, which every attestation carries.
+     */
     ageThreshold?: number;
     /**
      * Where the request is sent. Default `av://` (Annex A §A.6). An `https:`
@@ -54,6 +57,12 @@ export interface AvAuthorizationRequest {
     ageThreshold: number;
     /** The requested element identifier, e.g. `age_over_18`. */
     ageOverAttribute: string;
+    /**
+     * Every `age_over_NN` element the request asks for, most preferred first:
+     * `[ageOverAttribute]`, or below 18 `[ageOverAttribute, 'age_over_18']`
+     * (DCQL `claim_sets`). Informational; verification does not need it.
+     */
+    requestedAgeOverAttributes: string[];
     credentialId: string;
     dcqlQuery: DcqlQuery;
     /** The `client_metadata` object sent in the request; absent when `vpFormatsSupported: null`. */
@@ -108,7 +117,10 @@ export interface VerifyAvPresentationOptions {
 
 /** Input of `createAvDcApiRequest` (W3C Digital Credentials API, `org-iso-mdoc`). */
 export interface AvDcApiRequestInput {
-    /** Age threshold NN of the requested `age_over_NN`. Default 18. */
+    /**
+     * Age threshold NN of the requested `age_over_NN`. Default 18. Below 18
+     * the request also accepts `age_over_18`, which every attestation carries.
+     */
     ageThreshold?: number;
     /**
      * The `EncryptionInfo` nonce as base64url, at least 16 bytes once decoded.
@@ -130,6 +142,12 @@ export interface AvDcApiRequest {
     ageThreshold: number;
     /** The requested element identifier, e.g. `age_over_18`. */
     ageOverAttribute: string;
+    /**
+     * Every `age_over_NN` element the `DeviceRequest` asks for, in request
+     * order: `[ageOverAttribute]`, or below 18 `[ageOverAttribute, 'age_over_18']`.
+     * Informational; verification does not need it.
+     */
+    requestedAgeOverAttributes: string[];
 }
 
 /** What `verifyAvDcApiResponse` needs from the request it answers. */
@@ -159,8 +177,17 @@ export type AvVerificationFailure =
     | 'unexpected_attribute'
     /** An `age_over_NN` element whose value is not a boolean. */
     | 'invalid_attribute_value'
-    /** The requested `age_over_NN` was not disclosed. */
+    /**
+     * The disclosed `age_over_NN` elements make no statement about the
+     * requested threshold: neither `age_over_NN` itself, nor a `true` above
+     * it, nor a `false` below it (ISO/IEC 18013-5 §7.2.5).
+     */
     | 'missing_attribute'
+    /**
+     * The disclosed `age_over_NN` elements contradict each other: a `true` at
+     * one threshold and a `false` at the same or a lower one.
+     */
+    | 'inconsistent_attributes'
     /** `deviceSigned.nameSpaces` is not empty. */
     | 'device_signed_elements'
     /**
@@ -170,17 +197,32 @@ export type AvVerificationFailure =
     | 'credential_status';
 
 export interface AvVerificationResult {
-    /** The presentation is a valid, trusted, device-bound Proof of Age attestation that discloses the requested attribute. */
+    /**
+     * The presentation is a valid, trusted, device-bound Proof of Age
+     * attestation whose consistent `age_over_NN` elements decide the requested
+     * threshold.
+     */
     valid: boolean;
     /**
      * `valid && ageOver === true` — the one flag to gate access on. A valid
      * presentation can still prove the holder is NOT over the threshold.
      */
     ageVerified: boolean;
-    /** Value of the requested `age_over_NN`; `undefined` unless `valid`. */
+    /**
+     * Whether the holder is over the requested threshold; `undefined` unless
+     * `valid`. Read from `age_over_NN` itself or, when that is not disclosed,
+     * from the nearest disclosed element that decides it (see {@link decidedBy}).
+     */
     ageOver: boolean | undefined;
     ageThreshold: number;
+    /** The requested element identifier, e.g. `age_over_16`. */
     ageOverAttribute: string;
+    /**
+     * The disclosed element `ageOver` was read from; set when `valid`. Equal to
+     * `ageOverAttribute` unless another threshold decided it: `age_over_18: true`
+     * for a request of `age_over_16`, or `age_over_18: false` for `age_over_21`.
+     */
+    decidedBy?: string;
     issuer: IssuerInfo;
     /** Validated chain and matched anchor. Present when `valid`. */
     trust?: TrustEvaluationResult;

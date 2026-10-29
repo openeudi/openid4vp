@@ -3,7 +3,13 @@ import { DcApiRequestBuildError, DcApiResponseError } from '../dc-api/errors.js'
 import { buildIsoMdocRequest, openIsoMdocResponse } from '../dc-api/iso-mdoc.js';
 import { isSecureSerializedOrigin } from '../dc-api/protocols.js';
 import type { DcApiResponse } from '../dc-api/types.js';
-import { AV_DEFAULT_AGE_THRESHOLD, AV_DOCTYPE, AV_NAMESPACE, avAgeOverAttribute } from './constants.js';
+import {
+    AV_DEFAULT_AGE_THRESHOLD,
+    AV_DOCTYPE,
+    AV_NAMESPACE,
+    avAgeOverAttribute,
+    avRequestedAgeOverAttributes,
+} from './constants.js';
 import { AvRequestBuildError, AvResponseError } from './errors.js';
 import type { AvDcApiRequest, AvDcApiRequestInput, AvVerificationResult, VerifyAvDcApiResponseOptions } from './types.js';
 import { verifyAvDeviceResponse } from './verify.js';
@@ -17,6 +23,8 @@ import { verifyAvDeviceResponse } from './verify.js';
  * - `deviceRequest`: an ISO 18013-5 `DeviceRequest` 1.0 for docType
  *   `eu.europa.ec.av.1`, element `age_over_NN` (default 18) with
  *   `intentToRetain: false` — byte-identical to the Annex A §A.11 example.
+ *   Below 18 it also asks for `age_over_18` (every attestation carries it;
+ *   `age_over_NN` is optional), so the wallet can answer either way.
  * - No reader authentication ("Reader authentication is not required") and no
  *   `zkRequest`: both AV apps then answer with a plain mdoc.
  * - `encryptionInfo`: the nonce and a fresh ephemeral P-256 recipient key.
@@ -27,19 +35,23 @@ import { verifyAvDeviceResponse } from './verify.js';
  */
 export async function createAvDcApiRequest(input: AvDcApiRequestInput = {}): Promise<AvDcApiRequest> {
     const ageThreshold = input.ageThreshold ?? AV_DEFAULT_AGE_THRESHOLD;
-    let ageOverAttribute: string;
+    let requestedAgeOverAttributes: string[];
     try {
-        ageOverAttribute = avAgeOverAttribute(ageThreshold);
+        requestedAgeOverAttributes = avRequestedAgeOverAttributes(ageThreshold);
     } catch (err) {
         throw new AvRequestBuildError('invalid_age_threshold', (err as Error).message);
     }
+    const ageOverAttribute = requestedAgeOverAttributes[0]!;
 
     let built: Awaited<ReturnType<typeof buildIsoMdocRequest>>;
     try {
         built = await buildIsoMdocRequest(
             {
                 docType: AV_DOCTYPE,
-                nameSpaces: new Map([[AV_NAMESPACE, new Map([[ageOverAttribute, false]])]]),
+                // intentToRetain false for every element (Annex A §A.11 example).
+                nameSpaces: new Map([
+                    [AV_NAMESPACE, new Map(requestedAgeOverAttributes.map((attribute) => [attribute, false]))],
+                ]),
             },
             input.nonce,
         );
@@ -49,7 +61,7 @@ export async function createAvDcApiRequest(input: AvDcApiRequestInput = {}): Pro
         }
         throw err;
     }
-    return { ...built, ageThreshold, ageOverAttribute };
+    return { ...built, ageThreshold, ageOverAttribute, requestedAgeOverAttributes };
 }
 
 /**
@@ -71,7 +83,8 @@ export async function createAvDcApiRequest(input: AvDcApiRequestInput = {}): Pro
  *    elements, no device-signed elements, issuer signature, digests, MSO
  *    validity and docType, issuer chain against `trustStore` with the AV
  *    Document Signer EKUs, device authentication over that SessionTranscript,
- *    optional status, and the requested `age_over_NN` disclosed.
+ *    optional status, and the age decision for the requested threshold
+ *    (ISO/IEC 18013-5 §7.2.5 nearest attestation, `decidedBy`).
  *
  * Credential failures return `{ valid: false, failure, error }`. Gate access
  * on `ageVerified`.

@@ -1,4 +1,4 @@
-import type { DcqlQuery } from '@openeudi/dcql';
+import type { CredentialQuery, DcqlQuery } from '@openeudi/dcql';
 
 import {
     AV_DEFAULT_AGE_THRESHOLD,
@@ -6,7 +6,7 @@ import {
     AV_DEFAULT_CREDENTIAL_ID,
     AV_DOCTYPE,
     AV_NAMESPACE,
-    avAgeOverAttribute,
+    avRequestedAgeOverAttributes,
 } from './constants.js';
 import { AvRequestBuildError } from './errors.js';
 import type { AvAuthorizationRequest, AvAuthorizationRequestInput } from './types.js';
@@ -42,6 +42,9 @@ export function avClientIdFor(responseUri: string): string {
  *   `request` / `request_uri` (Annex A: "MUST NOT be used").
  * - `dcql_query` for one `mso_mdoc` credential of doctype `eu.europa.ec.av.1`
  *   with claim path `["eu.europa.ec.av.1", "age_over_NN"]` (default NN = 18).
+ *   Below 18 it also accepts `age_over_18` (every attestation carries it;
+ *   `age_over_NN` is optional): both claims get an `id` and `claim_sets`
+ *   prefers `age_over_NN`.
  * - `client_metadata.vp_formats_supported` for `mso_mdoc`. Under the
  *   `redirect_uri` prefix all verifier metadata travels in `client_metadata`
  *   (OpenID4VP 1.0 §5.9.3), and §5.1 makes `vp_formats_supported` REQUIRED
@@ -73,12 +76,13 @@ export function createAvAuthorizationRequest(input: AvAuthorizationRequestInput)
         );
     }
     const ageThreshold = input.ageThreshold ?? AV_DEFAULT_AGE_THRESHOLD;
-    let ageOverAttribute: string;
+    let requestedAgeOverAttributes: string[];
     try {
-        ageOverAttribute = avAgeOverAttribute(ageThreshold);
+        requestedAgeOverAttributes = avRequestedAgeOverAttributes(ageThreshold);
     } catch (err) {
         throw new AvRequestBuildError('invalid_age_threshold', (err as Error).message);
     }
+    const ageOverAttribute = requestedAgeOverAttributes[0]!;
     const baseUri = validateBaseUri(input.baseUri ?? AV_DEFAULT_BASE_URI);
 
     const clientId = avClientIdFor(responseUri);
@@ -88,7 +92,7 @@ export function createAvAuthorizationRequest(input: AvAuthorizationRequestInput)
                 id: credentialId,
                 format: 'mso_mdoc',
                 meta: { doctype_value: AV_DOCTYPE },
-                claims: [{ path: [AV_NAMESPACE, ageOverAttribute] }],
+                ...ageOverClaims(requestedAgeOverAttributes),
             },
         ],
     };
@@ -116,12 +120,30 @@ export function createAvAuthorizationRequest(input: AvAuthorizationRequestInput)
         nonce,
         ageThreshold,
         ageOverAttribute,
+        requestedAgeOverAttributes,
         credentialId,
         dcqlQuery,
     };
     if (clientMetadata !== undefined) result.clientMetadata = clientMetadata;
     if (input.state !== undefined) result.state = input.state;
     return result;
+}
+
+/**
+ * DCQL claims for the requested `age_over_NN` elements. One element: a single
+ * claim without `id`, exactly as the Annex A §A.11 example. Several: each
+ * claim gets its element identifier as `id`, and `claim_sets` lists them one
+ * per option in preference order (OpenID4VP 1.0 §6.4.1), so the wallet
+ * discloses `age_over_NN` when it has it and `age_over_18` otherwise.
+ */
+function ageOverClaims(attributes: string[]): Pick<CredentialQuery, 'claims' | 'claim_sets'> {
+    if (attributes.length === 1) {
+        return { claims: [{ path: [AV_NAMESPACE, attributes[0]!] }] };
+    }
+    return {
+        claims: attributes.map((attribute) => ({ id: attribute, path: [AV_NAMESPACE, attribute] })),
+        claim_sets: attributes.map((attribute) => [attribute]),
+    };
 }
 
 function validateResponseUri(value: unknown): string {

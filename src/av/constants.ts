@@ -39,3 +39,25 @@ export function avAgeOverAttribute(threshold: number): string {
 export function isAvAgeOverAttribute(identifier: string): boolean {
     return AGE_OVER_PATTERN.test(identifier);
 }
+
+/** `'age_over_16'` → `16`; `undefined` for anything that is not an `age_over_NN` identifier. */
+export function avAgeOverThreshold(identifier: string): number | undefined {
+    const match = AGE_OVER_PATTERN.exec(identifier);
+    return match ? Number(match[1]) : undefined;
+}
+
+/**
+ * The `age_over_NN` elements an AV request asks for, most preferred first.
+ *
+ * Every Proof of Age attestation carries `age_over_18` (Annex A §A.4.2);
+ * any other `age_over_NN` is optional. Below 18 the request therefore also
+ * accepts `age_over_18`, whose `true` proves any lower threshold (ISO/IEC
+ * 18013-5 §7.2.5). From 18 up it asks for `age_over_NN` alone: `age_over_18`
+ * cannot prove a higher threshold.
+ */
+export function avRequestedAgeOverAttributes(threshold: number): string[] {
+    const requested = avAgeOverAttribute(threshold);
+    return threshold < AV_DEFAULT_AGE_THRESHOLD
+        ? [requested, avAgeOverAttribute(AV_DEFAULT_AGE_THRESHOLD)]
+        : [requested];
+}
