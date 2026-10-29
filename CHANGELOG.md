@@ -36,6 +36,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `false` at the same or a lower one (including one identifier disclosed
     twice with different values). `AvVerificationFailure` gains this member;
     an exhaustive `switch` over it needs a new case.
+- **Per-credential trust and status options for `credential_sets` responses
+  (`perCredential`; EID-240, G3 of the eidas-pro DC API gap list).**
+  `verifyAuthorizationResponse` and `verifyDcApiResponse` (`openid4vp-v1-*`)
+  take `perCredential: { [credentialQueryId]: PerCredentialVerifyOptions }`
+  with `trustStore`, `trustedCertificates`, `trustedIssuerJwks`,
+  `statusPolicy`, `statusListResolver`, `revocationPolicy`, `cache`,
+  `documentSignerEkus` and `avProfile`. A disjunction such as "EU AV Proof of
+  Age attestation OR PID" can now check each option against its own trusted
+  list without merging the anchor sets, which would let an AV anchor vouch for
+  a PID.
+  - The entry of the credential the wallet answered (its `vp_token` key)
+    replaces the corresponding top-level options; no merging, no fallback.
+    An answered credential without an entry is rejected
+    (`PerCredentialOptionsError` `missing_credential_options`); a key that is
+    not a credential id of the query throws `unknown_credential_id` before the
+    response is read.
+  - The presentation is matched only against the credential query it was
+    answered as: DCQL matches a credential against every query entry, so a
+    presentation trusted under one entry could otherwise satisfy another.
+  - `avProfile: true` applies the AV Annex A §A.4 data-model checks of
+    `verifyAvPresentation` (same code) to that `mso_mdoc` presentation, pins
+    the MSO docType to `eu.europa.ec.av.1` and defaults the Document Signer
+    EKUs to the AV DS EKU plus the ISO 18013-5 DS EKU.
+  - Refused on the `org-iso-mdoc` path. Without `perCredential`, behaviour is
+    unchanged.
+  - New exports: `PerCredentialOptionsError`, `PerCredentialOptionsErrorCode`,
+    `PerCredentialVerifyOptions`, `PerCredentialVerifyOptionsMap`.
 
 ## [0.17.0] — 2026-10-28
 

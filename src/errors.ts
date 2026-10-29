@@ -380,3 +380,29 @@ export class StatusListError extends OpenID4VPError {
         this.uri = options.uri;
     }
 }
+
+export type PerCredentialOptionsErrorCode =
+    /** `perCredential` is not an object of per-credential option objects, or an entry is unusable. */
+    | 'invalid_per_credential_options'
+    /** A `perCredential` key is not the id of a credential in the DCQL query. */
+    | 'unknown_credential_id'
+    /** The wallet answered a credential query id that has no `perCredential` entry. */
+    | 'missing_credential_options';
+
+/**
+ * `perCredential` was misconfigured, or the wallet answered a DCQL credential
+ * query for which it holds no entry. With `perCredential` there is no fallback
+ * to the top-level trust options, so a presentation without its own entry is
+ * rejected rather than verified against anchors meant for another credential.
+ */
+export class PerCredentialOptionsError extends OpenID4VPError {
+    readonly code: PerCredentialOptionsErrorCode;
+    /** The DCQL credential query id involved, when there is one. */
+    readonly credentialId?: string;
+
+    constructor(code: PerCredentialOptionsErrorCode, message: string, credentialId?: string) {
+        super(message);
+        this.code = code;
+        this.credentialId = credentialId;
+    }
+}

@@ -2,7 +2,14 @@ import { matchQuery, buildSubmission } from '@openeudi/dcql';
 import type { DcqlQuery, DecodedCredential } from '@openeudi/dcql';
 import { decodeProtectedHeader } from 'jose';
 
+import { checkStructure as checkAvStructure } from './av/verify.js';
 import { parsePresentation } from './presentation.js';
+import {
+    applyPerCredentialOptions,
+    perCredentialEntryFor,
+    restrictMatchToQueryId,
+    validatePerCredentialOptions,
+} from './per-credential.js';
 import {
     credentialTypes,
     hasKeyBindingJwt,
@@ -56,7 +63,28 @@ export async function verifyPresentation(
     query: DcqlQuery,
     options: VerifyOptions
 ): Promise<VerifyResult> {
-    let parsed = await parsePresentation(vpToken, options);
+    return verifyPresentationAs(vpToken, query, options, undefined);
+}
+
+/**
+ * The credential query a presentation was answered as, when `perCredential`
+ * selected its trust options. Pins DCQL attribution to that query entry and,
+ * with `avProfile`, applies the AV Annex A data-model checks.
+ */
+interface AnsweredCredential {
+    queryId: string;
+    avProfile: boolean;
+}
+
+async function verifyPresentationAs(
+    vpToken: unknown,
+    query: DcqlQuery,
+    options: VerifyOptions,
+    answered: AnsweredCredential | undefined,
+): Promise<VerifyResult> {
+    let parsed = answered?.avProfile
+        ? await parseAvProfilePresentation(vpToken, options)
+        : await parsePresentation(vpToken, options);
     const types = credentialTypes(parsed, options.vctAncestors);
 
     const dcqlFormat = INTERNAL_TO_DCQL_FORMAT[parsed.format] ?? parsed.format;
@@ -78,11 +106,16 @@ export async function verifyPresentation(
     // query can list several entries of the same format distinguished only by
     // vct or doctype. Narrow by format, then by credential type, and only fall
     // back to first-listed when nothing identifies it.
+    //
+    // With `perCredential` the wallet's `vp_token` key chose the trust options,
+    // so it also fixes the credential query: attributing the presentation to
+    // any other entry would let one entry's anchors vouch for another's.
     const sameFormat = query.credentials.filter((c) => c.format === dcqlFormat);
-    const presentedCredentialQuery =
-        sameFormat.find((c) => matchesCredentialType(c, parsed, types)) ??
-        sameFormat[0] ??
-        query.credentials[0];
+    const presentedCredentialQuery = answered
+        ? query.credentials.find((c) => c.id === answered.queryId)
+        : (sameFormat.find((c) => matchesCredentialType(c, parsed, types)) ??
+          sameFormat[0] ??
+          query.credentials[0]);
 
     const decoded: DecodedCredential = {
         id: presentedCredentialQuery?.id ?? 'presented',
@@ -138,7 +171,8 @@ export async function verifyPresentation(
         decoded.trusted_authorities = authorities.trustedAuthorities;
     }
 
-    const match = matchQuery(authorities.query, [decoded]);
+    const fullMatch = matchQuery(authorities.query, [decoded]);
+    const match = answered ? restrictMatchToQueryId(query, fullMatch, answered.queryId) : fullMatch;
     const submission = match.satisfied ? buildSubmission(query, match) : null;
 
     return {
@@ -147,6 +181,30 @@ export async function verifyPresentation(
         submission,
         valid: parsed.valid && match.satisfied,
     };
+}
+
+/**
+ * `avProfile`: the EU AV Annex A §A.4 data-model checks (the same
+ * `checkStructure` `verifyAvPresentation` runs) before the generic mdoc
+ * verification. A failure is reported like any other credential failure,
+ * as an invalid `parsed` result.
+ */
+async function parseAvProfilePresentation(vpToken: unknown, options: VerifyOptions): Promise<PresentationResult> {
+    const invalid = (error: string): PresentationResult => ({
+        valid: false,
+        format: 'mdoc',
+        claims: {},
+        issuer: { certificate: new Uint8Array(), country: '' },
+        error,
+    });
+    if (!(vpToken instanceof Uint8Array)) {
+        return invalid('avProfile: the presentation is not an mso_mdoc DeviceResponse');
+    }
+    const structural = checkAvStructure(vpToken);
+    if ('failure' in structural) {
+        return invalid(`avProfile: ${structural.failure}: ${structural.error}`);
+    }
+    return parsePresentation(vpToken, options);
 }
 
 /**
@@ -267,6 +325,7 @@ export async function verifyAuthorizationResponse(
     query: DcqlQuery,
     options: VerifyAuthorizationResponseOptions,
 ): Promise<VerifyResult> {
+    validatePerCredentialOptions(query, options.perCredential);
     if (isEncryptedResponse(envelope)) {
         if (!options.decryptionKey) {
             throw new MissingDecryptionKeyError();
@@ -350,10 +409,19 @@ async function verifyEnvelope(
         : options.mdocSessionTranscript;
 
     // OpenID4VP 1.0 Appendix B.3.6: the KB-JWT `aud` is the Client Identifier.
-    return verifyPresentation(decodedPresentation, query, {
-        ...options,
+    const { perCredential, ...verifyOptions } = options;
+    const presentationOptions = {
+        ...verifyOptions,
         audience: options.audience ?? options.clientId,
         mdocSessionTranscript,
+    };
+    if (perCredential === undefined) {
+        return verifyPresentation(decodedPresentation, query, presentationOptions);
+    }
+    const entry = perCredentialEntryFor(perCredential, presentedQueryId);
+    return verifyPresentationAs(decodedPresentation, query, applyPerCredentialOptions(presentationOptions, entry), {
+        queryId: presentedQueryId,
+        avProfile: entry.avProfile === true,
     });
 }
 
