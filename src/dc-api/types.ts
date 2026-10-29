@@ -2,7 +2,7 @@ import type { DcqlQuery } from '@openeudi/dcql';
 
 import type { RequestSignerInput } from '../request-signing.js';
 import type { VerifierInfo } from '../types/verifier-info.js';
-import type { VerifyOptions } from '../types/verify.js';
+import type { PerCredentialVerifyOptionsMap, VerifyOptions } from '../types/verify.js';
 import type { DcApiOpenId4VpProtocol } from './protocols.js';
 
 /**
@@ -179,6 +179,14 @@ export type VerifyDcApiResponseOptions = Omit<VerifyOptions, 'audience'> & {
      * what binds an SD-JWT presentation to the origin and nonce.
      */
     requireKeyBinding?: boolean;
+
+    /**
+     * Trust and status options per DCQL credential query id, as on
+     * `verifyAuthorizationResponse` (`VerifyAuthorizationResponseOptions.perCredential`):
+     * the answered credential's entry replaces the top-level trust and status
+     * options, with no fallback and no merging.
+     */
+    perCredential?: PerCredentialVerifyOptionsMap;
 };
 
 /**

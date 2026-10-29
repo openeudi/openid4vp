@@ -185,6 +185,61 @@ and `isHaipQuery` returns `false` for these queries.
 > example below does), expect a benign entry per successful disjunction and
 > filter accordingly so it does not trip alerting.
 
+#### Different trust per option (`perCredential`)
+
+The two options of a proof-of-age disjunction are vouched for by different
+trusted lists: the PID by the PID providers, the AV attestation by the AV
+Attestation Providers. Merging both anchor sets into one `trustStore` (e.g. a
+`CompositeTrustStore`) would let an AV anchor vouch for a PID, and the other way
+round. Pass `perCredential` instead, keyed by credential query id, to
+`verifyAuthorizationResponse` or `verifyDcApiResponse` (`openid4vp-v1-*`):
+
+```ts
+import { verifyAuthorizationResponse } from "@openeudi/openid4vp";
+
+const result = await verifyAuthorizationResponse(envelope, query, {
+  nonce,
+  clientId,
+  responseUri,
+  perCredential: {
+    // EU AV Proof of Age attestation: AV trusted-list anchors only, no X.509
+    // revocation, AV Annex A data-model checks and Document Signer EKU.
+    "age-attestation": { trustStore: avTrustStore, avProfile: true },
+    // PID: PID-provider anchors only, status list required, CRL/OCSP preferred.
+    pid: {
+      trustStore: pidTrustStore,
+      statusPolicy: "require",
+      statusListResolver: pidStatusListResolver,
+      revocationPolicy: "prefer",
+    },
+  },
+});
+```
+
+- The entry of the credential the wallet answered (its `vp_token` key, OpenID4VP
+  1.0 §8.1) **replaces** the top-level `trustStore`, `trustedCertificates`,
+  `trustedIssuerJwks`, `statusPolicy`, `statusListResolver`, `revocationPolicy`,
+  `cache` and `mdocDocumentSignerEkus` (as `documentSignerEkus`). Nothing is
+  merged and nothing falls back to the top level: an option the entry leaves
+  out takes its library default. Nonce, audience, origin, decryption key and
+  SessionTranscript options stay top-level.
+- An answered credential with no entry is rejected with
+  `PerCredentialOptionsError('missing_credential_options')`. A key that is not a
+  credential id of the query throws `'unknown_credential_id'` before the
+  response is read; `avProfile` on a non-`mso_mdoc` query or without
+  `trustStore` throws `'invalid_per_credential_options'`.
+- The presentation is matched only against the credential query it was answered
+  as, so a credential trusted under one entry can never satisfy another option.
+- `avProfile: true` runs the same AV Annex A §A.4 checks as
+  `verifyAvPresentation` (exactly one `eu.europa.ec.av.1` document, only boolean
+  `age_over_NN` elements, no device-signed elements) and defaults the Document
+  Signer EKUs to the AV DS EKU plus the ISO 18013-5 DS EKU. A failure yields
+  `valid: false` with `parsed.error` starting `avProfile:`. `valid: true`
+  does not mean the holder is over the age: read the disclosed `age_over_NN`
+  from `parsed.namespacedClaims` (`false` is a valid attestation).
+- Not available with `org-iso-mdoc` (one credential, no `vp_token` key): use
+  `verifyAvDcApiResponse` or a single `trustStore` there.
+
 > **Not ZKP.** This is the plain `mso_mdoc` attestation path. The AV technical
 > specification's preferred mechanism — a Zero-Knowledge Proof — is not supported
 > over OpenID4VP (no standardised DCQL query for it exists); it rides only the W3C
@@ -973,6 +1028,7 @@ Mobile Document credentials as defined in ISO 18013-5. The token is a CBOR-encod
 | `DecryptionFailedError`    | Failed to decrypt …                       | A `direct_post.jwt` / `dc_api.jwt` JWE or an `org-iso-mdoc` HPKE response does not decrypt (wrong key, origin or request, or modified) |
 | `AvRequestBuildError`      | (per `code`)                              | `createAvAuthorizationRequest` or `createAvDcApiRequest` refuses its input |
 | `AvResponseError`          | (per `code`)                              | AV response has the wrong `state` or `vp_token` shape, or the verification context is not an AV request |
+| `PerCredentialOptionsError` | (per `code`)                            | `perCredential` is misconfigured (`unknown_credential_id`, `invalid_per_credential_options`) or the wallet answered a credential without an entry (`missing_credential_options`) |
 
 ```ts
 import { MalformedCredentialError, ExpiredCredentialError } from "@openeudi/openid4vp";

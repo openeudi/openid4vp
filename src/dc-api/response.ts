@@ -8,7 +8,9 @@ import {
     MissingDecryptionKeyError,
     MissingVerifierEncryptionKeyError,
     MultipleCredentialsNotSupportedError,
+    PerCredentialOptionsError,
 } from '../errors.js';
+import { validatePerCredentialOptions } from '../per-credential.js';
 import { verifyAuthorizationResponse, verifyPresentation } from '../verify.js';
 import type { VerifyResult } from '../types/verify.js';
 import { isoMdocResponseData, parseDcApiData, throwIfDcApiWalletError } from './data.js';
@@ -44,6 +46,10 @@ const cborDecoder = new CborEncoder({ mapsAsObjects: false, useRecords: false })
  * There is no `state` over the DC API (§A.2); bind the response to the
  * server-side session through the `nonce` instead.
  *
+ * `options.perCredential` selects the trust and status options per DCQL
+ * credential query, exactly as on `verifyAuthorizationResponse` (OpenID4VP
+ * protocols only; refused with `org-iso-mdoc`).
+ *
  * With `options.protocol: 'org-iso-mdoc'` (ISO/IEC 18013-7 Annex C), the
  * response must be `org-iso-mdoc`, and:
  *
@@ -65,8 +71,17 @@ export async function verifyDcApiResponse(
     options: VerifyDcApiResponseOptions | VerifyDcApiIsoMdocResponseOptions,
 ): Promise<VerifyResult> {
     if (options.protocol === 'org-iso-mdoc') {
+        // perCredential selects trust per OpenID4VP vp_token key; an Annex C
+        // response has none. Refuse it rather than verify with other trust.
+        if ((options as { perCredential?: unknown }).perCredential !== undefined) {
+            throw new PerCredentialOptionsError(
+                'invalid_per_credential_options',
+                'perCredential applies to the openid4vp-v1-* protocols only, not org-iso-mdoc',
+            );
+        }
         return verifyIsoMdocDcApiResponse(response, query, options);
     }
+    validatePerCredentialOptions(query, options.perCredential);
     const {
         origin,
         responseMode: requestedResponseMode,

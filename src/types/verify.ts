@@ -14,6 +14,66 @@ export type VerifyOptions = ParseOptions & {
     vctAncestors?: Readonly<Record<string, readonly string[]>>;
 };
 
+/**
+ * Trust and status options for ONE DCQL credential query, used by the
+ * `perCredential` option of `verifyAuthorizationResponse` and
+ * `verifyDcApiResponse`.
+ *
+ * For the credential the wallet answered, these values REPLACE the
+ * corresponding top-level options; nothing is merged and nothing falls back to
+ * the top level. An option left out here takes its library default (for
+ * example no `trustStore`, `statusPolicy: 'skip'`), not the top-level value.
+ */
+export interface PerCredentialVerifyOptions {
+    /** Replaces {@link ParseOptions.trustStore}. */
+    trustStore?: ParseOptions['trustStore'];
+
+    /**
+     * Replaces {@link ParseOptions.trustedCertificates}.
+     * @deprecated as on {@link ParseOptions.trustedCertificates}: prefer `trustStore`.
+     */
+    trustedCertificates?: ParseOptions['trustedCertificates'];
+
+    /** Replaces {@link ParseOptions.trustedIssuerJwks} (SD-JWT VC without `x5c`). */
+    trustedIssuerJwks?: ParseOptions['trustedIssuerJwks'];
+
+    /** Replaces {@link ParseOptions.statusPolicy}. */
+    statusPolicy?: ParseOptions['statusPolicy'];
+
+    /** Replaces {@link ParseOptions.statusListResolver}. */
+    statusListResolver?: ParseOptions['statusListResolver'];
+
+    /** Replaces {@link ParseOptions.revocationPolicy} (X.509 CRL / OCSP of the issuer chain). */
+    revocationPolicy?: ParseOptions['revocationPolicy'];
+
+    /** Replaces {@link ParseOptions.cache}. */
+    cache?: ParseOptions['cache'];
+
+    /**
+     * Replaces {@link ParseOptions.mdocDocumentSignerEkus} for an `mso_mdoc`
+     * credential. With `avProfile: true` it defaults to the EU Age
+     * Verification Document Signer EKU plus the ISO 18013-5 DS EKU.
+     */
+    documentSignerEkus?: readonly string[];
+
+    /**
+     * Verify this `mso_mdoc` credential as an EU Age Verification Proof of Age
+     * attestation (AV Annex A §A.4): exactly one `eu.europa.ec.av.1` document,
+     * only boolean `age_over_NN` elements in namespace `eu.europa.ec.av.1`, no
+     * device-signed elements, MSO docType `eu.europa.ec.av.1`, and the AV
+     * Document Signer EKU default. Requires `trustStore`. Only valid on an
+     * `mso_mdoc` credential query.
+     */
+    avProfile?: boolean;
+}
+
+/**
+ * `perCredential`: per-DCQL-credential trust and status options, keyed by the
+ * DCQL credential query id (the key the wallet uses in `vp_token`, OpenID4VP
+ * 1.0 §8.1). Every key must be a credential id of the query.
+ */
+export type PerCredentialVerifyOptionsMap = Readonly<Record<string, PerCredentialVerifyOptions>>;
+
 export interface VerifyResult {
     parsed: PresentationResult;
     match: DcqlMatchResult;
@@ -88,4 +148,24 @@ export type VerifyAuthorizationResponseOptions = VerifyOptions & {
      * the legacy Annex B profile (which uses the JWE `apu` header instead).
      */
     verifierEncryptionJwk?: JsonWebKey;
+
+    /**
+     * Trust and status options per DCQL credential query, for a query whose
+     * `credential_sets` lets the wallet answer one of several credentials that
+     * need different trust (e.g. an EU AV Proof of Age attestation OR a PID).
+     * Keyed by credential query id; every key must be an id of the query, or
+     * `PerCredentialOptionsError('unknown_credential_id')` is thrown before
+     * the response is read.
+     *
+     * When set, the credential the wallet answered (its `vp_token` key) MUST
+     * have an entry, or `PerCredentialOptionsError('missing_credential_options')`
+     * is thrown. The entry's options replace the top-level `trustStore`,
+     * `trustedCertificates`, `trustedIssuerJwks`, `statusPolicy`,
+     * `statusListResolver`, `revocationPolicy`, `cache` and
+     * `mdocDocumentSignerEkus` — no merging, no fallback — and the presentation
+     * is matched only against that credential query, so a credential trusted
+     * under one entry can never satisfy another. All other options stay
+     * top-level.
+     */
+    perCredential?: PerCredentialVerifyOptionsMap;
 };

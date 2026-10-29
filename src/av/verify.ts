@@ -253,7 +253,7 @@ function decodeBase64Url(value: string): Uint8Array {
  * Returns the `age_over_NN` elements, which the caller may use only after the
  * parser has verified every item's digest against the signed MSO.
  */
-function checkStructure(
+export function checkStructure(
     bytes: Uint8Array,
 ): { failure: AvVerificationFailure; error: string } | { elements: AvAgeOverElement[] } {
     let deviceResponse: unknown;
