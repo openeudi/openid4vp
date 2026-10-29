@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-10-29
+
 ### Added
 
 - **EU Age Verification: thresholds other than 18 (EID-209).** Every Proof of

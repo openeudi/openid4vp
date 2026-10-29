@@ -8,7 +8,7 @@
 // `inject` in tsup.config.ts and tests/bundle-polyfill-order.test.ts.
 import './reflect-polyfill';
 
-export const VERSION = '0.17.0';
+export const VERSION = '0.18.0';
 
 // Builders
 export { createAuthorizationRequest } from './authorization.js';
