@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **EU Age Verification: thresholds other than 18 (EID-209).** Every Proof of
+  Age attestation carries `age_over_18`; any other `age_over_NN` is optional
+  (Annex A §A.4.2). A 16+ check therefore used to fail on every attestation
+  without `age_over_16`.
+  - Requests below 18 also accept `age_over_18`. `createAvAuthorizationRequest`
+    gives both claims an `id` (the element identifier) and adds
+    `claim_sets: [["age_over_NN"], ["age_over_18"]]`, `age_over_NN` preferred;
+    `createAvDcApiRequest` asks for both elements in the `DeviceRequest`, each
+    with `intentToRetain: false`. From 18 up both requests are unchanged
+    (one claim, no `id`, no `claim_sets`; the 18 request stays byte-identical
+    to the Annex A §A.11 examples).
+  - Both results gain `requestedAgeOverAttributes`: the elements asked for,
+    most preferred first. `ageOverAttribute` is still the requested
+    `age_over_NN`.
+  - Verification (`verifyAvPresentation`, `verifyAvDcApiResponse`) decides
+    from every disclosed `age_over_MM`, following the nearest-attestation
+    rule of ISO/IEC 18013-5 §7.2.5: `age_over_NN` itself if disclosed, else
+    the nearest `true` above NN (`ageOver: true`), else the nearest `false`
+    below NN (`ageOver: false`). Anything else (`age_over_18: false` for a 16+
+    request, `age_over_18: true` for 21+) is still `missing_attribute`: no
+    statement is never read as "under age".
+  - New result field `decidedBy`, set on valid results: the element `ageOver`
+    was read from (e.g. `age_over_18` for a 16+ request).
+  - New failure `inconsistent_attributes`: a `true` at one threshold with a
+    `false` at the same or a lower one (including one identifier disclosed
+    twice with different values). `AvVerificationFailure` gains this member;
+    an exhaustive `switch` over it needs a new case.
+
 ## [0.17.0] — 2026-10-28
 
 ### Added

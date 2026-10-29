@@ -106,6 +106,7 @@ describe('verifyAvPresentation — round trip', () => {
             ageOver: true,
             ageThreshold: 18,
             ageOverAttribute: 'age_over_18',
+            decidedBy: 'age_over_18',
             state: request.state,
         });
         expect(result.failure).toBeUndefined();
@@ -181,6 +182,60 @@ describe('verifyAvPresentation — round trip', () => {
         );
         await expect(rejected).rejects.toBeInstanceOf(CertificateChainError);
         await expect(rejected).rejects.toMatchObject({ reason: 'extended_key_usage' });
+    });
+});
+
+describe('verifyAvPresentation — thresholds other than 18 (ISO/IEC 18013-5 §7.2.5)', () => {
+    async function verifyThreshold(ageThreshold: number, disclosed: Record<string, boolean>) {
+        const request = randomRequest({ ageThreshold });
+        const presentation = await present({
+            issuer: av.ds,
+            namespaces: { [AV]: disclosed },
+            sessionTranscript: await transcriptFor(request),
+        });
+        return verifyAvPresentation(formBody(presentation, request.state), { request, trustStore: storeOf(av.ca) });
+    }
+
+    it.each([
+        // [threshold, disclosed, ageOver, decidedBy]
+        [16, { age_over_16: true }, true, 'age_over_16'],
+        [16, { age_over_16: false }, false, 'age_over_16'],
+        [16, { age_over_18: true }, true, 'age_over_18'],
+        [16, { age_over_16: true, age_over_18: true }, true, 'age_over_16'],
+        [21, { age_over_25: true }, true, 'age_over_25'],
+        [21, { age_over_18: false }, false, 'age_over_18'],
+        [21, { age_over_18: true, age_over_21: false }, false, 'age_over_21'],
+    ] as const)('NN=%i, disclosed %o → valid, ageOver %s, decided by %s', async (threshold, disclosed, ageOver, decidedBy) => {
+        const result = await verifyThreshold(threshold, disclosed);
+        expect(result.error).toBeUndefined();
+        expect(result).toMatchObject({
+            valid: true,
+            ageVerified: ageOver,
+            ageOver,
+            ageThreshold: threshold,
+            ageOverAttribute: `age_over_${threshold}`,
+            decidedBy,
+        });
+        expect(result.trust).toBeDefined();
+    });
+
+    it.each([
+        [16, { age_over_18: false }],
+        [21, { age_over_18: true }],
+    ] as const)('NN=%i, disclosed %o → no statement: missing_attribute, not ageOver false', async (threshold, disclosed) => {
+        const result = await verifyThreshold(threshold, disclosed);
+        expect(result).toMatchObject({ valid: false, ageVerified: false, ageOver: undefined, failure: 'missing_attribute' });
+        expect(result.decidedBy).toBeUndefined();
+    });
+
+    it.each([
+        [16, { age_over_16: false, age_over_18: true }],
+        [21, { age_over_18: true, age_over_16: false }],
+        [21, { age_over_25: true, age_over_21: false }],
+    ] as const)('NN=%i, contradictory %o → inconsistent_attributes', async (threshold, disclosed) => {
+        const result = await verifyThreshold(threshold, disclosed);
+        expect(result).toMatchObject({ valid: false, ageVerified: false, ageOver: undefined, failure: 'inconsistent_attributes' });
+        expect(result.error).toMatch(/is true but .* is false/);
     });
 });
 

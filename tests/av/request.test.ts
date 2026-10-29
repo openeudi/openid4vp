@@ -1,6 +1,7 @@
 /**
  * EU Age Verification profile — OpenID4VP fallback request (AV Annex A §A.6).
  */
+import { validateQuery } from '@openeudi/dcql';
 import { describe, expect, it } from 'vitest';
 
 import { AvRequestBuildError } from '../../src/av/errors.js';
@@ -70,6 +71,7 @@ describe('createAvAuthorizationRequest', () => {
             responseUri,
             ageThreshold: 18,
             ageOverAttribute: 'age_over_18',
+            requestedAgeOverAttributes: ['age_over_18'],
             credentialId: 'proof_of_age',
         });
         expect(request.dcqlQuery).toEqual(JSON.parse(params.get('dcql_query')!));
@@ -101,6 +103,41 @@ describe('createAvAuthorizationRequest', () => {
             { path: ['eu.europa.ec.av.1', 'age_over_21'] },
         ]);
         expect(request.ageOverAttribute).toBe('age_over_21');
+    });
+
+    it('asks for age_over_NN alone, without claim ids or claim_sets, from 18 up', () => {
+        const threshold = 18 + Math.floor(Math.random() * 82);
+        const request = createAvAuthorizationRequest({ responseUri: randomResponseUri(), ageThreshold: threshold });
+        const credential = JSON.parse(parse(request.uri).params.get('dcql_query')!).credentials[0];
+
+        expect(credential.claims).toEqual([{ path: ['eu.europa.ec.av.1', `age_over_${threshold}`] }]);
+        expect(credential).not.toHaveProperty('claim_sets');
+        expect(request.requestedAgeOverAttributes).toEqual([`age_over_${threshold}`]);
+    });
+
+    it('below 18 accepts age_over_NN or age_over_18 through claim_sets, age_over_NN first', () => {
+        const threshold = Math.floor(Math.random() * 18);
+        const nn = `age_over_${String(threshold).padStart(2, '0')}`;
+        const request = createAvAuthorizationRequest({ responseUri: randomResponseUri(), ageThreshold: threshold });
+        const dcqlQuery = JSON.parse(parse(request.uri).params.get('dcql_query')!);
+
+        expect(dcqlQuery.credentials[0]).toEqual({
+            id: 'proof_of_age',
+            format: 'mso_mdoc',
+            meta: { doctype_value: 'eu.europa.ec.av.1' },
+            claims: [
+                { id: nn, path: ['eu.europa.ec.av.1', nn] },
+                { id: 'age_over_18', path: ['eu.europa.ec.av.1', 'age_over_18'] },
+            ],
+            claim_sets: [[nn], ['age_over_18']],
+        });
+        expect(validateQuery(dcqlQuery)).toEqual(dcqlQuery);
+        expect(request.dcqlQuery).toEqual(dcqlQuery);
+        expect(request).toMatchObject({
+            ageThreshold: threshold,
+            ageOverAttribute: nn,
+            requestedAgeOverAttributes: [nn, 'age_over_18'],
+        });
     });
 
     it('produces the Annex A §A.11 example request when given its inputs (plus client_metadata)', () => {
