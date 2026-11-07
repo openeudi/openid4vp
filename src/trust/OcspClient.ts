@@ -12,7 +12,7 @@ import { ExtendedKeyUsageExtension, X509Certificate } from '@peculiar/x509';
 import type { Cache } from './Cache.js';
 import { readTypedExtension } from './extensions.js';
 import { ChainBuilder } from './ChainBuilder.js';
-import { ecdsaDerToIeee } from './ecdsa-util.js';
+import { verifyEcdsaSignature } from './ecdsa-util.js';
 import { createDefaultTrustFetcher } from '../http/guarded-fetch.js';
 import type { Fetcher } from './Fetcher.js';
 import type { RevocationResult } from './revocation-types.js';
@@ -375,29 +375,21 @@ export class OcspClient {
  * SPKI re-import dance so the WebCrypto key is owned by the global provider
  * (Node rejects foreign-provider CryptoKeys in `crypto.subtle.verify`).
  *
- * ECDSA signatures are DER-encoded SEQUENCE { r, s } in the ASN.1 structure
- * — WebCrypto `verify()` wants IEEE P1363 r||s fixed-width, so we convert.
+ * The curve comes from the signer's key and the hash from
+ * `signatureAlgorithm` (ECDSA with SHA-256/384/512 on P-256/384/521).
  */
 async function verifySig(
     basic: BasicOCSPResponse,
     tbsDer: Uint8Array,
     signer: X509Certificate
 ): Promise<void> {
-    const sigIeee = ecdsaDerToIeee(new Uint8Array(basic.signature), 32);
-    const spki = new Uint8Array(signer.publicKey.rawData);
-    const publicKey = await crypto.subtle.importKey(
-        'spki',
-        spki,
-        { name: 'ECDSA', namedCurve: 'P-256' },
-        false,
-        ['verify']
-    );
-    const ok = await crypto.subtle.verify(
-        { name: 'ECDSA', hash: 'SHA-256' },
-        publicKey,
-        sigIeee as Uint8Array<ArrayBuffer>,
-        tbsDer as Uint8Array<ArrayBuffer>
-    );
+    const ok = await verifyEcdsaSignature({
+        context: 'OCSP response',
+        signatureAlgorithm: basic.signatureAlgorithm.algorithm,
+        signature: new Uint8Array(basic.signature),
+        data: tbsDer,
+        signerSpki: new Uint8Array(signer.publicKey.rawData),
+    });
     if (!ok) {
         throw new Error(
             `OCSP signature did not verify against signer ${signer.subject}`

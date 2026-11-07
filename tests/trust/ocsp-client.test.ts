@@ -150,6 +150,60 @@ describe('OcspClient — verifyResponse', () => {
     });
 });
 
+describe('OcspClient — signature algorithms (#73)', () => {
+    for (const curve of ['P-384', 'P-521'] as const) {
+        it(`accepts a response signed directly by a ${curve} issuer`, async () => {
+            const root = await createCa({ curve });
+            const leaf = await createLeaf(root);
+            const client = new OcspClient();
+            const requestDer = await client.buildRequest(leaf.certificate, root.certificate);
+            const responseDer = await signOcspResponse(root, requestDer, {
+                status: 'good',
+                thisUpdate: new Date('2026-04-23'),
+                nextUpdate: new Date('2026-04-30'),
+            });
+            const fetcher = async () => new Response(responseDer, { status: 200 });
+            const c = new OcspClient({ fetcher: fetcher as Fetcher });
+            const envelope = await c.sendRequest('http://ocsp.example.com', requestDer);
+            await expect(c.verifyResponse(envelope, root.certificate)).resolves.toBeUndefined();
+        });
+
+        it(`accepts a response from a ${curve} delegated responder`, async () => {
+            const root = await createCa();
+            const leaf = await createLeaf(root);
+            const responder = await createOcspResponder(root, { curve });
+            const client = new OcspClient();
+            const requestDer = await client.buildRequest(leaf.certificate, root.certificate);
+            const responseDer = await signOcspResponse(responder, requestDer, {
+                status: 'good',
+                thisUpdate: new Date('2026-04-23'),
+                nextUpdate: new Date('2026-04-30'),
+            });
+            const fetcher = async () => new Response(responseDer, { status: 200 });
+            const c = new OcspClient({ fetcher: fetcher as Fetcher });
+            const envelope = await c.sendRequest('http://ocsp.example.com', requestDer);
+            await expect(c.verifyResponse(envelope, root.certificate)).resolves.toBeUndefined();
+        });
+    }
+
+    it('rejects a P-521 response signed by an unrelated key', async () => {
+        const root = await createCa({ curve: 'P-521' });
+        const attacker = await createCa({ curve: 'P-521' });
+        const leaf = await createLeaf(root);
+        const client = new OcspClient();
+        const requestDer = await client.buildRequest(leaf.certificate, root.certificate);
+        const responseDer = await signOcspResponse(attacker, requestDer, {
+            status: 'good',
+            thisUpdate: new Date('2026-04-23'),
+            nextUpdate: new Date('2026-04-30'),
+        });
+        const fetcher = async () => new Response(responseDer, { status: 200 });
+        const c = new OcspClient({ fetcher: fetcher as Fetcher });
+        const envelope = await c.sendRequest('http://ocsp.example.com', requestDer);
+        await expect(c.verifyResponse(envelope, root.certificate)).rejects.toThrow();
+    });
+});
+
 describe('OcspClient — extractVerdict', () => {
     it('returns good for a good certStatus', async () => {
         const root = await createCa();
