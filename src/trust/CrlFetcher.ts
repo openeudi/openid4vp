@@ -2,7 +2,7 @@ import { AsnConvert } from '@peculiar/asn1-schema';
 import { CertificateList } from '@peculiar/asn1-x509';
 import { X509Certificate } from '@peculiar/x509';
 import type { Cache } from './Cache.js';
-import { ecdsaDerToIeee } from './ecdsa-util.js';
+import { verifyEcdsaSignature } from './ecdsa-util.js';
 import { createDefaultTrustFetcher } from '../http/guarded-fetch.js';
 import type { Fetcher } from './Fetcher.js';
 
@@ -105,38 +105,22 @@ export class CrlFetcher {
      * exposes it (avoids a re-serialization roundtrip); fall back to
      * `AsnConvert.serialize(tbsCertList)` otherwise.
      *
-     * ECDSA signatures in `CertificateList.signature` are DER-encoded
-     * SEQUENCE { r, s } — WebCrypto `verify()` expects IEEE P1363 (r||s
-     * fixed-width), so we convert first.
+     * The curve comes from the issuer's key and the hash from
+     * `signatureAlgorithm`, so P-384 and P-521 CAs (e.g. the German PID
+     * provider test CAs, ecdsa-with-SHA512) verify too. RSA-signed CRLs are
+     * not supported and throw.
      */
     async verifyCrl(parsed: ParsedCrl, issuer: X509Certificate): Promise<void> {
         const tbsDer = parsed.raw.tbsCertListRaw
             ? new Uint8Array(parsed.raw.tbsCertListRaw)
             : new Uint8Array(AsnConvert.serialize(parsed.raw.tbsCertList));
-        const sigDer = new Uint8Array(parsed.raw.signature);
-        const sigIeee = ecdsaDerToIeee(sigDer, 32); // 32 bytes per coord for P-256
-
-        // Re-import the issuer's public key via Node's global SubtleCrypto from
-        // raw SPKI bytes. The `@peculiar/x509`-exported CryptoKey may belong to
-        // a non-global provider (e.g. `@peculiar/webcrypto` in tests), and
-        // Node's global `crypto.subtle.verify` rejects foreign-provider keys
-        // with "2nd argument is not of type CryptoKey". Importing from SPKI
-        // produces a key owned by the global provider — production-correct
-        // and works under test.
-        const spki = new Uint8Array(issuer.publicKey.rawData);
-        const publicKey = await crypto.subtle.importKey(
-            'spki',
-            spki,
-            { name: 'ECDSA', namedCurve: 'P-256' },
-            false,
-            ['verify']
-        );
-        const ok = await crypto.subtle.verify(
-            { name: 'ECDSA', hash: 'SHA-256' },
-            publicKey,
-            sigIeee as Uint8Array<ArrayBuffer>,
-            tbsDer as Uint8Array<ArrayBuffer>
-        );
+        const ok = await verifyEcdsaSignature({
+            context: 'CRL',
+            signatureAlgorithm: parsed.raw.signatureAlgorithm.algorithm,
+            signature: new Uint8Array(parsed.raw.signature),
+            data: tbsDer,
+            signerSpki: new Uint8Array(issuer.publicKey.rawData),
+        });
         if (!ok) {
             throw new Error(
                 `CRL signature verification failed against issuer ${issuer.subject}`

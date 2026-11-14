@@ -58,6 +58,8 @@ export interface CreateCaOpts {
     pathLenConstraint?: number;
     /** Use an RSA key (default: ECDSA P-256). Drives the cert's signatureAlgorithm. */
     keySpec?: RsaKeySpec;
+    /** ECDSA curve when `keySpec` is absent. Default P-256. */
+    curve?: EcCurve;
     /** Hex serial number. Default: random 16 bytes. */
     serialNumber?: string;
 }
@@ -96,9 +98,11 @@ export interface Leaf {
 
 const NAME_CONSTRAINTS_OID = '2.5.29.30';
 
-async function generateEcKeys(): Promise<CryptoKeyPair> {
+export type EcCurve = 'P-256' | 'P-384' | 'P-521';
+
+async function generateEcKeys(curve: EcCurve = 'P-256'): Promise<CryptoKeyPair> {
     return (await provider.subtle.generateKey(
-        { name: 'ECDSA', namedCurve: 'P-256' },
+        { name: 'ECDSA', namedCurve: curve },
         true,
         ['sign', 'verify']
     )) as CryptoKeyPair;
@@ -124,8 +128,19 @@ async function generateRsaKeys(spec: RsaKeySpec): Promise<CryptoKeyPair> {
     )) as CryptoKeyPair;
 }
 
-async function generateKeysFor(spec?: RsaKeySpec): Promise<CryptoKeyPair> {
-    return spec ? generateRsaKeys(spec) : generateEcKeys();
+async function generateKeysFor(spec?: RsaKeySpec, curve?: EcCurve): Promise<CryptoKeyPair> {
+    return spec ? generateRsaKeys(spec) : generateEcKeys(curve);
+}
+
+/**
+ * ECDSA hash + signatureAlgorithm OID for signing a CRL or OCSP response with
+ * `key`, matched to its curve the way real CAs do (P-521 → ecdsa-with-SHA512).
+ */
+function ecdsaSignatureFor(key: CryptoKey): { hash: string; oid: string } {
+    const curve = (key.algorithm as EcKeyAlgorithm).namedCurve;
+    if (curve === 'P-384') return { hash: 'SHA-384', oid: '1.2.840.10045.4.3.3' };
+    if (curve === 'P-521') return { hash: 'SHA-512', oid: '1.2.840.10045.4.3.4' };
+    return { hash: 'SHA-256', oid: '1.2.840.10045.4.3.2' };
 }
 
 /**
@@ -219,7 +234,7 @@ function buildSanExtension(
 }
 
 export async function createCa(opts: CreateCaOpts = {}): Promise<GeneratedCa> {
-    const keys = await generateKeysFor(opts.keySpec);
+    const keys = await generateKeysFor(opts.keySpec, opts.curve);
     const now = new Date();
     const cert = await x509.X509CertificateGenerator.createSelfSigned({
         serialNumber: opts.serialNumber ?? randomSerial(),
@@ -415,13 +430,15 @@ export interface CreateOcspResponderOpts {
     notBefore?: Date;
     notAfter?: Date;
     ocspNoCheck?: boolean;
+    /** Responder key curve. Default P-256. */
+    curve?: EcCurve;
 }
 
 export async function createOcspResponder(
     issuer: { certificate: x509.X509Certificate; keys: CryptoKeyPair },
     opts: CreateOcspResponderOpts = {}
 ): Promise<Leaf> {
-    const keys = await generateEcKeys();
+    const keys = await generateEcKeys(opts.curve);
     const now = new Date();
     const extensions: x509.Extension[] = [
         new x509.BasicConstraintsExtension(false, undefined, true),
@@ -469,10 +486,11 @@ export async function createCrl(
     issuer: { certificate: x509.X509Certificate; keys: CryptoKeyPair },
     opts: CreateCrlOpts
 ): Promise<CrlResult> {
+    const sig = ecdsaSignatureFor(issuer.keys.privateKey);
     // Build tbsCertList.
     const tbs = new TBSCertList({
         version: Version.v2,
-        signature: new AlgorithmIdentifier({ algorithm: '1.2.840.10045.4.3.2' }), // ecdsa-with-SHA256
+        signature: new AlgorithmIdentifier({ algorithm: sig.oid }),
         issuer: AsnConvert.parse(
             issuer.certificate.subjectName.toArrayBuffer(),
             AsnName
@@ -495,7 +513,7 @@ export async function createCrl(
     // cross-provider CryptoKey incompatibilities under Node.
     const tbsDer = AsnConvert.serialize(tbs);
     const signatureBytes = await provider.subtle.sign(
-        { name: 'ECDSA', hash: 'SHA-256' },
+        { name: 'ECDSA', hash: sig.hash },
         issuer.keys.privateKey,
         tbsDer
     );
@@ -503,7 +521,7 @@ export async function createCrl(
 
     const crl = new CertificateList({
         tbsCertList: tbs,
-        signatureAlgorithm: new AlgorithmIdentifier({ algorithm: '1.2.840.10045.4.3.2' }),
+        signatureAlgorithm: new AlgorithmIdentifier({ algorithm: sig.oid }),
         signature: signatureDer,
     });
     return { der: new Uint8Array(AsnConvert.serialize(crl)) };
@@ -524,20 +542,28 @@ function hexToBigIntBytes(hex: string): Uint8Array {
  * WebCrypto returns ECDSA signatures in IEEE P1363 format (r||s fixed-width).
  * ASN.1 CertificateList.signature expects DER-encoded SEQUENCE { r, s }.
  */
-function ecdsaIeeeToDer(ieee: Uint8Array): Uint8Array {
+export function ecdsaIeeeToDer(ieee: Uint8Array): Uint8Array {
     const half = ieee.length / 2;
-    const r = trimLeadingZerosAndAddSignByte(ieee.slice(0, half));
-    const s = trimLeadingZerosAndAddSignByte(ieee.slice(half));
-    const seqLen = 2 + r.length + 2 + s.length;
-    const out = new Uint8Array(2 + seqLen);
-    out[0] = 0x30;
-    out[1] = seqLen;
-    out[2] = 0x02;
-    out[3] = r.length;
-    out.set(r, 4);
-    out[4 + r.length] = 0x02;
-    out[5 + r.length] = s.length;
-    out.set(s, 6 + r.length);
+    const r = derTlv(0x02, trimLeadingZerosAndAddSignByte(ieee.slice(0, half)));
+    const s = derTlv(0x02, trimLeadingZerosAndAddSignByte(ieee.slice(half)));
+    const body = new Uint8Array(r.length + s.length);
+    body.set(r, 0);
+    body.set(s, r.length);
+    return derTlv(0x30, body);
+}
+
+/** DER tag-length-value. P-521 signatures exceed 127 bytes and need the long length form. */
+function derTlv(tag: number, value: Uint8Array): Uint8Array {
+    const len =
+        value.length < 0x80
+            ? [value.length]
+            : value.length <= 0xff
+              ? [0x81, value.length]
+              : [0x82, value.length >> 8, value.length & 0xff];
+    const out = new Uint8Array(1 + len.length + value.length);
+    out[0] = tag;
+    out.set(len, 1);
+    out.set(value, 1 + len.length);
     return out;
 }
 
@@ -565,7 +591,7 @@ export interface SignOcspResponseOpts {
 /**
  * Produce a DER-encoded `OCSPResponse` (`responseStatus = successful`) that
  * wraps a `BasicOCSPResponse` signed by the responder's private key with
- * ECDSA-SHA256. The responder cert is embedded in `BasicOCSPResponse.certs`
+ * ECDSA, hashed to match the responder's curve. The responder cert is embedded in `BasicOCSPResponse.certs`
  * so the consuming test can verify the chain without out-of-band knowledge.
  */
 export async function signOcspResponse(
@@ -615,8 +641,9 @@ export async function signOcspResponse(
     // Sign the ResponseData (== tbsResponseData). Must use the peculiar
     // provider since the responder's CryptoKey was generated by it.
     const tbsDer = AsnConvert.serialize(responseData);
+    const sig = ecdsaSignatureFor(responder.keys.privateKey);
     const signatureBytes = await provider.subtle.sign(
-        { name: 'ECDSA', hash: 'SHA-256' },
+        { name: 'ECDSA', hash: sig.hash },
         responder.keys.privateKey,
         tbsDer
     );
@@ -629,9 +656,7 @@ export async function signOcspResponse(
 
     const basic = new BasicOCSPResponse({
         tbsResponseData: responseData,
-        signatureAlgorithm: new AlgorithmIdentifier({
-            algorithm: '1.2.840.10045.4.3.2' /* ecdsa-with-SHA256 */,
-        }),
+        signatureAlgorithm: new AlgorithmIdentifier({ algorithm: sig.oid }),
         signature: signatureDer.buffer.slice(
             signatureDer.byteOffset,
             signatureDer.byteOffset + signatureDer.byteLength

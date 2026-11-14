@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **CRL and OCSP signatures from P-384 and P-521 CAs now verify (#73).** The
+  revocation checker assumed every CRL and OCSP response was signed with
+  ECDSA P-256 / SHA-256:
+  - The DER signature parser skipped exactly one length byte. A P-521
+    signature is longer than 127 bytes, so its length uses the long form
+    (`30 81 88 …`) and parsing failed with `invalid DER signature: expected
+    INTEGER r`.
+  - Even with the length parsed, the issuer key was imported as P-256 and
+    the signature checked with SHA-256, so P-384 and P-521 issuers failed
+    with `Named curve mismatch`.
+
+  The curve now comes from the signer's key (P-256, P-384, P-521) and the
+  hash from `signatureAlgorithm` (ecdsa-with-SHA256/384/512). The DER parser
+  reads short and long lengths and rejects malformed input: indefinite or
+  non-minimal lengths, trailing bytes, negative or over-wide integers.
+  The D-Trust "Deutschland PID-Signer Test CA 1-26-1 2026" CRL from the
+  report (P-521, ecdsa-with-SHA512) is a test fixture.
+
+  **Impact before the fix:** every CRL or OCSP check against a P-384 or P-521
+  CA failed and was logged as a warning. With `revocationPolicy: 'prefer'`
+  the result was `status: 'unknown'`, so **a revoked certificate from such a
+  CA was not detected**. With `'require'` every credential from such a CA was
+  rejected. P-256 issuers were not affected.
+
+  RSA-signed CRLs and OCSP responses are still not supported. They now fail
+  with `unsupported CRL signature algorithm <oid>` instead of a DER parse
+  error. Like any revocation-source failure, this is a warning under
+  `prefer` and a rejection under `require`.
+
 ## [0.18.0] — 2026-10-29
 
 ### Added

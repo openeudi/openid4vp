@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { CrlFetcher } from '../../src/trust/CrlFetcher.js';
 import { InMemoryCache } from '../../src/trust/Cache.js';
+import { X509Certificate } from '@peculiar/x509';
 import { createCa, createLeaf, createCrl } from './helpers/synthetic-ca.js';
+import {
+    DTRUST_PID_SIGNER_TEST_CA_DER_BASE64,
+    DTRUST_PID_SIGNER_TEST_CRL_DER_BASE64,
+} from '../fixtures/dtrust-pid-signer-test-ca.js';
 
 describe('CrlFetcher — fetch + parse', () => {
     it('fetches a CRL from the given URL and parses it', async () => {
@@ -71,6 +76,85 @@ describe('CrlFetcher — signature verification', () => {
         const f = new CrlFetcher({ fetcher: fetcher as (url: string) => Promise<Response> });
         const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
         await expect(f.verifyCrl(parsed, realRoot.certificate)).rejects.toThrow(/signature/i);
+    });
+});
+
+function fetcherFor(der: Uint8Array) {
+    return (async () => new Response(der, { status: 200 })) as (url: string) => Promise<Response>;
+}
+
+const WINDOW = {
+    revokedSerials: [],
+    thisUpdate: new Date('2026-04-01T00:00:00Z'),
+    nextUpdate: new Date('2026-05-01T00:00:00Z'),
+};
+
+describe('CrlFetcher — signature algorithms (#73)', () => {
+    it('verifies the D-Trust PID-Signer test CRL (P-521, ecdsa-with-SHA512)', async () => {
+        const der = new Uint8Array(Buffer.from(DTRUST_PID_SIGNER_TEST_CRL_DER_BASE64, 'base64'));
+        const ca = new X509Certificate(Buffer.from(DTRUST_PID_SIGNER_TEST_CA_DER_BASE64, 'base64'));
+        const f = new CrlFetcher({ fetcher: fetcherFor(der) });
+        const parsed = await f.fetchAndParse('http://crl.d-trust.net/a.crl');
+        await expect(f.verifyCrl(parsed, ca)).resolves.toBeUndefined();
+    });
+
+    it('rejects the D-Trust CRL with one signature byte flipped', async () => {
+        const der = new Uint8Array(Buffer.from(DTRUST_PID_SIGNER_TEST_CRL_DER_BASE64, 'base64'));
+        der[der.length - 1] ^= 0x01; // last byte of s
+        const ca = new X509Certificate(Buffer.from(DTRUST_PID_SIGNER_TEST_CA_DER_BASE64, 'base64'));
+        const f = new CrlFetcher({ fetcher: fetcherFor(der) });
+        const parsed = await f.fetchAndParse('http://crl.d-trust.net/a.crl');
+        await expect(f.verifyCrl(parsed, ca)).rejects.toThrow(/signature/i);
+    });
+
+    for (const curve of ['P-384', 'P-521'] as const) {
+        it(`accepts a CRL signed by a ${curve} CA`, async () => {
+            const root = await createCa({ curve });
+            const { der } = await createCrl(root, WINDOW);
+            const f = new CrlFetcher({ fetcher: fetcherFor(der) });
+            const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
+            await expect(f.verifyCrl(parsed, root.certificate)).resolves.toBeUndefined();
+        });
+
+        it(`rejects a CRL signed by a different ${curve} CA`, async () => {
+            const realRoot = await createCa({ curve });
+            const attackerRoot = await createCa({ curve });
+            const { der } = await createCrl(attackerRoot, WINDOW);
+            const f = new CrlFetcher({ fetcher: fetcherFor(der) });
+            const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
+            await expect(f.verifyCrl(parsed, realRoot.certificate)).rejects.toThrow(/signature/i);
+        });
+    }
+
+    it('rejects a CRL whose curve does not match the issuer key', async () => {
+        const realRoot = await createCa({ curve: 'P-256' });
+        const attackerRoot = await createCa({ curve: 'P-521' });
+        const { der } = await createCrl(attackerRoot, WINDOW);
+        const f = new CrlFetcher({ fetcher: fetcherFor(der) });
+        const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
+        await expect(f.verifyCrl(parsed, realRoot.certificate)).rejects.toThrow();
+    });
+
+    it('rejects a non-ECDSA signatureAlgorithm with a clear error', async () => {
+        const root = await createCa();
+        const { der } = await createCrl(root, WINDOW);
+        const f = new CrlFetcher({ fetcher: fetcherFor(der) });
+        const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
+        parsed.raw.signatureAlgorithm.algorithm = '1.2.840.113549.1.1.11'; // sha256WithRSAEncryption
+        await expect(f.verifyCrl(parsed, root.certificate)).rejects.toThrow(
+            /unsupported CRL signature algorithm 1\.2\.840\.113549\.1\.1\.11/
+        );
+    });
+
+    it('rejects an RSA issuer key with a clear error', async () => {
+        const ecRoot = await createCa();
+        const rsaRoot = await createCa({ keySpec: { kind: 'rsa-pkcs1', hash: 'SHA-256' } });
+        const { der } = await createCrl(ecRoot, WINDOW);
+        const f = new CrlFetcher({ fetcher: fetcherFor(der) });
+        const parsed = await f.fetchAndParse('http://crl.example.com/a.crl');
+        await expect(f.verifyCrl(parsed, rsaRoot.certificate)).rejects.toThrow(
+            /unsupported CRL signer key algorithm 1\.2\.840\.113549\.1\.1\.1;/
+        );
     });
 });
 
