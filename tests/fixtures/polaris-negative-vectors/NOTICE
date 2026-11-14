@@ -1,0 +1,7 @@
+Polaris, Identity Token System
+Copyright 2026 Egor Khaklin
+
+vectors.json and mdoc-vectors.json in this directory are copied unchanged from
+https://github.com/EgorKhaklin/polaris-id (lab/interop/negative-vectors) and are
+licensed under the Apache License, Version 2.0, the text of which is in the
+LICENSE file beside this one.
