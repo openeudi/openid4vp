@@ -2,6 +2,9 @@ import { Encoder as CborEncoder } from 'cbor-x';
 
 import { MalformedCredentialError } from '../errors.js';
 
+import { checkProtectedHeader } from './cose-header.js';
+import type { KeyAuthorizations } from './mso.js';
+
 // Plain-bstr encoder (tagUint8Array:false → byte strings are major-type-2, not
 // the typed-array tag 64), matching how conformant issuers/holders encode COSE.
 const enc = new CborEncoder({ mapsAsObjects: false, useRecords: false, tagUint8Array: false });
@@ -121,8 +124,10 @@ export async function verifyDeviceAuth(params: {
     docType: string;
     sessionTranscript: Uint8Array;
     allowedAlgorithms: string[];
+    /** The MSO's `deviceKeyInfo.keyAuthorizations`; undefined when the MSO has none. */
+    keyAuthorizations?: KeyAuthorizations;
 }): Promise<void> {
-    const { deviceSigned, deviceKeyCose, docType, sessionTranscript, allowedAlgorithms } = params;
+    const { deviceSigned, deviceKeyCose, docType, sessionTranscript, allowedAlgorithms, keyAuthorizations } = params;
 
     const deviceAuth = deviceSigned.get('deviceAuth');
     if (!(deviceAuth instanceof Map)) {
@@ -137,18 +142,27 @@ export async function verifyDeviceAuth(params: {
     }
     const protectedBytes = deviceSignature[0];
     const signature = deviceSignature[3];
+    // ISO/IEC 18013-5: the DeviceSignature is a COSE_Sign1 with a detached
+    // payload (nil); the verifier rebuilds DeviceAuthenticationBytes itself.
+    if (deviceSignature[2] !== null) {
+        throw new MalformedCredentialError('DeviceSignature payload must be detached (nil)');
+    }
     if (!(protectedBytes instanceof Uint8Array) || !(signature instanceof Uint8Array)) {
         throw new MalformedCredentialError('DeviceSignature protected header / signature must be byte strings');
     }
 
-    let alg: 'ES256' | 'ES384' | 'ES512' | undefined;
+    let ph: unknown;
     try {
-        const ph = enc.decode(protectedBytes);
-        const label = ph instanceof Map ? ph.get(HEADER_ALG) : undefined;
-        alg = typeof label === 'number' ? COSE_ALG_TO_NAME[label] : undefined;
+        ph = enc.decode(protectedBytes);
     } catch {
         throw new MalformedCredentialError('DeviceSignature protected header is not decodable CBOR');
     }
+    if (!(ph instanceof Map)) {
+        throw new MalformedCredentialError('DeviceSignature protected header must be a map');
+    }
+    checkProtectedHeader(protectedBytes, ph, 'DeviceSignature');
+    const label = ph.get(HEADER_ALG);
+    const alg = typeof label === 'number' ? COSE_ALG_TO_NAME[label] : undefined;
     if (!alg || !allowedAlgorithms.includes(alg)) {
         throw new MalformedCredentialError(`DeviceSignature uses a disallowed algorithm: ${String(alg)}`);
     }
@@ -156,6 +170,7 @@ export async function verifyDeviceAuth(params: {
     // DeviceNameSpacesBytes = deviceSigned["nameSpaces"] (a tag-24 wrapped map).
     // Extract the inner CBOR bytes so we can rebuild the digest input identically.
     const deviceNameSpacesInner = extractTag24Inner(deviceSigned.get('nameSpaces'));
+    assertDeviceElementsAuthorized(deviceNameSpacesInner, keyAuthorizations);
 
     const deviceAuthBytes = buildDeviceAuthenticationBytes({ sessionTranscript, docType, deviceNameSpacesInner });
     const sigInput = encodeDeviceSigStructure(protectedBytes, deviceAuthBytes);
@@ -169,6 +184,41 @@ export async function verifyDeviceAuth(params: {
     );
     if (!ok) {
         throw new MalformedCredentialError('mDOC device authentication (DeviceSignature) failed to verify');
+    }
+}
+
+/**
+ * ISO/IEC 18013-5 KeyAuthorizations: the device key may sign only the name
+ * spaces in `nameSpaces` and the elements in `dataElements`. Without
+ * KeyAuthorizations it may sign none. A device-signed element outside them is
+ * refused, not merely dropped.
+ */
+function assertDeviceElementsAuthorized(
+    deviceNameSpacesInner: Uint8Array,
+    keyAuthorizations: KeyAuthorizations | undefined
+): void {
+    let decoded: unknown;
+    try {
+        decoded = enc.decode(deviceNameSpacesInner);
+    } catch {
+        throw new MalformedCredentialError('deviceSigned.nameSpaces is not decodable CBOR');
+    }
+    if (!(decoded instanceof Map)) {
+        throw new MalformedCredentialError('deviceSigned.nameSpaces must be a map');
+    }
+    for (const [ns, elements] of decoded) {
+        if (typeof ns !== 'string' || !(elements instanceof Map)) {
+            throw new MalformedCredentialError('deviceSigned.nameSpaces must map name spaces to element maps');
+        }
+        if (keyAuthorizations?.nameSpaces.includes(ns)) continue;
+        const allowed = keyAuthorizations?.dataElements.get(ns);
+        for (const id of elements.keys()) {
+            if (!allowed?.includes(id as string)) {
+                throw new MalformedCredentialError(
+                    `device-signed element ${ns}/${String(id)} is not covered by the MSO KeyAuthorizations`
+                );
+            }
+        }
     }
 }
 

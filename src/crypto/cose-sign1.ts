@@ -2,6 +2,8 @@ import { Encoder as CborEncoder, Tag } from 'cbor-x';
 
 import { MalformedCredentialError } from '../errors.js';
 
+import { checkProtectedHeader } from './cose-header.js';
+
 // Decoder that preserves CBOR maps as JS Maps (cbor-x default converts them to
 // objects). `tagUint8Array: false` is REQUIRED for COSE correctness: cbor-x
 // otherwise encodes a plain `Uint8Array` with the typed-array tag 64 (0xd8 0x40)
@@ -69,6 +71,7 @@ export function decodeCoseSign1(bytes: Uint8Array): CoseSign1 {
     } catch {
         throw new MalformedCredentialError('COSE_Sign1 protected header is not decodable CBOR');
     }
+    checkProtectedHeader(protectedHeaderBytes, protectedHeader, 'COSE_Sign1');
 
     const algLabel = protectedHeader.get(HEADER_ALG);
     const alg = typeof algLabel === 'number' ? COSE_ALG_TO_NAME[algLabel] : undefined;

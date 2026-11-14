@@ -5,6 +5,14 @@ import { MalformedCredentialError, ExpiredCredentialError } from '../errors.js';
 // Decoder that preserves CBOR maps as JS Maps (cbor-x default converts them to objects).
 const decoder = new CborEncoder({ mapsAsObjects: false, useRecords: false });
 
+/** MSO `deviceKeyInfo.keyAuthorizations` (ISO/IEC 18013-5). */
+export interface KeyAuthorizations {
+    /** Name spaces the device key may sign in full. */
+    nameSpaces: string[];
+    /** Per name space, the data elements the device key may sign. */
+    dataElements: Map<string, string[]>;
+}
+
 export interface MobileSecurityObject {
     version: string;
     digestAlgorithm: string;
@@ -17,6 +25,8 @@ export interface MobileSecurityObject {
      * malformed MSOs that omit it.
      */
     deviceKey?: Map<number, unknown>;
+    /** `deviceKeyInfo.keyAuthorizations`; undefined when the MSO has none. */
+    keyAuthorizations?: KeyAuthorizations;
     validityInfo: {
         signed: Date;
         validFrom: Date;
@@ -59,6 +69,8 @@ export function decodeMso(payload: Uint8Array): MobileSecurityObject {
         // Unwrap tag-24 (embedded CBOR): COSE payload may be tag-24 wrapped MSO bytes.
         // In production cbor-x decodes tag-24 as Tag(24, bytes); in test fixtures that register
         // a custom addExtension for tag-24 it decodes to an EmbeddedCbor-like object with .value.
+        // ISO/IEC 18013-5: the IssuerAuth payload is MobileSecurityObjectBytes,
+        // #6.24(bstr .cbor MobileSecurityObject). A bare MSO map is refused.
         if (raw instanceof Tag && raw.tag === 24 && raw.value instanceof Uint8Array) {
             raw = decoder.decode(raw.value);
         } else if (
@@ -76,6 +88,10 @@ export function decodeMso(payload: Uint8Array): MobileSecurityObject {
             // instanceof Tag)` guard ensures we don't misinterpret arbitrary Tag(N, bytes)
             // values as embedded CBOR in production.
             raw = decoder.decode((raw as { value: Uint8Array }).value);
+        } else {
+            throw new MalformedCredentialError(
+                'IssuerAuth payload must be MobileSecurityObjectBytes (tag 24 wrapping the MSO)'
+            );
         }
     } catch (err) {
         if (err instanceof MalformedCredentialError) throw err;
@@ -120,11 +136,15 @@ export function decodeMso(payload: Uint8Array): MobileSecurityObject {
 
     // deviceKeyInfo.deviceKey — the COSE_Key the holder must authenticate with.
     let deviceKey: Map<number, unknown> | undefined;
+    let keyAuthorizations: KeyAuthorizations | undefined;
     const dkiRaw = m.get('deviceKeyInfo');
     if (dkiRaw instanceof Map) {
         const dk = (dkiRaw as Map<string, unknown>).get('deviceKey');
         if (dk instanceof Map) {
             deviceKey = dk as Map<number, unknown>;
+        }
+        if ((dkiRaw as Map<string, unknown>).has('keyAuthorizations')) {
+            keyAuthorizations = decodeKeyAuthorizations((dkiRaw as Map<string, unknown>).get('keyAuthorizations'));
         }
     }
 
@@ -143,8 +163,28 @@ export function decodeMso(payload: Uint8Array): MobileSecurityObject {
     }
 
     const mso: MobileSecurityObject = { version, digestAlgorithm, valueDigests, docType, deviceKey, validityInfo };
+    if (keyAuthorizations) mso.keyAuthorizations = keyAuthorizations;
     if (m.has('status')) mso.status = m.get('status');
     return mso;
+}
+
+function decodeKeyAuthorizations(value: unknown): KeyAuthorizations {
+    const bad = (): MalformedCredentialError =>
+        new MalformedCredentialError('MSO KeyAuthorizations (deviceKeyInfo.keyAuthorizations) is malformed');
+    const isTstrArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string');
+    if (!(value instanceof Map)) throw bad();
+    const nameSpaces = value.has('nameSpaces') ? value.get('nameSpaces') : [];
+    if (!isTstrArray(nameSpaces)) throw bad();
+    const dataElements = new Map<string, string[]>();
+    if (value.has('dataElements')) {
+        const de = value.get('dataElements');
+        if (!(de instanceof Map)) throw bad();
+        for (const [ns, ids] of de) {
+            if (typeof ns !== 'string' || !isTstrArray(ids)) throw bad();
+            dataElements.set(ns, ids);
+        }
+    }
+    return { nameSpaces, dataElements };
 }
 
 /**

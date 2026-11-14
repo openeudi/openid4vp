@@ -63,6 +63,18 @@ export interface BuildSignedMdocOptions {
      * `{ status_list: { idx, uri } }`. Omitted when undefined.
      */
     msoStatus?: unknown;
+    /** Raw IssuerAuth protected header bytes (signed as given). Default: `{1: alg}`. */
+    issuerProtectedHeader?: Uint8Array;
+    /** Raw DeviceSignature protected header bytes (signed as given). Default: `{1: alg}`. */
+    deviceProtectedHeader?: Uint8Array;
+    /** Sign the bare MSO as the IssuerAuth payload instead of MobileSecurityObjectBytes (tag 24). */
+    bareMso?: boolean;
+    /** MSO `deviceKeyInfo.keyAuthorizations`. Omitted when undefined. */
+    keyAuthorizations?: Map<string, unknown>;
+    /** DeviceSigned name spaces (signed by the device key). Default: empty. */
+    deviceNameSpaces?: Map<string, Map<string, unknown>>;
+    /** Carry DeviceAuthenticationBytes in the DeviceSignature instead of detaching it. */
+    attachDevicePayload?: boolean;
 }
 
 export interface BuildSignedMdocResult {
@@ -159,6 +171,12 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
         omitDeviceAuth = false,
         x5chain,
         msoStatus,
+        issuerProtectedHeader,
+        deviceProtectedHeader,
+        bareMso = false,
+        keyAuthorizations,
+        deviceNameSpaces = new Map(),
+        attachDevicePayload = false,
     } = options;
 
     const coseAlg = ALG_TO_COSE_LABEL[alg];
@@ -219,7 +237,13 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
         ['version', '1.0'],
         ['digestAlgorithm', digestAlg],
         ['valueDigests', valueDigestsByNamespace],
-        ['deviceKeyInfo', new Map<string, unknown>([['deviceKey', deviceCoseKey]])],
+        [
+            'deviceKeyInfo',
+            new Map<string, unknown>([
+                ['deviceKey', deviceCoseKey],
+                ...(keyAuthorizations ? [['keyAuthorizations', keyAuthorizations] as [string, unknown]] : []),
+            ]),
+        ],
         ['docType', docType],
         [
             'validityInfo',
@@ -235,11 +259,10 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
 
     // 5: CBOR-encode MSO. The COSE payload MUST be a tag-24 byte string
     const msoCbor = cbor.encode(mso);
-    const msoTag24 = cbor.encode(new EmbeddedCbor(msoCbor));
+    const msoTag24 = bareMso ? msoCbor : cbor.encode(new EmbeddedCbor(msoCbor));
 
     // 6 & 7: Build COSE_Sign1 and sign it
-    const protectedHeader = new Map<number, unknown>([[1, coseAlg]]);
-    const protectedBytes = cbor.encode(protectedHeader);
+    const protectedBytes = issuerProtectedHeader ?? cbor.encode(new Map<number, unknown>([[1, coseAlg]]));
 
     const unprotectedHeader = new Map<number, unknown>([
         [33, x5chain && x5chain.length > 0 ? x5chain : issuerKey.certDerBytes],
@@ -281,16 +304,21 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
     // Build DeviceSigned with a valid DeviceSignature over DeviceAuthentication
     // (ISO 18013-5 §9.1.3), unless the caller wants the pre-fix vulnerable shape.
     if (!omitDeviceAuth) {
-        const deviceNameSpacesInner = cbor.encode(new Map()); // empty DeviceNameSpaces
+        const deviceNameSpacesInner = cbor.encode(deviceNameSpaces); // DeviceNameSpaces, empty by default
         const deviceAuthBytes = buildDeviceAuthenticationBytes({ sessionTranscript, docType, deviceNameSpacesInner });
-        const devProtected = cbor.encode(new Map<number, unknown>([[1, coseAlg]]));
+        const devProtected = deviceProtectedHeader ?? cbor.encode(new Map<number, unknown>([[1, coseAlg]]));
         const devSigInput = encodeDeviceSigStructure(devProtected, deviceAuthBytes);
         const devRawSig = await crypto.subtle.sign(
             { name: 'ECDSA', hash: hashAlg },
             effectiveDeviceKey.privateKey,
             devSigInput,
         );
-        const deviceSignature = [devProtected, new Map(), null, new Uint8Array(devRawSig)];
+        const deviceSignature = [
+            devProtected,
+            new Map(),
+            attachDevicePayload ? deviceAuthBytes : null,
+            new Uint8Array(devRawSig),
+        ];
         document.set(
             'deviceSigned',
             new Map<string, unknown>([

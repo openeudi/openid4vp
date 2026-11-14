@@ -94,8 +94,8 @@ describe('validateMsoDocType', () => {
 });
 
 // ----------------------------------------------------------------
-// Helper: build a minimal valid MSO Map and encode as raw CBOR bytes
-// (NOT tag-24 wrapped — decodeMso receives the raw payload bstr)
+// Helper: build a minimal valid MSO Map and encode it as
+// MobileSecurityObjectBytes (tag 24), the IssuerAuth payload decodeMso expects
 // ----------------------------------------------------------------
 function buildRawMsoBytes(overrides: Record<string, unknown> = {}): Uint8Array {
     const validityInfo = new Map<string, unknown>([
@@ -114,10 +114,30 @@ function buildRawMsoBytes(overrides: Record<string, unknown> = {}): Uint8Array {
     for (const [k, v] of Object.entries(overrides)) {
         base.set(k, v);
     }
-    return cbor.encode(base);
+    return cbor.encode(new Tag(cbor.encode(base), 24));
 }
 
 describe('decodeMso — structural errors', () => {
+    it('throws when the payload is the bare MSO, not MobileSecurityObjectBytes (tag 24)', () => {
+        const bare = cbor.encode(
+            new Map<string, unknown>([
+                ['version', '1.0'],
+                ['digestAlgorithm', 'SHA-256'],
+                ['docType', 'eu.europa.ec.eudi.pid.1'],
+                ['valueDigests', new Map()],
+                [
+                    'validityInfo',
+                    new Map<string, unknown>([
+                        ['signed', new Date()],
+                        ['validFrom', new Date(Date.now() - 3600_000)],
+                        ['validUntil', new Date(Date.now() + 3600_000)],
+                    ]),
+                ],
+            ])
+        );
+        expect(() => decodeMso(bare)).toThrow(/MobileSecurityObjectBytes/);
+    });
+
     it('throws when version is not a string', () => {
         const bytes = buildRawMsoBytes({ version: 123 });
         expect(() => decodeMso(bytes)).toThrow(MalformedCredentialError);

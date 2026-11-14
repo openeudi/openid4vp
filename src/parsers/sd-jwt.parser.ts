@@ -39,6 +39,22 @@ const DEFAULT_CLOCK_SKEW_SECONDS = 60;
 const DEFAULT_SD_ALG = 'sha-256';
 
 /**
+ * Registered JWT claims that SD-JWT VC draft-19 §2.2.2.3 says "MUST NOT be
+ * included in Disclosures and therefore MUST NOT be selectively disclosed".
+ * They are read from the signed payload only (e.g. `exp` by `jwtVerify`), so
+ * a Disclosure carrying one would go unchecked. `sub` and `iat` MAY be disclosed.
+ */
+const NON_DISCLOSABLE_CLAIMS: ReadonlySet<string> = new Set([
+    'iss',
+    'nbf',
+    'exp',
+    'cnf',
+    'vct',
+    'vct#integrity',
+    'status',
+]);
+
+/**
  * `_sd_alg` values (IANA Named Information Hash Algorithm names) this parser
  * supports, mapped to their Web Crypto names. Any other value is rejected
  * explicitly rather than silently hashed with SHA-256.
@@ -357,6 +373,13 @@ export class SdJwtParser implements ICredentialParser {
                 cache: options.cache,
                 clockSkewTolerance: options.clockSkewTolerance,
             });
+            // HAIP 1.0 §6.1.1: "The X.509 certificate of the trust anchor MUST NOT
+            // be included in the x5c JOSE header of the SD-JWT VC." x5c[0] may
+            // itself be a directly trusted certificate; only x5c[1..] is checked.
+            const anchorDer = new Uint8Array(trustResult.anchor.certificate.rawData);
+            if ((x5cRest as string[]).some((entry) => bytesEqual(base64ToBytes(entry), anchorDer))) {
+                return invalidResult('x5c must not include the trust anchor certificate (HAIP 1.0 §6.1.1)');
+            }
         } else {
             // 0.4.0 byte-equality path — preserved verbatim for backward compatibility.
             const trustedCertificates = options.trustedCertificates ?? [];
@@ -395,7 +418,7 @@ export class SdJwtParser implements ICredentialParser {
             return invalidResult(`Unsupported _sd_alg: ${String(sdAlg)}`);
         }
         const seenDigests = new Set<string>();
-        const seed = collectAnchorHashes(payload, seenDigests);
+        const seed = collectAnchorHashes(payload, seenDigests, true);
         if (seed.duplicate !== undefined) {
             return invalidResult('A disclosure digest appears more than once in the SD-JWT');
         }
@@ -405,6 +428,8 @@ export class SdJwtParser implements ICredentialParser {
                 raw: string;
                 hash: string;
                 length: 2 | 3;
+                /** Claim name of an object-property (3-element) Disclosure. */
+                name?: unknown;
                 value: unknown;
             };
             const decodedDisclosures: DecodedDisclosure[] = [];
@@ -428,6 +453,7 @@ export class SdJwtParser implements ICredentialParser {
                     raw: disclosure,
                     hash: bytesToBase64Url(hashBytes),
                     length: parsed.length as 2 | 3,
+                    ...(parsed.length === 3 ? { name: parsed[1] } : {}),
                     value: parsed.length === 3 ? parsed[2] : parsed[1],
                 });
             }
@@ -449,11 +475,15 @@ export class SdJwtParser implements ICredentialParser {
                 }
                 if (anchored.length === 0) break;
                 for (const a of anchored) {
+                    if (a.length === 3) {
+                        const nameError = checkDisclosedClaimName(a.name, kvHashes.get(a.hash)!);
+                        if (nameError !== undefined) return invalidResult(nameError);
+                    }
                     const sub = collectAnchorHashes(a.value, seenDigests);
                     if (sub.duplicate !== undefined) {
                         return invalidResult('A disclosure digest appears more than once in the SD-JWT');
                     }
-                    for (const h of sub.kvHashes) kvHashes.add(h);
+                    for (const [h, level] of sub.kvHashes) kvHashes.set(h, level);
                     for (const h of sub.arrayElemHashes) arrayElemHashes.add(h);
                     const idx = remaining.indexOf(a);
                     if (idx >= 0) remaining.splice(idx, 1);
@@ -624,11 +654,45 @@ export class SdJwtParser implements ICredentialParser {
  * the full transitive set, otherwise nested disclosures (e.g. PID's
  * `place_of_birth.country`, `nationalities` array) false-reject.
  */
+/**
+ * The object an `_sd` array sits in: the claim names it already holds, which
+ * grows as Disclosures anchored there are accepted, and whether it is the
+ * SD-JWT payload itself.
+ */
+interface SdLevel {
+    names: Set<string>;
+    top: boolean;
+}
+
+/**
+ * RFC 9901 §7.1 step 3.c.ii: refuse a claim name that is not a string, is `_sd`
+ * or `...`, or already exists at the level of the `_sd` key (in the clear or
+ * from another Disclosure). At the top level, also refuse the registered
+ * claims SD-JWT VC forbids disclosing. On success, records the name.
+ */
+function checkDisclosedClaimName(name: unknown, level: SdLevel): string | undefined {
+    if (typeof name !== 'string') {
+        return 'Disclosure claim name must be a string (RFC 9901 §7.1)';
+    }
+    if (name === '_sd' || name === '...') {
+        return `Disclosure claim name ${name} is reserved (RFC 9901 §7.1)`;
+    }
+    if (level.top && NON_DISCLOSABLE_CLAIMS.has(name)) {
+        return `Claim ${name} MUST NOT be selectively disclosed (SD-JWT VC §2.2.2.3)`;
+    }
+    if (level.names.has(name)) {
+        return `Disclosure claim name ${name} already exists at its level (RFC 9901 §7.1)`;
+    }
+    level.names.add(name);
+    return undefined;
+}
+
 function collectAnchorHashes(
     node: unknown,
-    seen: Set<string>
-): { kvHashes: Set<string>; arrayElemHashes: Set<string>; duplicate?: string } {
-    const kvHashes = new Set<string>();
+    seen: Set<string>,
+    isPayload = false
+): { kvHashes: Map<string, SdLevel>; arrayElemHashes: Set<string>; duplicate?: string } {
+    const kvHashes = new Map<string, SdLevel>();
     const arrayElemHashes = new Set<string>();
     let duplicate: string | undefined;
     // `seen` spans the whole SD-JWT (payload plus every disclosed value), so a
@@ -637,7 +701,7 @@ function collectAnchorHashes(
         if (seen.has(digest)) duplicate ??= digest;
         seen.add(digest);
     };
-    const visit = (value: unknown): void => {
+    const visit = (value: unknown, top: boolean): void => {
         if (Array.isArray(value)) {
             for (const item of value) {
                 if (item && typeof item === 'object' && !Array.isArray(item)) {
@@ -649,22 +713,27 @@ function collectAnchorHashes(
                         continue;
                     }
                 }
-                visit(item);
+                visit(item, false);
             }
         } else if (value && typeof value === 'object') {
-            for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+            const obj = value as Record<string, unknown>;
+            const level: SdLevel = {
+                names: new Set(Object.keys(obj).filter((k) => k !== '_sd')),
+                top,
+            };
+            for (const [k, v] of Object.entries(obj)) {
                 if (k === '_sd' && Array.isArray(v)) {
                     for (const h of v) {
                         if (typeof h !== 'string') continue;
                         record(h);
-                        kvHashes.add(h);
+                        kvHashes.set(h, level);
                     }
                     continue;
                 }
-                visit(v);
+                visit(v, false);
             }
         }
     };
-    visit(node);
+    visit(node, isPayload);
     return { kvHashes, arrayElemHashes, ...(duplicate !== undefined ? { duplicate } : {}) };
 }

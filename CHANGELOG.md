@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security (library)
+
+- **Ten malformed presentations are now refused**
+  ([GHSA-pxwg-mv9c-h422](https://github.com/openeudi/openid4vp/security/advisories/GHSA-pxwg-mv9c-h422),
+  severity low). They were found by Egor Khaklin's negative test vectors
+  (`EgorKhaklin/polaris-id`, `lab/interop/negative-vectors`). With default
+  options, 0.18.0 returned `valid: true` for all ten, although every signature
+  verified correctly. Eight of the ten need an issuer that does not follow
+  the specification: the malformed part is inside what the issuer signs, and
+  a holder cannot make one out of a well-formed credential. The other two are
+  in the device-signed half, where the extra data was ignored and never
+  returned.
+
+  SD-JWT VC:
+  - **A Disclosure that names a claim the payload already holds in the clear,
+    or that another Disclosure at the same level already named** (RFC 9901
+    §7.1). Before, the disclosed value replaced the signed clear value in the
+    returned claims.
+  - **A Disclosure named `_sd` or `...`, or with a non-string name** (RFC 9901
+    §7.1).
+  - **A top-level Disclosure of `iss`, `nbf`, `exp`, `cnf`, `vct`,
+    `vct#integrity` or `status`** (SD-JWT VC draft-19 §2.2.2.3). These claims
+    are read from the signed payload only. Before, an `exp` sent as a
+    Disclosure was never checked, so such a credential did not expire. `sub`
+    and `iat` may still be disclosed.
+  - **An `x5c` that also carries the trust anchor's certificate** (HAIP 1.0
+    §6.1.1). The check applies with `trustStore`, to `x5c[1..]`.
+
+  mdoc:
+  - **A COSE protected header that repeats a label** (RFC 9052 §3). Applies to
+    IssuerAuth and DeviceSignature. Labels are compared by value.
+  - **A `crit` header parameter that lists a label the verifier does not
+    process** (RFC 9052 §3.1). Only `alg` is processed. A `crit` that is not
+    a non-empty array of labels is also refused.
+  - **An IssuerAuth payload that is the bare MSO instead of
+    MobileSecurityObjectBytes** (tag 24, ISO/IEC 18013-5).
+  - **A device-signed element that the MSO's `deviceKeyInfo.keyAuthorizations`
+    do not cover.** With no KeyAuthorizations, the device may sign no
+    elements. Malformed KeyAuthorizations are refused too.
+  - **A DeviceSignature that carries its payload instead of detaching it.**
+
+  After the fix, the test vectors at commit `2fd4edcf` give: 5 of 5 controls
+  accepted, 54 of 54 must-refuse vectors refused, and all 32 repaired mdoc
+  twins accepted.
+
+  **Interop note:** an issuer that puts its root CA into `x5c` is now
+  refused. Send the leaf and intermediates only. HAIP forbids the root in
+  `x5c`, and the signed-request builder already enforces this for requests
+  (`trust_anchor_in_chain`).
+
 ### Fixed
 
 - **CRL and OCSP signatures from P-384 and P-521 CAs now verify (#73).** The

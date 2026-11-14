@@ -435,6 +435,7 @@ export class MdocParser implements ICredentialParser {
                 docType: mso.docType,
                 sessionTranscript: options.mdocSessionTranscript,
                 allowedAlgorithms,
+                keyAuthorizations: mso.keyAuthorizations,
             });
         } catch (err) {
             if (err instanceof MalformedCredentialError) {
