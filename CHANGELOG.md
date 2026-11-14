@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-11-14
+
 ### Security (library)
 
 - **Ten malformed presentations are now refused**
