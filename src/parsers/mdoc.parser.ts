@@ -349,6 +349,18 @@ export class MdocParser implements ICredentialParser {
 
         // Step 6: Decode + validate MSO
         const mso = decodeMso(cose.payload);
+        // ISO/IEC 18013-5 §9.3.1: the DocType in the MSO must match the DocType
+        // of the Document. Document.docType is not signed; everything below uses
+        // the MSO docType, so a mismatch is refused rather than resolved.
+        const documentDocType = document.get('docType');
+        if (typeof documentDocType !== 'string') {
+            throw new MalformedCredentialError('document.docType must be a string');
+        }
+        if (documentDocType !== mso.docType) {
+            throw new MalformedCredentialError(
+                `document.docType=${documentDocType} does not match MSO docType=${mso.docType} (ISO/IEC 18013-5 §9.3.1)`
+            );
+        }
         try {
             validateMsoValidity(mso, new Date());
         } catch (err) {

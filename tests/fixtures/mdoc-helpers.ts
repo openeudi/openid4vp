@@ -75,6 +75,11 @@ export interface BuildSignedMdocOptions {
     deviceNameSpaces?: Map<string, Map<string, unknown>>;
     /** Carry DeviceAuthenticationBytes in the DeviceSignature instead of detaching it. */
     attachDevicePayload?: boolean;
+    /**
+     * `Document.docType`, independent of the MSO docType that the issuer and the
+     * device sign. Default: `docType`. `null` omits the field.
+     */
+    documentDocType?: string | number | null;
 }
 
 export interface BuildSignedMdocResult {
@@ -177,6 +182,7 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
         keyAuthorizations,
         deviceNameSpaces = new Map(),
         attachDevicePayload = false,
+        documentDocType = docType,
     } = options;
 
     const coseAlg = ALG_TO_COSE_LABEL[alg];
@@ -281,7 +287,7 @@ export async function buildSignedMdoc(options: BuildSignedMdocOptions): Promise<
 
     // 8 & 9: Wrap in DeviceResponse
     const document = new Map<string, unknown>([
-        ['docType', docType],
+        ...(documentDocType === null ? [] : [['docType', documentDocType] as [string, unknown]]),
         [
             'issuerSigned',
             new Map<string, unknown>([
