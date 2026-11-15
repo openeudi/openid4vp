@@ -240,7 +240,8 @@ describe('Polaris negative vectors: mdoc DeviceResponses', () => {
             'MalformedCredentialError: digestID 2 missing from MSO valueDigests[org.iso.18013.5.1]',
         'md-digest-alg-sha1': 'MalformedCredentialError: Unknown digest algorithm: SHA-1',
         'md-digest-length': 'MalformedCredentialError: digest mismatch for ns=org.iso.18013.5.1 digestID=0',
-        'md-doctype-vs-mso': 'mDOC device authentication (DeviceSignature) failed to verify',
+        'md-doctype-vs-mso':
+            'MalformedCredentialError: document.docType=org.iso.18013.5.1.mDL does not match MSO docType=eu.europa.ec.eudi.pid.1 (ISO/IEC 18013-5 §9.3.1)',
         'md-sd-claim-absent': 'dcql: missing_claims',
         'md-sd-claim-sets-unmet': 'dcql: missing_claims',
     };

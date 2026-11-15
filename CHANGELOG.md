@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **mdoc: `Document.docType` must match the MSO docType (ISO/IEC 18013-5
+  §9.3.1).** The `docType` of the Document was never read: the device
+  signature, the DCQL match and the result all use the signed MSO docType.
+  A Document whose `docType` is missing, is not a string, or differs from the
+  MSO docType is now refused with `MalformedCredentialError`. This was
+  reported by the `md-doctype-vs-mso` vector of #82. That vector was refused
+  before as well, but only because its DeviceSignature did not verify.
+  Nothing that was accepted on the strength of the Document `docType` changes,
+  because that value was never trusted.
+
 ## [0.19.0] — 2026-11-14
 
 ### Security (library)

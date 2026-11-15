@@ -179,3 +179,19 @@ describe('DeviceSignature payload (ISO/IEC 18013-5 detached DeviceSignature)', (
         await expectRefused({ attachDevicePayload: true }, /detached/);
     });
 });
+
+describe('Document docType (ISO/IEC 18013-5 §9.3.1)', () => {
+    it('refuses a Document whose docType differs from the MSO docType, although the DeviceSignature verifies', async () => {
+        // The device signs DeviceAuthentication over the MSO docType; only the
+        // unauthenticated Document.docType is changed.
+        await expectRefused({ documentDocType: 'org.iso.18013.5.1.mDL' }, /docType/);
+    });
+
+    it('refuses a Document without docType', async () => {
+        await expectRefused({ documentDocType: null }, /docType/);
+    });
+
+    it('refuses a Document whose docType is not a string', async () => {
+        await expectRefused({ documentDocType: 7 }, /docType/);
+    });
+});
