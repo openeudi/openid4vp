@@ -7,7 +7,7 @@
  * every negative judged here also carries its repaired twin, which must be
  * accepted, so a refusal cannot come from a broken fixture.
  *
- * Vectors: EgorKhaklin/polaris-id @ 5d0c68f6 (Apache-2.0),
+ * Vectors: EgorKhaklin/polaris-id @ eb962649 (Apache-2.0),
  * `lab/interop/negative-vectors/`, copied unchanged into
  * tests/fixtures/polaris-negative-vectors/ (see the README there). The SHA-256
  * of both files is checked below, and nothing is read from the network.
@@ -34,8 +34,8 @@ import { verifyPresentation } from '../src/verify.js';
 
 const FIXTURES = new URL('./fixtures/polaris-negative-vectors/', import.meta.url);
 const SHA256 = {
-    'vectors.json': '9c95fd6d678936f05fe9eb6ab12d014cc807d96bdd28bb2ad5fdba151202257a',
-    'mdoc-vectors.json': '2525e629f92adad0a4a44649f7868eb9ecab84bc60135a126862f118a28857de',
+    'vectors.json': 'e3166e6fb30ff5dabd6b81284bd9a95c5ab0b41db077e82a32f5d67a2357778c',
+    'mdoc-vectors.json': '097bdf1b121da340d1b8eeeaa2267ab3628b4002738fdfea4c15f96690fe88bc',
 };
 
 /** Layers this suite leaves out, whatever a vector's class. */
@@ -108,6 +108,7 @@ describe('Polaris negative vectors: SD-JWT VC presentations', () => {
         'kb-aud-array': 'Key binding JWT aud must be a single string',
         'kb-aud-no-prefix': 'Key binding JWT aud does not match the expected audience',
         'digest-twice': 'A disclosure digest appears more than once in the SD-JWT',
+        'digest-twice-decoy': 'A disclosure digest appears more than once in the SD-JWT',
         'claim-overwrite': 'Disclosure claim name given_name already exists at its level (RFC 9901 §7.1)',
         'disclosed-exp': 'Claim exp MUST NOT be selectively disclosed (SD-JWT VC §2.2.2.3)',
         'disclosed-iss': 'Claim iss MUST NOT be selectively disclosed (SD-JWT VC §2.2.2.3)',
@@ -153,12 +154,12 @@ describe('Polaris negative vectors: SD-JWT VC presentations', () => {
         });
     };
 
-    it('reads the pinned file: 2 controls, 24 vectors to refuse each with its repaired twin, 3 policy, 8 left out', () => {
+    it('reads the pinned file: 2 controls, 25 vectors to refuse each with its repaired twin, 3 policy, 8 left out', () => {
         expect(sha256).toBe(SHA256['vectors.json']);
-        expect(vectors).toHaveLength(37);
+        expect(vectors).toHaveLength(38);
         expect(controls).toHaveLength(2);
-        expect(mustRefuse).toHaveLength(24);
-        expect(mustRefuse.filter((vector) => vector.repaired !== undefined)).toHaveLength(24);
+        expect(mustRefuse).toHaveLength(25);
+        expect(mustRefuse.filter((vector) => vector.repaired !== undefined)).toHaveLength(25);
         expect(policy).toHaveLength(3);
         expect(leftOut).toHaveLength(8);
         expect(mustRefuse.map((vector) => vector.id).sort()).toEqual(Object.keys(reasons).sort());
