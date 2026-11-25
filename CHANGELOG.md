@@ -7,7 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security (library)
+
+- **Trusted lists: XML Signature Wrapping is refused**
+  ([GHSA-28mg-45r4-j8jr](https://github.com/openeudi/openid4vp/security/advisories/GHSA-28mg-45r4-j8jr),
+  severity medium). `LotlFetcher` checked that the references of the first `ds:Signature`
+  digest correctly, but not that they cover the list. The parsers then read
+  `SchemeInformation` and `TrustServiceProviderList` with a descendant search.
+  Unsigned content could therefore be read as verified content, in either of
+  two ways: in a `ds:Object` inside a moved signature, or in an unsigned root
+  wrapped around a signed list. With such content, `LotlTrustStore` could load
+  attacker-chosen national TL pointers or CA certificates. The signature is now
+  checked by shape before any cryptography:
+  - there is exactly one `ds:Signature`, and it is a direct child of the root;
+  - exactly one reference covers the root, as `URI=""` or as `#<root Id>` with
+    an Id that no other element carries, using the enveloped-signature
+    transform and at most one canonicalization;
+  - any other reference is the XAdES `SignedProperties` inside the signature;
+  - a `ds:Object` holds only `xades:QualifyingProperties`.
+
+  The verified document is returned without its signature. The parsers read
+  only direct children: `firstChild()` no longer searches descendants.
+  Reported by Polarbear (`p0larb3ar`).
+
 ### Fixed
+
+- **Trusted lists: RSA-SHA384 and RSA-SHA512 signatures verify.** The
+  key of an RSA signing anchor was always imported for SHA-256, so a list
+  signed with `rsa-sha384` or `rsa-sha512` never verified. The EU LOTL is
+  signed with `rsa-sha512`, so with the built-in anchors `LotlTrustStore`
+  refused it with `LotlSignatureError` and loaded no anchors. The hash now
+  comes from the `SignatureMethod`. This failed closed, so it was not a
+  security issue. It ships together with the fix above: without that fix, a
+  working LOTL path would have been open to it.
 
 - **mdoc: `Document.docType` must match the MSO docType (ISO/IEC 18013-5
   §9.3.1).** The `docType` of the Document was never read: the device

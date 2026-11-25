@@ -2,17 +2,27 @@ import { X509Certificate } from '@peculiar/x509';
 import type { Element as XmlElement } from '@xmldom/xmldom';
 
 /**
- * Returns the first element with the given namespace + local name that is a
- * descendant of `parent` (including direct children).
- * Equivalent to getElementsByTagNameNS(ns, name).item(0).
+ * Returns the first direct child element of `parent` with the given
+ * namespace + local name, or null. Deeper descendants are never returned: a
+ * descendant search would let an element nested earlier in document order
+ * (for example inside a ds:Signature) stand in for the real child
+ * (GHSA-28mg-45r4-j8jr).
  */
 export function firstChild(
     parent: XmlElement,
     ns: string,
     name: string
 ): XmlElement | null {
-    const list = parent.getElementsByTagNameNS(ns, name);
-    return list.length > 0 ? (list.item(0) as XmlElement) : null;
+    for (let n = parent.firstChild; n; n = n.nextSibling) {
+        if (
+            n.nodeType === 1 &&
+            (n as XmlElement).namespaceURI === ns &&
+            (n as XmlElement).localName === name
+        ) {
+            return n as XmlElement;
+        }
+    }
+    return null;
 }
 
 /**

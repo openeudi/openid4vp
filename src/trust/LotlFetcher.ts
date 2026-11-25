@@ -1,12 +1,30 @@
 import { X509Certificate } from '@peculiar/x509';
 import { DOMParser } from '@xmldom/xmldom';
-import type { Document as XmlDocument } from '@xmldom/xmldom';
+import type { Document as XmlDocument, Element as XmlElement, Node as XmlNode } from '@xmldom/xmldom';
 import * as xmldsig from 'xmldsigjs';
 import { LotlConfigurationError, LotlFetchError, LotlSignatureError } from '../errors.js';
 import { createDefaultTrustFetcher } from '../http/guarded-fetch.js';
 import type { Fetcher } from './Fetcher.js';
 
 const XMLDSIG_NS = 'http://www.w3.org/2000/09/xmldsig#';
+const XADES_NS = 'http://uri.etsi.org/01903/v1.3.2#';
+const XADES_SIGNED_PROPERTIES_TYPE = 'http://uri.etsi.org/01903#SignedProperties';
+const ENVELOPED_SIGNATURE = 'http://www.w3.org/2000/09/xmldsig#enveloped-signature';
+const CANONICALIZATIONS: ReadonlySet<string> = new Set([
+    'http://www.w3.org/TR/2001/REC-xml-c14n-20010315',
+    'http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments',
+    'http://www.w3.org/2001/10/xml-exc-c14n#',
+    'http://www.w3.org/2001/10/xml-exc-c14n#WithComments',
+]);
+/** RSA public keys carry no hash, so it comes from the signature method. */
+const RSA_SIGNATURE_HASHES: ReadonlyMap<string, string> = new Map([
+    ['http://www.w3.org/2000/09/xmldsig#rsa-sha1', 'SHA-1'],
+    ['http://www.w3.org/2001/04/xmldsig-more#rsa-sha256', 'SHA-256'],
+    ['http://www.w3.org/2001/04/xmldsig-more#rsa-sha384', 'SHA-384'],
+    ['http://www.w3.org/2001/04/xmldsig-more#rsa-sha512', 'SHA-512'],
+]);
+const ELEMENT_NODE = 1;
+const ID_ATTRIBUTES = ['Id', 'ID', 'id'] as const;
 
 export interface LotlFetcherOptions {
     fetcher?: Fetcher;
@@ -77,19 +95,152 @@ export class LotlFetcher {
             });
         }
 
-        const sigEl = doc.getElementsByTagNameNS(XMLDSIG_NS, 'Signature').item(0);
-        if (!sigEl) {
-            throw new LotlSignatureError(`no ds:Signature element in ${url}`);
-        }
+        const sigEl = checkEnvelopedSignature(doc, url);
 
         for (const anchor of signingAnchors) {
-            const verified = await verifyAgainst(doc, sigEl as unknown as Element, anchor);
-            if (verified) return doc;
+            const verified = await verifyAgainst(doc, sigEl, anchor);
+            if (verified) {
+                // Callers read list content from this document. Removing the
+                // signature leaves only what its digest covered, so nothing
+                // unsigned under ds:Object can be read as list content.
+                sigEl.parentNode!.removeChild(sigEl);
+                return doc;
+            }
         }
         throw new LotlSignatureError(
             `no signing anchor verified the signature on ${url}`
         );
     }
+}
+
+function isElement(node: XmlNode | null | undefined): node is XmlElement {
+    return !!node && node.nodeType === ELEMENT_NODE;
+}
+
+/** Direct element children of `parent`, optionally filtered by namespace + local name. */
+function childElements(parent: XmlElement, ns?: string, name?: string): XmlElement[] {
+    const out: XmlElement[] = [];
+    for (let n = parent.firstChild; n; n = n.nextSibling) {
+        if (!isElement(n)) continue;
+        if (ns !== undefined && n.namespaceURI !== ns) continue;
+        if (name !== undefined && n.localName !== name) continue;
+        out.push(n);
+    }
+    return out;
+}
+
+function transformAlgorithms(reference: XmlElement): string[] {
+    return childElements(reference, XMLDSIG_NS, 'Transforms')
+        .flatMap((t) => childElements(t, XMLDSIG_NS, 'Transform'))
+        .map((t) => t.getAttribute('Algorithm') ?? '');
+}
+
+function elementsWithId(root: XmlElement, id: string): XmlElement[] {
+    const found: XmlElement[] = [];
+    const visit = (el: XmlElement): void => {
+        if (ID_ATTRIBUTES.some((attr) => el.getAttribute(attr) === id)) found.push(el);
+        for (const c of childElements(el)) visit(c);
+    };
+    visit(root);
+    return found;
+}
+
+function isInside(node: XmlElement, ancestor: XmlElement): boolean {
+    for (let n: XmlNode | null = node.parentNode; n; n = n.parentNode) {
+        if (n === ancestor) return true;
+    }
+    return false;
+}
+
+/**
+ * Refuse XML Signature Wrapping by shape, before any cryptography
+ * (GHSA-28mg-45r4-j8jr). `xmldsigjs` checks that the references it finds
+ * digest correctly; it does not check that they cover the list. So:
+ *
+ * - the document holds exactly one `ds:Signature`, a direct child of the root;
+ * - exactly one reference covers the root, as `URI=""` or `URI="#<root Id>"`
+ *   with that Id carried by no other element, using the enveloped-signature
+ *   transform and at most one canonicalization;
+ * - any other reference is the XAdES SignedProperties inside this signature;
+ * - a `ds:Object` holds only `xades:QualifyingProperties`, since the
+ *   enveloped transform drops the whole signature from the digest.
+ */
+function checkEnvelopedSignature(doc: XmlDocument, url: string): XmlElement {
+    const fail = (why: string): never => {
+        throw new LotlSignatureError(`signature structure refused on ${url}: ${why}`);
+    };
+    const root = doc.documentElement!;
+    const signatures = doc.getElementsByTagNameNS(XMLDSIG_NS, 'Signature');
+    if (signatures.length === 0) {
+        throw new LotlSignatureError(`no ds:Signature element in ${url}`);
+    }
+    if (signatures.length > 1) fail(`expected one ds:Signature, found ${signatures.length}`);
+    const signature = signatures.item(0)!;
+    if (signature.parentNode !== root) fail('ds:Signature is not a direct child of the list root');
+
+    for (const c of childElements(signature)) {
+        const allowed =
+            c.namespaceURI === XMLDSIG_NS &&
+            ['SignedInfo', 'SignatureValue', 'KeyInfo', 'Object'].includes(c.localName ?? '');
+        if (!allowed) fail(`unexpected {${c.namespaceURI ?? ''}}${c.localName ?? ''} in ds:Signature`);
+    }
+    // Counted over the whole subtree: a lookup by tag name inside the library
+    // must not find a second SignedInfo hidden in a ds:Object.
+    for (const name of ['SignedInfo', 'SignatureValue']) {
+        const count = signature.getElementsByTagNameNS(XMLDSIG_NS, name).length;
+        if (count !== 1) fail(`expected one ds:${name}, found ${count}`);
+    }
+    for (const object of childElements(signature, XMLDSIG_NS, 'Object')) {
+        const content = childElements(object);
+        if (content.some((el) => el.namespaceURI !== XADES_NS || el.localName !== 'QualifyingProperties')) {
+            fail('ds:Object may only hold xades:QualifyingProperties');
+        }
+    }
+
+    const signedInfo = childElements(signature, XMLDSIG_NS, 'SignedInfo')[0]!;
+    const rootId = ID_ATTRIBUTES.map((attr) => root.getAttribute(attr)).find((v) => !!v);
+    const references = childElements(signedInfo, XMLDSIG_NS, 'Reference');
+    const coversRoot = (ref: XmlElement): boolean => {
+        // A Reference without a URI attribute is application-defined: it does
+        // not stand in for "".
+        if (!ref.hasAttribute('URI')) return false;
+        const uri = ref.getAttribute('URI');
+        return uri === '' || (!!rootId && uri === `#${rootId}`);
+    };
+    const rootRefs = references.filter(coversRoot);
+    if (rootRefs.length !== 1) fail(`expected one reference covering the list root, found ${rootRefs.length}`);
+    const rootRef = rootRefs[0]!;
+    if (rootRef.getAttribute('URI') !== '' && elementsWithId(root, rootId!).length !== 1) {
+        fail(`Id "${rootId}" is carried by more than one element`);
+    }
+    const [first, ...rest] = transformAlgorithms(rootRef);
+    if (first !== ENVELOPED_SIGNATURE || rest.length > 1 || (rest[0] !== undefined && !CANONICALIZATIONS.has(rest[0]))) {
+        fail('the list reference must use enveloped-signature and at most one canonicalization');
+    }
+
+    for (const ref of references) {
+        if (ref === rootRef) continue;
+        const uri = ref.getAttribute('URI') ?? '';
+        if (ref.getAttribute('Type') !== XADES_SIGNED_PROPERTIES_TYPE || !uri.startsWith('#') || uri.length < 2) {
+            fail(`unexpected reference URI="${uri}"`);
+        }
+        const targets = elementsWithId(root, uri.slice(1));
+        const target = targets[0];
+        if (
+            targets.length !== 1 ||
+            !target ||
+            target.namespaceURI !== XADES_NS ||
+            target.localName !== 'SignedProperties' ||
+            !isInside(target, signature)
+        ) {
+            fail(`reference ${uri} must resolve to one xades:SignedProperties inside the signature`);
+        }
+        const transforms = transformAlgorithms(ref);
+        if (transforms.length > 1 || transforms.some((a) => !CANONICALIZATIONS.has(a))) {
+            fail(`reference ${uri} may only use one canonicalization transform`);
+        }
+    }
+    return signature;
 }
 
 /**
@@ -149,12 +300,14 @@ function assertCryptoEngineRegistered(): void {
  */
 async function verifyAgainst(
     doc: XmlDocument,
-    sigEl: Element,
+    sigEl: XmlElement,
     anchor: X509Certificate
 ): Promise<boolean> {
     try {
         const signed = new xmldsig.SignedXml(doc as unknown as Document);
         signed.LoadXml(sigEl as unknown as Element);
+        const signatureMethod =
+            sigEl.getElementsByTagNameNS(XMLDSIG_NS, 'SignatureMethod').item(0)?.getAttribute('Algorithm') ?? '';
 
         // Clone the content element for ValidateReferences (it mutates internally).
         const docEl = doc.documentElement;
@@ -178,7 +331,7 @@ async function verifyAgainst(
 
         const pubKeyAlg = (anchor.publicKey as unknown as { algorithm?: { name?: string; namedCurve?: string; hash?: { name?: string } | string } }).algorithm;
         const algName = pubKeyAlg?.name ?? '';
-        const importAlg: AlgorithmIdentifier | EcKeyImportParams | RsaHashedImportParams = buildImportAlgorithm(algName, pubKeyAlg);
+        const importAlg: AlgorithmIdentifier | EcKeyImportParams | RsaHashedImportParams = buildImportAlgorithm(algName, pubKeyAlg, signatureMethod);
 
         const providerKey = await appCrypto.subtle.importKey(
             'spki',
@@ -215,18 +368,24 @@ async function verifyAgainst(
  */
 function buildImportAlgorithm(
     algName: string,
-    pubKeyAlg: { name?: string; namedCurve?: string; hash?: { name?: string } | string } | undefined
+    pubKeyAlg: { name?: string; namedCurve?: string; hash?: { name?: string } | string } | undefined,
+    signatureMethod: string
 ): AlgorithmIdentifier | EcKeyImportParams | RsaHashedImportParams {
     if (algName.includes('EC') || algName.includes('ECDSA')) {
         const namedCurve = pubKeyAlg?.namedCurve ?? 'P-256';
         return { name: 'ECDSA', namedCurve } as EcKeyImportParams;
     }
 
-    // RSA family: extract hash from the algorithm descriptor if available,
-    // otherwise default to SHA-256.
+    // RSA family. An RSA public key carries no hash, and the key's hash must
+    // match the signature's: the EU LOTL is signed rsa-sha512, which a key
+    // imported for SHA-256 never verifies. Take it from the SignatureMethod,
+    // then from the key descriptor, then default to SHA-256.
     const rawHash = pubKeyAlg?.hash;
     let hashName: string;
-    if (typeof rawHash === 'string') {
+    const methodHash = RSA_SIGNATURE_HASHES.get(signatureMethod);
+    if (methodHash) {
+        hashName = methodHash;
+    } else if (typeof rawHash === 'string') {
         hashName = rawHash;
     } else if (typeof rawHash === 'object' && rawHash !== null && rawHash.name) {
         hashName = rawHash.name;
