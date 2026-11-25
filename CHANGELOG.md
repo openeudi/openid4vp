@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-11-25
+
 ### Security (library)
 
 - **Trusted lists: XML Signature Wrapping is refused**
