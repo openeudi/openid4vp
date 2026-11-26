@@ -478,13 +478,20 @@ export class SdJwtParser implements ICredentialParser {
                     if (a.length === 3) {
                         const nameError = checkDisclosedClaimName(a.name, kvHashes.get(a.hash)!);
                         if (nameError !== undefined) return invalidResult(nameError);
+                    } else {
+                        const registered = arrayElemHashes.get(a.hash);
+                        if (registered !== undefined) {
+                            return invalidResult(
+                                `An array element inside ${registered} MUST NOT be selectively disclosed (SD-JWT VC §2.2.2.3)`
+                            );
+                        }
                     }
                     const sub = collectAnchorHashes(a.value, seenDigests);
                     if (sub.duplicate !== undefined) {
                         return invalidResult('A disclosure digest appears more than once in the SD-JWT');
                     }
                     for (const [h, level] of sub.kvHashes) kvHashes.set(h, level);
-                    for (const h of sub.arrayElemHashes) arrayElemHashes.add(h);
+                    for (const [h, registered] of sub.arrayElemHashes) arrayElemHashes.set(h, registered);
                     const idx = remaining.indexOf(a);
                     if (idx >= 0) remaining.splice(idx, 1);
                 }
@@ -662,13 +669,16 @@ export class SdJwtParser implements ICredentialParser {
 interface SdLevel {
     names: Set<string>;
     top: boolean;
+    /** The registered top-level claim this level sits inside, if any (SD-JWT VC §2.2.2.3). */
+    registered?: string;
 }
 
 /**
  * RFC 9901 §7.1 step 3.c.ii: refuse a claim name that is not a string, is `_sd`
  * or `...`, or already exists at the level of the `_sd` key (in the clear or
- * from another Disclosure). At the top level, also refuse the registered
- * claims SD-JWT VC forbids disclosing. On success, records the name.
+ * from another Disclosure). Also refuse the registered claims SD-JWT VC
+ * forbids disclosing, at the top level and anywhere inside them ("including
+ * any of their sub-claims"). On success, records the name.
  */
 function checkDisclosedClaimName(name: unknown, level: SdLevel): string | undefined {
     if (typeof name !== 'string') {
@@ -679,6 +689,9 @@ function checkDisclosedClaimName(name: unknown, level: SdLevel): string | undefi
     }
     if (level.top && NON_DISCLOSABLE_CLAIMS.has(name)) {
         return `Claim ${name} MUST NOT be selectively disclosed (SD-JWT VC §2.2.2.3)`;
+    }
+    if (level.registered !== undefined) {
+        return `Claim ${name} inside ${level.registered} MUST NOT be selectively disclosed (SD-JWT VC §2.2.2.3)`;
     }
     if (level.names.has(name)) {
         return `Disclosure claim name ${name} already exists at its level (RFC 9901 §7.1)`;
@@ -691,9 +704,10 @@ function collectAnchorHashes(
     node: unknown,
     seen: Set<string>,
     isPayload = false
-): { kvHashes: Map<string, SdLevel>; arrayElemHashes: Set<string>; duplicate?: string } {
+): { kvHashes: Map<string, SdLevel>; arrayElemHashes: Map<string, string | undefined>; duplicate?: string } {
     const kvHashes = new Map<string, SdLevel>();
-    const arrayElemHashes = new Set<string>();
+    // Array-element digest -> the registered top-level claim it sits inside, if any.
+    const arrayElemHashes = new Map<string, string | undefined>();
     let duplicate: string | undefined;
     // `seen` spans the whole SD-JWT (payload plus every disclosed value), so a
     // digest repeated anywhere — even once as `_sd` and once as `...` — is found.
@@ -701,7 +715,7 @@ function collectAnchorHashes(
         if (seen.has(digest)) duplicate ??= digest;
         seen.add(digest);
     };
-    const visit = (value: unknown, top: boolean): void => {
+    const visit = (value: unknown, top: boolean, registered?: string): void => {
         if (Array.isArray(value)) {
             for (const item of value) {
                 if (item && typeof item === 'object' && !Array.isArray(item)) {
@@ -709,17 +723,18 @@ function collectAnchorHashes(
                     const keys = Object.keys(obj);
                     if (keys.length === 1 && keys[0] === '...' && typeof obj['...'] === 'string') {
                         record(obj['...']);
-                        arrayElemHashes.add(obj['...']);
+                        arrayElemHashes.set(obj['...'], registered);
                         continue;
                     }
                 }
-                visit(item, false);
+                visit(item, false, registered);
             }
         } else if (value && typeof value === 'object') {
             const obj = value as Record<string, unknown>;
             const level: SdLevel = {
                 names: new Set(Object.keys(obj).filter((k) => k !== '_sd')),
                 top,
+                ...(registered !== undefined ? { registered } : {}),
             };
             for (const [k, v] of Object.entries(obj)) {
                 if (k === '_sd' && Array.isArray(v)) {
@@ -730,7 +745,7 @@ function collectAnchorHashes(
                     }
                     continue;
                 }
-                visit(v, false);
+                visit(v, false, registered ?? (top && NON_DISCLOSABLE_CLAIMS.has(k) ? k : undefined));
             }
         }
     };
