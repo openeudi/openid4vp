@@ -145,4 +145,61 @@ describe('SD-JWT VC draft-19 §2.2.2.3: registered claims that MUST NOT be discl
     it('refuses an expired credential whose exp travels in a Disclosure', async () => {
         await expectRefused({ claims: { exp: 1 }, payload: { exp: undefined } }, /exp/);
     });
+
+    // "including any of their sub-claims"
+    it('refuses a Disclosure of a sub-claim of status', async () => {
+        const idx = encodeDisclosure('idx', 5);
+        await expectRefused(
+            {
+                disclosures: [idx],
+                sdDigests: [],
+                payload: {
+                    status: { status_list: { uri: 'https://status.example', _sd: [await digest('sha-256', idx)] } },
+                },
+            },
+            /Claim idx inside status MUST NOT be selectively disclosed/
+        );
+    });
+
+    it('refuses a Disclosure of a sub-claim of cnf', async () => {
+        const kid = encodeDisclosure('kid', 'holder-key-1');
+        await expectRefused(
+            {
+                disclosures: [kid],
+                sdDigests: [],
+                payload: { cnf: { jwk: keys.holderJwk, _sd: [await digest('sha-256', kid)] } },
+            },
+            /Claim kid inside cnf MUST NOT be selectively disclosed/
+        );
+    });
+
+    it('refuses an array-element Disclosure inside status', async () => {
+        const element = rawDisclosure([salt(), 'https://status.example/2']);
+        await expectRefused(
+            {
+                disclosures: [element],
+                sdDigests: [],
+                payload: {
+                    status: {
+                        status_list: { idx: 0, uri: 'https://status.example' },
+                        extra: [{ '...': await digest('sha-256', element) }],
+                    },
+                },
+            },
+            /array element inside status MUST NOT be selectively disclosed/
+        );
+    });
+
+    it('accepts an undisclosed digest inside status, which may be a decoy', async () => {
+        const r = await parse({
+            claims: { given_name: 'Erika' },
+            payload: {
+                status: {
+                    status_list: { idx: 0, uri: 'https://status.example', _sd: [await digest('sha-256', encodeDisclosure('x', 1))] },
+                },
+            },
+        });
+        expect(r.error).toBeUndefined();
+        expect(r.valid).toBe(true);
+    });
 });

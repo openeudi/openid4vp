@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **SD-JWT VC: sub-claims of registered claims must not be disclosed
+  (SD-JWT VC draft-19 §2.2.2.3).** The rule covers the registered claims
+  "including any of their sub-claims", but only a top-level Disclosure of
+  `iss`, `nbf`, `exp`, `cnf`, `vct`, `vct#integrity` or `status` was refused.
+  A Disclosure anchored anywhere inside one of them, for example `idx` inside
+  `status.status_list`, or an array element inside one, is now refused. The
+  malformed part is inside what the issuer signs, so only an issuer that does
+  not follow the specification can produce it. The Token Status List check
+  reads the signed payload, so with `statusPolicy` set, such a credential was
+  already refused for its missing `idx`. An undisclosed digest inside these
+  claims is still accepted, because it may be a decoy. This was reported by
+  the `disclosed-status-sub-claim` vector of the Polaris negative vectors
+  0.7.0.
+
 ## [0.20.0] — 2026-11-25
 
 ### Security (library)
