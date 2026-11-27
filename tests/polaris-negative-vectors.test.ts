@@ -7,7 +7,7 @@
  * every negative judged here also carries its repaired twin, which must be
  * accepted, so a refusal cannot come from a broken fixture.
  *
- * Vectors: EgorKhaklin/polaris-id @ 647e804d (Apache-2.0),
+ * Vectors: EgorKhaklin/polaris-id @ 32a683bb (Apache-2.0),
  * `lab/interop/negative-vectors/`, copied unchanged into
  * tests/fixtures/polaris-negative-vectors/ (see the README there). The SHA-256
  * of both files is checked below, and nothing is read from the network.
@@ -35,7 +35,7 @@ import { verifyPresentation } from '../src/verify.js';
 const FIXTURES = new URL('./fixtures/polaris-negative-vectors/', import.meta.url);
 const SHA256 = {
     'vectors.json': '1d3a382d638eb6c484f4899938899cfdf56618b00dff3ee1525d67ecadf43346',
-    'mdoc-vectors.json': '60b57015b8643e7d30455c33f5c9eac3f5d9bfeb51099fa3906a1e75cf2af67c',
+    'mdoc-vectors.json': '0ebfe4d570dad2c432eddf38bf5cb1bb7aa7c013bb5cfa3136c3fff56fb172dd',
 };
 
 /** Layers this suite leaves out, whatever a vector's class. */
