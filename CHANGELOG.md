@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security (dependencies)
+
+- **`@sd-jwt/decode` is no longer a dependency**
+  ([GHSA-f9j6-8p6x-r9j6](https://github.com/advisories/GHSA-f9j6-8p6x-r9j6),
+  no fixed version). Its `getClaims` drops a Disclosure whose digest is in no
+  `_sd` array or `{"...": digest}` element instead of failing. This library
+  never relied on that: before any claim is built, every presented Disclosure
+  must hash, with the issuer's `_sd_alg`, to a digest in the issuer-signed
+  payload or in another accepted Disclosure, and is refused with
+  `Disclosure hash mismatch` otherwise. A repeated Disclosure or digest was
+  also already refused. The claims were still built by a second, independent
+  parse with `getClaims`, so a change in that package could have let the two
+  disagree. They are now built from the signature-verified payload and the
+  Disclosures the check accepted, by the same rules (RFC 9901 §7.1 step 3),
+  and `npm audit` no longer reports the advisory for consumers. The claims
+  returned for a valid presentation are unchanged.
+
 ### Fixed
 
 - **SD-JWT VC: sub-claims of registered claims must not be disclosed
