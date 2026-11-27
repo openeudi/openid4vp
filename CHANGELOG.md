@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-11-27
+
 ### Security (dependencies)
 
 - **`@sd-jwt/decode` is no longer a dependency**
