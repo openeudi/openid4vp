@@ -1,4 +1,3 @@
-import { splitSdJwt, decodeSdJwt, getClaims } from '@sd-jwt/decode';
 import { decodeProtectedHeader, jwtVerify, importX509, importJWK } from 'jose';
 
 import { base64UrlToBytes, bytesToBase64Url } from '../encoding/base64url.js';
@@ -9,10 +8,7 @@ import type { CredentialFormat, CredentialClaims, PresentationResult } from '../
 
 import type { ICredentialParser, ParseOptions } from './parser.interface.js';
 
-/**
- * Hasher function signature expected by @sd-jwt/decode.
- * Inlined here to avoid a direct dependency on @sd-jwt/types.
- */
+/** Hashes a Disclosure or the `sd_hash` input with the named `_sd_alg`. */
 type SdJwtHasher = (data: string | ArrayBuffer, alg: string) => Promise<Uint8Array>;
 
 const DEFAULT_ALLOWED_ALGORITHMS = ['ES256', 'ES384', 'ES512'];
@@ -67,8 +63,7 @@ const SD_HASH_ALGORITHMS: ReadonlyMap<string, 'SHA-256' | 'SHA-384' | 'SHA-512'>
 
 /**
  * Disclosure / `sd_hash` hasher using the Web Crypto API. Honours the
- * `_sd_alg` name it is called with. Compatible with the @sd-jwt/decode
- * Hasher signature, which passes the credential's `_sd_alg`.
+ * `_sd_alg` name it is called with.
  */
 const sdJwtHasher: SdJwtHasher = async (data: string | ArrayBuffer, alg: string): Promise<Uint8Array> => {
     const webCryptoAlg = SD_HASH_ALGORITHMS.get(alg);
@@ -215,12 +210,7 @@ export class SdJwtParser implements ICredentialParser {
         });
 
         // Step 1: Split the SD-JWT into components
-        let parts: ReturnType<typeof splitSdJwt>;
-        try {
-            parts = splitSdJwt(vpToken);
-        } catch {
-            throw new MalformedCredentialError('Failed to split SD-JWT structure');
-        }
+        const parts = splitSdJwt(vpToken);
 
         // Step 2: Peek at issuer JWT header (need alg and x5c before verification)
         let header: ReturnType<typeof decodeProtectedHeader>;
@@ -422,16 +412,12 @@ export class SdJwtParser implements ICredentialParser {
         if (seed.duplicate !== undefined) {
             return invalidResult('A disclosure digest appears more than once in the SD-JWT');
         }
+        // Every presented Disclosure, by digest, once it is anchored. Step 9
+        // builds the claims from this map only, so a Disclosure the check
+        // below did not anchor can never become a claim.
+        const verifiedDisclosures = new Map<string, DecodedDisclosure>();
         if (parts.disclosures.length > 0) {
             // Pre-decode disclosures so we can do the transitive closure.
-            type DecodedDisclosure = {
-                raw: string;
-                hash: string;
-                length: 2 | 3;
-                /** Claim name of an object-property (3-element) Disclosure. */
-                name?: unknown;
-                value: unknown;
-            };
             const decodedDisclosures: DecodedDisclosure[] = [];
             const presented = new Set<string>();
             for (const disclosure of parts.disclosures) {
@@ -492,11 +478,16 @@ export class SdJwtParser implements ICredentialParser {
                     }
                     for (const [h, level] of sub.kvHashes) kvHashes.set(h, level);
                     for (const [h, registered] of sub.arrayElemHashes) arrayElemHashes.set(h, registered);
+                    verifiedDisclosures.set(a.hash, a);
                     const idx = remaining.indexOf(a);
                     if (idx >= 0) remaining.splice(idx, 1);
                 }
             }
 
+            // RFC 9901 §7.1: a Disclosure whose digest is in no `_sd`
+            // array or `{"...": digest}` element of the issuer-signed payload
+            // (or of another anchored Disclosure) means the presentation was
+            // altered. It is refused, not dropped.
             if (remaining.length > 0) {
                 return invalidResult('Disclosure hash mismatch');
             }
@@ -604,15 +595,12 @@ export class SdJwtParser implements ICredentialParser {
             }
         }
 
-        // Step 9: Decode disclosures and extract claims
+        // Step 9: Build the claims (RFC 9901 §7.1 step 3) from the
+        // signature-verified payload and the Disclosures Step 7
+        // anchored, never from a second parse of the presented token.
         let resolvedClaims: Record<string, unknown>;
         try {
-            const decoded = await decodeSdJwt(vpToken, sdJwtHasher);
-            resolvedClaims = await getClaims<Record<string, unknown>>(
-                decoded.jwt.payload,
-                decoded.disclosures,
-                sdJwtHasher
-            );
+            resolvedClaims = resolveDisclosedClaims(payload, verifiedDisclosures);
         } catch {
             throw new MalformedCredentialError('Failed to decode SD-JWT disclosures');
         }
@@ -650,6 +638,85 @@ export class SdJwtParser implements ICredentialParser {
         if (credentialStatus) result.credentialStatus = credentialStatus;
         return result;
     }
+}
+
+/** A presented Disclosure, decoded and hashed with the issuer's `_sd_alg`. */
+interface DecodedDisclosure {
+    raw: string;
+    hash: string;
+    length: 2 | 3;
+    /** Claim name of an object-property (3-element) Disclosure. */
+    name?: unknown;
+    value: unknown;
+}
+
+/**
+ * Splits `<issuer JWT>~<Disclosure>~...~<KB-JWT or empty>` (RFC 9901 §4).
+ * Without any `~` the whole token is the issuer JWT.
+ */
+function splitSdJwt(token: string): { jwt: string; disclosures: string[]; kbJwt?: string } {
+    const [jwt, ...rest] = token.split('~');
+    if (rest.length === 0) return { jwt: jwt!, disclosures: [] };
+    const kbJwt = rest.pop();
+    return { jwt: jwt!, disclosures: rest, ...(kbJwt ? { kbJwt } : {}) };
+}
+
+/**
+ * Replaces every digest in the payload with the claim its Disclosure carries
+ * (RFC 9901 §7.1 step 3), recursively into disclosed values. `disclosures`
+ * holds only Disclosures already anchored by the digest check, keyed by
+ * digest. A digest without a Disclosure is a withheld claim or a decoy and is
+ * left out. Drops `_sd` everywhere and `_sd_alg` at the top level.
+ */
+function resolveDisclosedClaims(
+    payload: Record<string, unknown>,
+    disclosures: ReadonlyMap<string, DecodedDisclosure>
+): Record<string, unknown> {
+    const isPlaceholder = (item: unknown): item is { '...': string } => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+        const keys = Object.keys(item);
+        return keys.length === 1 && keys[0] === '...' && typeof (item as Record<string, unknown>)['...'] === 'string';
+    };
+    // defineProperty, so a claim named `__proto__` stays an ordinary own property.
+    const put = (target: Record<string, unknown>, name: string, value: unknown): void => {
+        Object.defineProperty(target, name, { value, enumerable: true, writable: true, configurable: true });
+    };
+    const resolve = (value: unknown): unknown => {
+        if (Array.isArray(value)) {
+            const out: unknown[] = [];
+            for (const item of value) {
+                if (isPlaceholder(item)) {
+                    const disclosure = disclosures.get(item['...']);
+                    if (disclosure !== undefined && disclosure.length === 2) out.push(resolve(disclosure.value));
+                    continue;
+                }
+                out.push(resolve(item));
+            }
+            return out;
+        }
+        if (value && typeof value === 'object') {
+            const out: Record<string, unknown> = {};
+            for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+                if (key === '_sd') continue;
+                put(out, key, resolve(child));
+            }
+            const digests = (value as Record<string, unknown>)['_sd'];
+            if (Array.isArray(digests)) {
+                for (const digest of digests) {
+                    if (typeof digest !== 'string') continue;
+                    const disclosure = disclosures.get(digest);
+                    if (disclosure !== undefined && disclosure.length === 3) {
+                        put(out, disclosure.name as string, resolve(disclosure.value));
+                    }
+                }
+            }
+            return out;
+        }
+        return value;
+    };
+    const claims = resolve(payload) as Record<string, unknown>;
+    delete claims['_sd_alg'];
+    return claims;
 }
 
 /**
